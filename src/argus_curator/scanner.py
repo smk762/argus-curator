@@ -107,7 +107,8 @@ def scan_folder(folder: str | Path, cfg: CurateConfig | None = None) -> ScanSumm
     items: list[tuple[str, str, bytes]] = []
     for p in paths:
         try:
-            items.append((p.name, f"local:{p}", p.read_bytes()))
+            rel = p.relative_to(root).as_posix()
+            items.append((rel, f"local:{p}", p.read_bytes()))
         except OSError as exc:
             logger.warning("scan_read_error", path=str(p), error=str(exc))
 
