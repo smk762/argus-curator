@@ -25,7 +25,7 @@ argus-curator scan /path/to/images --objective identity --output results.json
 argus-curator export results.json /path/to/training_subset
 
 # Start the API server
-argus-curator serve --port 8001 --cors
+argus-curator serve --port 8101 --cors
 ```
 
 ## Training objectives

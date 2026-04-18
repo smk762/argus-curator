@@ -9,5 +9,5 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install "$1[server,gpu]" && \
     rm -rf /tmp/wheels
 
-EXPOSE 8001
-CMD ["argus-curator", "serve", "--port", "8001", "--cors"]
+EXPOSE 8101
+CMD ["argus-curator", "serve", "--port", "8101", "--cors"]
