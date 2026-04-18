@@ -1,0 +1,25 @@
+services:
+  argus-curator:
+    build: .
+    ports:
+      - "${CURATOR_PORT:-8101}:8101"
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - HF_HUB_DISABLE_TELEMETRY=${HF_HUB_DISABLE_TELEMETRY:-1}
+      - HF_TRUST_REMOTE_CODE=${HF_TRUST_REMOTE_CODE:-false}
+      # Browser demo / curator-ui: set ARGUS_CURATOR_CORS=1 and optionally
+      # ARGUS_CURATOR_CORS_ORIGINS=https://your-demo.example,http://localhost:3000
+      - ARGUS_CURATOR_CORS=${ARGUS_CURATOR_CORS:-}
+      - ARGUS_CURATOR_CORS_ORIGINS=${ARGUS_CURATOR_CORS_ORIGINS:-}
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ${CURATOR_SOURCE_PATH:-~/datasets}:/data/images
+      - ${CURATOR_OUTPUT_PATH:-~/curator-out}:/data/out
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
