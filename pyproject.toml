@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "argus-curator"
+dynamic = ["version"]
+description = "Dataset curation for LoRA training — quality filtering, embedding-based diversity clustering, and optimal subset selection."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "pillow>=10.0",
+    "numpy>=1.24",
+    "imagehash>=4.3",
+    "scikit-learn>=1.3",
+    "structlog>=24.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
+]
+gpu = [
+    "torch>=2.1",
+    "transformers>=4.40",
+    "facenet-pytorch>=2.5",
+    "ultralytics>=8.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "hatch",
+]
+
+[project.scripts]
+argus-curator = "argus_curator.cli:main"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.1.0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/argus_curator/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/argus_curator"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
