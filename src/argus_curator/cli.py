@@ -46,8 +46,12 @@ def main() -> None:
     # ── serve ─────────────────────────────────────────────────────────────
     serve_p = sub.add_parser("serve", help="Start the FastAPI HTTP server.")
     serve_p.add_argument("--host", default="0.0.0.0")
-    serve_p.add_argument("--port", type=int, default=8001)
-    serve_p.add_argument("--cors", action="store_true")
+    serve_p.add_argument("--port", type=int, default=8101)
+    serve_p.add_argument(
+        "--cors",
+        action="store_true",
+        help="Enable CORS. If omitted, ARGUS_CURATOR_CORS controls CORS (see server env docs).",
+    )
 
     args = parser.parse_args()
 
@@ -115,11 +119,14 @@ def _cmd_export(args: argparse.Namespace) -> None:
         src_str: str = r.get("source", "")
         if src_str.startswith("local:"):
             src = pathlib.Path(src_str[len("local:"):])
+            rel_name = str(r.get("name") or src.name).replace("\\", "/")
+            dest = target.joinpath(*pathlib.Path(rel_name).parts)
             try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 if args.move:
-                    shutil.move(str(src), str(target / src.name))
+                    shutil.move(str(src), str(dest))
                 else:
-                    shutil.copy2(str(src), str(target / src.name))
+                    shutil.copy2(str(src), str(dest))
                 moved += 1
             except Exception as exc:
                 print(f"  FAIL {src.name}: {exc}", file=sys.stderr)
@@ -136,7 +143,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     from argus_curator.server import create_app
-    app = create_app(cors=args.cors)
+    app = create_app(cors=True if args.cors else None)
     uvicorn.run(app, host=args.host, port=args.port)
 
 
