@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "argus-curator"
+version = "0.1.0"
+description = "LoRA-native dataset curation: training-suitability scoring, near-duplicate dedup, and identity-aware face clustering"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "smk762" }]
+keywords = [
+    "curation", "dataset", "lora", "training", "diffusion",
+    "image-quality", "deduplication", "phash", "face-clustering",
+    "insightface", "stable-diffusion", "flux", "sdxl",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Typing :: Typed",
+]
+dependencies = [
+    "Pillow>=10.0",
+    "numpy>=1.24",
+    "ImageHash>=4.3",
+    "pydantic>=2.6",
+    "structlog>=24.0",
+]
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7"]
+cli = ["typer>=0.12", "rich>=13.0"]
+gpu = [
+    "insightface>=0.7.3",
+    "onnxruntime-gpu>=1.16",
+    "opencv-python-headless>=4.9",
+    "scikit-learn>=1.3",
+]
+faces = [
+    "insightface>=0.7.3",
+    "onnxruntime>=1.16",
+    "opencv-python-headless>=4.9",
+    "scikit-learn>=1.3",
+]
+all = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "python-multipart>=0.0.7",
+    "typer>=0.12",
+    "rich>=13.0",
+    "insightface>=0.7.3",
+    "onnxruntime>=1.16",
+    "opencv-python-headless>=4.9",
+    "scikit-learn>=1.3",
+]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5", "httpx>=0.27"]
+
+[project.scripts]
+argus-curator = "argus_curator.cli:app"
+
+[project.urls]
+Repository = "https://github.com/smk762/argus-curator"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/argus_curator"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008"]

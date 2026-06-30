@@ -1,0 +1,26 @@
+services:
+  argus-curator:
+    build: .
+    ports:
+      - "${CURATOR_PORT:-8101}:8101"
+    environment:
+      - CURATOR_SOURCE_PATH=/data/images
+      - CURATOR_CACHE_DIR=/root/.cache/argus_curator/scans
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      # Dataset mount the curator scans and serves /thumb from.
+      - ${CURATOR_SOURCE_PATH:-./data}:/data/images
+      # Output mount for exported datasets + manifests.
+      - ${CURATOR_OUTPUT_PATH:-./out}:/data/out
+      # Persist scan cache + InsightFace model downloads across rebuilds.
+      - ~/.cache/argus_curator:/root/.cache/argus_curator
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ~/.insightface:/root/.insightface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
