@@ -7,7 +7,7 @@ from pathlib import Path
 
 from argus_curator import scan_folder
 from argus_curator.export import export_selection
-from argus_curator.models import ExportRequest
+from argus_curator.models import MANIFEST_VERSION, ExportRequest
 from argus_curator.selection import decide_selection
 
 
@@ -34,6 +34,7 @@ def test_manifest_rows_carry_target_profile(dataset: Path, tmp_path: Path) -> No
     assert lines
     row = json.loads(lines[0])
     assert set(row) == {
+        "manifest_version",
         "rel_path",
         "abs_path",
         "target_profile",
@@ -42,6 +43,7 @@ def test_manifest_rows_carry_target_profile(dataset: Path, tmp_path: Path) -> No
         "score",
         "similar_group",
     }
+    assert row["manifest_version"] == MANIFEST_VERSION
     assert row["target_profile"]["target_category"] == "identity"
 
 

@@ -22,6 +22,11 @@ FacePose = Literal["frontal", "three_quarter", "profile"]
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
+# Version of the JSONL handoff manifest argus-lens consumes. Bump on any
+# breaking change to the per-row shape; every manifest row carries it so a
+# consumer can refuse an incompatible manifest instead of misreading it.
+MANIFEST_VERSION = "1.0"
+
 
 # ---------------------------------------------------------------------------
 # Shared target profile (the moat)
@@ -233,3 +238,25 @@ class ExportResult(BaseModel):
     mode: str
     selected_rel_paths: list[str] = Field(default_factory=list)
     captioned: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Wire contract (published as JSON Schema for consumers to codegen against)
+# ---------------------------------------------------------------------------
+
+# The models that make up the public HTTP/manifest contract. Everything a
+# consumer (argus-lens, the frontend) needs to speak to the curator is reachable
+# from these four via their nested $defs.
+WIRE_MODELS: tuple[type[BaseModel], ...] = (ScanRequest, ScanSummary, ExportRequest, ExportResult)
+
+
+def wire_schema() -> dict:
+    """Combined JSON Schema for the curator's wire contract (all WIRE_MODELS)."""
+    from pydantic.json_schema import models_json_schema
+
+    _, schema = models_json_schema(
+        [(m, "serialization") for m in WIRE_MODELS],
+        title="argus-curator wire contract",
+        ref_template="#/$defs/{model}",
+    )
+    return schema

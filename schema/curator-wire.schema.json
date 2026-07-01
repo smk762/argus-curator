@@ -1,0 +1,757 @@
+{
+  "$defs": {
+    "ExportRequest": {
+      "properties": {
+        "caption_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caption Url"
+        },
+        "dest": {
+          "title": "Dest",
+          "type": "string"
+        },
+        "face_clusters": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Clusters"
+        },
+        "face_poses": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "frontal",
+                  "three_quarter",
+                  "profile"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Poses"
+        },
+        "include_rejected": {
+          "default": false,
+          "title": "Include Rejected",
+          "type": "boolean"
+        },
+        "keep_similar": {
+          "default": false,
+          "title": "Keep Similar",
+          "type": "boolean"
+        },
+        "max_keep": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Keep"
+        },
+        "min_score": {
+          "default": 0.6,
+          "title": "Min Score",
+          "type": "number"
+        },
+        "mode": {
+          "default": "copy",
+          "enum": [
+            "copy",
+            "symlink",
+            "move"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "preserve_structure": {
+          "default": true,
+          "title": "Preserve Structure",
+          "type": "boolean"
+        },
+        "scan_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scan Id"
+        },
+        "selection": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selection"
+        },
+        "write_manifest": {
+          "default": true,
+          "title": "Write Manifest",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "dest"
+      ],
+      "title": "ExportRequest",
+      "type": "object"
+    },
+    "ExportResult": {
+      "properties": {
+        "captioned": {
+          "default": false,
+          "title": "Captioned",
+          "type": "boolean"
+        },
+        "copied": {
+          "title": "Copied",
+          "type": "integer"
+        },
+        "dest": {
+          "title": "Dest",
+          "type": "string"
+        },
+        "manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Manifest Path"
+        },
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "selected_rel_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Rel Paths",
+          "type": "array"
+        },
+        "skipped": {
+          "title": "Skipped",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "copied",
+        "skipped",
+        "dest",
+        "mode"
+      ],
+      "title": "ExportResult",
+      "type": "object"
+    },
+    "FaceCluster": {
+      "description": "A clustered identity across the scanned dataset.",
+      "properties": {
+        "cluster_id": {
+          "title": "Cluster Id",
+          "type": "string"
+        },
+        "representative_bbox": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Representative Bbox"
+        },
+        "representative_rel_path": {
+          "title": "Representative Rel Path",
+          "type": "string"
+        },
+        "size": {
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cluster_id",
+        "size",
+        "representative_rel_path"
+      ],
+      "title": "FaceCluster",
+      "type": "object"
+    },
+    "FaceConfig": {
+      "description": "InsightFace detection + identity-clustering configuration (M2).",
+      "properties": {
+        "cluster_eps": {
+          "default": 0.5,
+          "title": "Cluster Eps",
+          "type": "number"
+        },
+        "device": {
+          "default": "auto",
+          "title": "Device",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "frontal_max_yaw": {
+          "default": 15.0,
+          "title": "Frontal Max Yaw",
+          "type": "number"
+        },
+        "min_det_score": {
+          "default": 0.5,
+          "title": "Min Det Score",
+          "type": "number"
+        },
+        "model": {
+          "default": "buffalo_l",
+          "title": "Model",
+          "type": "string"
+        },
+        "profile_min_yaw": {
+          "default": 45.0,
+          "title": "Profile Min Yaw",
+          "type": "number"
+        }
+      },
+      "title": "FaceConfig",
+      "type": "object"
+    },
+    "FaceDetection": {
+      "description": "One detected face within an image.",
+      "properties": {
+        "bbox": {
+          "description": "[x, y, w, h]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Bbox",
+          "type": "array"
+        },
+        "cluster_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster Id"
+        },
+        "det_score": {
+          "title": "Det Score",
+          "type": "number"
+        },
+        "pitch": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pitch"
+        },
+        "pose": {
+          "anyOf": [
+            {
+              "enum": [
+                "frontal",
+                "three_quarter",
+                "profile"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pose"
+        },
+        "primary": {
+          "default": false,
+          "title": "Primary",
+          "type": "boolean"
+        },
+        "yaw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Yaw"
+        }
+      },
+      "required": [
+        "bbox",
+        "det_score"
+      ],
+      "title": "FaceDetection",
+      "type": "object"
+    },
+    "ImageResult": {
+      "description": "Per-image curation record \u2014 superset of imogen's scanner output.\n\n``rel_path`` is the path relative to the scanned root and is the stable key\neverywhere (it stays unique across sub-folders, unlike a bare basename).",
+      "properties": {
+        "abs_path": {
+          "title": "Abs Path",
+          "type": "string"
+        },
+        "artifact_score": {
+          "default": 0.0,
+          "title": "Artifact Score",
+          "type": "number"
+        },
+        "duplicate_of": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Of"
+        },
+        "face_count": {
+          "default": 0,
+          "title": "Face Count",
+          "type": "integer"
+        },
+        "faces": {
+          "items": {
+            "$ref": "#/$defs/FaceDetection"
+          },
+          "title": "Faces",
+          "type": "array"
+        },
+        "group_size": {
+          "default": 1,
+          "title": "Group Size",
+          "type": "integer"
+        },
+        "height": {
+          "default": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "is_duplicate": {
+          "default": false,
+          "title": "Is Duplicate",
+          "type": "boolean"
+        },
+        "is_representative": {
+          "default": true,
+          "title": "Is Representative",
+          "type": "boolean"
+        },
+        "keep_reason": {
+          "default": "",
+          "title": "Keep Reason",
+          "type": "string"
+        },
+        "passed": {
+          "default": false,
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "phash": {
+          "default": "",
+          "title": "Phash",
+          "type": "string"
+        },
+        "primary_face_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Face Cluster"
+        },
+        "primary_face_pose": {
+          "anyOf": [
+            {
+              "enum": [
+                "frontal",
+                "three_quarter",
+                "profile"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Face Pose"
+        },
+        "primary_face_yaw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Face Yaw"
+        },
+        "reject_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reject Reason"
+        },
+        "rel_path": {
+          "title": "Rel Path",
+          "type": "string"
+        },
+        "score": {
+          "default": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "score_breakdown": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Score Breakdown",
+          "type": "object"
+        },
+        "sharpness": {
+          "default": 0.0,
+          "title": "Sharpness",
+          "type": "number"
+        },
+        "similar_group": {
+          "default": 0,
+          "title": "Similar Group",
+          "type": "integer"
+        },
+        "width": {
+          "default": 0,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rel_path",
+        "abs_path"
+      ],
+      "title": "ImageResult",
+      "type": "object"
+    },
+    "ScanConfig": {
+      "description": "Tunable parameters for a training-suitability scan.",
+      "properties": {
+        "blur_threshold": {
+          "default": 100.0,
+          "title": "Blur Threshold",
+          "type": "number"
+        },
+        "cluster_distance": {
+          "default": 10,
+          "title": "Cluster Distance",
+          "type": "integer"
+        },
+        "diversity_weight": {
+          "default": 0.4,
+          "title": "Diversity Weight",
+          "type": "number"
+        },
+        "max_aspect_ratio": {
+          "default": 3.0,
+          "title": "Max Aspect Ratio",
+          "type": "number"
+        },
+        "max_workers": {
+          "default": 4,
+          "title": "Max Workers",
+          "type": "integer"
+        },
+        "min_short_side": {
+          "default": 512,
+          "title": "Min Short Side",
+          "type": "integer"
+        },
+        "resolution_ref": {
+          "default": 1024,
+          "title": "Resolution Ref",
+          "type": "integer"
+        },
+        "sharpness_ref": {
+          "default": 800.0,
+          "title": "Sharpness Ref",
+          "type": "number"
+        },
+        "weight_artifact": {
+          "default": 0.15,
+          "title": "Weight Artifact",
+          "type": "number"
+        },
+        "weight_resolution": {
+          "default": 0.3,
+          "title": "Weight Resolution",
+          "type": "number"
+        },
+        "weight_sharpness": {
+          "default": 0.35,
+          "title": "Weight Sharpness",
+          "type": "number"
+        },
+        "weight_subject": {
+          "default": 0.2,
+          "title": "Weight Subject",
+          "type": "number"
+        }
+      },
+      "title": "ScanConfig",
+      "type": "object"
+    },
+    "ScanRequest": {
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/ScanConfig"
+        },
+        "faces": {
+          "$ref": "#/$defs/FaceConfig"
+        },
+        "folder": {
+          "title": "Folder",
+          "type": "string"
+        },
+        "target_profile": {
+          "$ref": "#/$defs/TargetProfile"
+        }
+      },
+      "required": [
+        "folder"
+      ],
+      "title": "ScanRequest",
+      "type": "object"
+    },
+    "ScanSummary": {
+      "description": "Full result of a scan \u2014 persisted on disk and paginated by the server.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/ScanConfig"
+        },
+        "duplicates": {
+          "title": "Duplicates",
+          "type": "integer"
+        },
+        "face_clusters": {
+          "items": {
+            "$ref": "#/$defs/FaceCluster"
+          },
+          "title": "Face Clusters",
+          "type": "array"
+        },
+        "faces_config": {
+          "$ref": "#/$defs/FaceConfig"
+        },
+        "folder": {
+          "title": "Folder",
+          "type": "string"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "integer"
+        },
+        "reject_reasons": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Reject Reasons",
+          "type": "object"
+        },
+        "rejected": {
+          "title": "Rejected",
+          "type": "integer"
+        },
+        "results": {
+          "items": {
+            "$ref": "#/$defs/ImageResult"
+          },
+          "title": "Results",
+          "type": "array"
+        },
+        "returned": {
+          "default": 0,
+          "title": "Returned",
+          "type": "integer"
+        },
+        "scan_id": {
+          "title": "Scan Id",
+          "type": "string"
+        },
+        "similar_clusters": {
+          "title": "Similar Clusters",
+          "type": "integer"
+        },
+        "target_profile": {
+          "$ref": "#/$defs/TargetProfile"
+        },
+        "total": {
+          "title": "Total",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scan_id",
+        "folder",
+        "target_profile",
+        "config",
+        "faces_config",
+        "total",
+        "passed",
+        "rejected",
+        "duplicates",
+        "similar_clusters"
+      ],
+      "title": "ScanSummary",
+      "type": "object"
+    },
+    "TargetProfile": {
+      "description": "What we are curating *for* \u2014 shared verbatim with argus-lens.\n\nThe curator uses it to weight scoring and label exports; the captioner\ninherits it to pick caption variants. This is the reason generic CV tools\n(FiftyOne / fastdup) structurally cannot replace the suite.",
+      "properties": {
+        "checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint"
+        },
+        "target_backend": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "sdxl",
+          "title": "Target Backend"
+        },
+        "target_category": {
+          "default": "identity",
+          "enum": [
+            "identity",
+            "wardrobe",
+            "pose_composition",
+            "setting"
+          ],
+          "title": "Target Category",
+          "type": "string"
+        },
+        "target_style": {
+          "default": "photo",
+          "enum": [
+            "photo",
+            "anime"
+          ],
+          "title": "Target Style",
+          "type": "string"
+        }
+      },
+      "title": "TargetProfile",
+      "type": "object"
+    }
+  },
+  "title": "argus-curator wire contract"
+}

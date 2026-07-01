@@ -20,6 +20,7 @@ Phase 1 (parallel CPU threads, no GPU):
 
 from __future__ import annotations
 
+import contextlib
 import io
 import uuid
 from collections.abc import Callable
@@ -53,10 +54,9 @@ ProgressFn = Callable[[dict[str, Any]], None]
 def _emit(progress: ProgressFn | None, phase: str, done: int, total: int) -> None:
     if progress is None:
         return
-    try:
+    # Never let a flaky consumer (e.g. a disconnected SSE client) break a scan.
+    with contextlib.suppress(Exception):  # pragma: no cover
         progress({"phase": phase, "done": done, "total": total})
-    except Exception:  # pragma: no cover - never let reporting break a scan
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +447,4 @@ def scan_folder(
         logger.warning("scan_folder_empty", folder=str(root))
     _emit(progress, "collecting", len(items), len(items))
 
-    return scan_items(
-        items, profile, cfg, faces_cfg, folder=str(root.resolve()), scan_id=scan_id, progress=progress
-    )
+    return scan_items(items, profile, cfg, faces_cfg, folder=str(root.resolve()), scan_id=scan_id, progress=progress)

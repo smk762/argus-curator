@@ -15,7 +15,7 @@ from pathlib import Path
 
 import structlog
 
-from argus_curator.models import ExportRequest, ExportResult, ImageResult, ScanSummary
+from argus_curator.models import MANIFEST_VERSION, ExportRequest, ExportResult, ImageResult, ScanSummary
 from argus_curator.selection import decide_selection
 
 logger = structlog.get_logger()
@@ -53,6 +53,7 @@ def write_manifest(
     with path.open("w", encoding="utf-8") as f:
         for r in selected:
             row = {
+                "manifest_version": MANIFEST_VERSION,
                 "rel_path": r.rel_path,
                 "abs_path": r.abs_path,
                 "target_profile": profile,
