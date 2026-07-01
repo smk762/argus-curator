@@ -14,14 +14,17 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
+import queue
+import threading
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
 try:
     from fastapi import FastAPI, HTTPException, Query
-    from fastapi.responses import Response
+    from fastapi.responses import Response, StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
@@ -190,6 +193,58 @@ def create_app(
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
         store.save(summary)
         return summary
+
+    @app.post("/scan/folder/stream")
+    async def scan_folder_stream(req: ScanRequest) -> StreamingResponse:
+        """Same as POST /scan/folder, but streams live progress over SSE.
+
+        Emits ``event: progress`` frames ({phase, done, total}) as the scan runs,
+        then a single ``event: complete`` frame carrying the full ScanSummary (the
+        identical payload the non-streaming endpoint returns), or ``event: error``.
+        """
+        folder = Path(req.folder)
+        if not folder.is_dir():
+            raise HTTPException(status_code=400, detail=f"Not a directory: {req.folder}")
+
+        # The scan is blocking CPU work, so it runs in a worker thread and hands
+        # events back through a thread-safe queue that the async generator drains.
+        events: queue.Queue[tuple[str, Any]] = queue.Queue()
+        _DONE = "__done__"
+
+        def on_progress(payload: dict[str, Any]) -> None:
+            events.put(("progress", payload))
+
+        def run_scan() -> None:
+            try:
+                summary = scanner.scan_folder(
+                    req.folder,
+                    req.target_profile,
+                    req.config,
+                    req.faces,
+                    progress=on_progress,
+                )
+                store.save(summary)
+                events.put(("complete", summary.model_dump(mode="json")))
+            except Exception as exc:  # surface as a stream error, not a 500
+                events.put(("error", {"detail": f"scan failed: {exc}"}))
+            finally:
+                events.put((_DONE, None))
+
+        worker = threading.Thread(target=run_scan, name="curator-scan", daemon=True)
+        worker.start()
+
+        async def event_stream() -> Any:
+            while True:
+                kind, payload = await asyncio.to_thread(events.get)
+                if kind == _DONE:
+                    break
+                yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/scan/{scan_id}", response_model=ScanSummary)
     async def get_scan(

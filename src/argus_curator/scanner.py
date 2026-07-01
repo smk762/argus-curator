@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import io
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 import imagehash
 import numpy as np
@@ -41,6 +43,20 @@ from argus_curator.models import (
 )
 
 logger = structlog.get_logger()
+
+# A progress sink: called with {"phase": str, "done": int, "total": int}.
+# Kept deliberately tolerant — any raised exception is swallowed so a flaky
+# consumer (e.g. a disconnected SSE client) can never abort the scan itself.
+ProgressFn = Callable[[dict[str, Any]], None]
+
+
+def _emit(progress: ProgressFn | None, phase: str, done: int, total: int) -> None:
+    if progress is None:
+        return
+    try:
+        progress({"phase": phase, "done": done, "total": total})
+    except Exception:  # pragma: no cover - never let reporting break a scan
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -337,16 +353,30 @@ def scan_items(
     *,
     folder: str = "",
     scan_id: str | None = None,
+    progress: ProgressFn | None = None,
 ) -> ScanSummary:
-    """Score, (optionally) face-cluster, and de-duplicate a batch of images."""
-    scan_id = scan_id or uuid.uuid4().hex
+    """Score, (optionally) face-cluster, and de-duplicate a batch of images.
 
+    When *progress* is supplied it is called with ``{phase, done, total}`` dicts
+    as the scan advances through its ``scoring`` -> ``faces`` -> ``clustering``
+    phases, so a caller can drive a live progress UI (see the SSE endpoint).
+    """
+    scan_id = scan_id or uuid.uuid4().hex
+    total = len(items)
+
+    # Phase 1: per-image scoring — the long pole, reported incrementally.
+    _emit(progress, "scoring", 0, total)
     results_by_rel: dict[str, ImageResult] = {}
+    done = 0
     with ThreadPoolExecutor(max_workers=max(1, cfg.max_workers)) as pool:
         futures = {pool.submit(_score_image, rel, abs_path, data, profile, cfg): rel for rel, abs_path, data in items}
         for fut in as_completed(futures):
             r = fut.result()
             results_by_rel[r.rel_path] = r
+            done += 1
+            # Throttle: every 5 images (and the final one) is plenty for a bar.
+            if done == total or done % 5 == 0:
+                _emit(progress, "scoring", done, total)
 
     results = [results_by_rel[rel] for rel, _, _ in items]
 
@@ -355,12 +385,16 @@ def scan_items(
     if faces_cfg.enabled:
         from argus_curator import faces as faces_mod
 
+        _emit(progress, "faces", 0, total)
         face_clusters = faces_mod.detect_and_cluster(results, items, faces_cfg)
         for r in results:
             finalize_score(r, profile, cfg, faces_known=True)
+        _emit(progress, "faces", total, total)
 
+    _emit(progress, "clustering", 0, total)
     _mark_duplicates(results, cfg)
     multi = _assign_clusters(results)
+    _emit(progress, "clustering", total, total)
 
     rejected = [r for r in results if not r.passed]
     passed = [r for r in results if r.passed]
@@ -391,8 +425,13 @@ def scan_folder(
     faces_cfg: FaceConfig | None = None,
     *,
     scan_id: str | None = None,
+    progress: ProgressFn | None = None,
 ) -> ScanSummary:
-    """Recursively scan all supported images under *folder*."""
+    """Recursively scan all supported images under *folder*.
+
+    Pass *progress* to receive ``{phase, done, total}`` updates (used by the
+    SSE endpoint to stream live scan progress to the browser).
+    """
     profile = profile or TargetProfile()
     cfg = cfg or ScanConfig()
     faces_cfg = faces_cfg or FaceConfig()
@@ -401,9 +440,13 @@ def scan_folder(
     if not root.is_dir():
         raise NotADirectoryError(f"Not a directory: {root}")
 
+    _emit(progress, "collecting", 0, 0)
     items = collect_images(root)
     logger.info("scan_folder_start", folder=str(root), count=len(items))
     if not items:
         logger.warning("scan_folder_empty", folder=str(root))
+    _emit(progress, "collecting", len(items), len(items))
 
-    return scan_items(items, profile, cfg, faces_cfg, folder=str(root.resolve()), scan_id=scan_id)
+    return scan_items(
+        items, profile, cfg, faces_cfg, folder=str(root.resolve()), scan_id=scan_id, progress=progress
+    )
