@@ -8,7 +8,16 @@ clustering. Emits a manifest that argus-lens captions verbatim — they share on
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+try:
+    # Written by hatch-vcs at build time (see pyproject [tool.hatch.build.hooks.vcs]).
+    from argus_curator._version import __version__
+except ImportError:  # running from a source checkout that hasn't been built
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        __version__ = version("argus-curator")
+    except PackageNotFoundError:
+        __version__ = "0.0.0+unknown"
 
 from argus_curator.models import (
     ExportRequest,

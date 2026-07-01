@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "argus-curator"
-version = "0.1.0"
+dynamic = ["version"]
 description = "LoRA-native dataset curation: training-suitability scoring, near-duplicate dedup, and identity-aware face clustering"
 readme = "README.md"
 license = "MIT"
@@ -70,6 +70,12 @@ argus-curator = "argus_curator.cli:app"
 
 [project.urls]
 Repository = "https://github.com/smk762/argus-curator"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/argus_curator/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/argus_curator"]
