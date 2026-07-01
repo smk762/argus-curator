@@ -29,10 +29,11 @@ from PIL import Image
 
 from argus_curator import __version__, export, scanner
 from argus_curator.faces import faces_available
-from argus_curator.models import ExportRequest, ExportResult, ScanRequest, ScanSummary
+from argus_curator.models import SUPPORTED_EXTS, ExportRequest, ExportResult, ScanRequest, ScanSummary
 from argus_curator.store import ScanStore
 
 THUMB_MAX = 384  # longest-edge px for /thumb webp output
+_COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing snappy)
 
 
 def _detectors() -> dict[str, bool]:
@@ -61,6 +62,62 @@ def _resolve_within(root: Path, rel: str) -> Path:
     if root_resolved not in candidate.parents and candidate != root_resolved:
         raise HTTPException(status_code=400, detail="path escapes the mount root")
     return candidate
+
+
+def _count_images(directory: Path, cap: int = _COUNT_CAP) -> int:
+    """Recursive count of supported images under *directory* (capped)."""
+    n = 0
+    try:
+        for p in directory.rglob("*"):
+            if p.suffix.lower() in SUPPORTED_EXTS and p.is_file():
+                n += 1
+                if n >= cap:
+                    break
+    except OSError:
+        pass
+    return n
+
+
+def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
+    """List sub-directories (with recursive image counts) under root/rel."""
+    base = _resolve_within(root, rel)
+    if not base.is_dir():
+        raise HTTPException(status_code=404, detail=f"not a directory: {rel or '.'}")
+
+    folders: list[dict[str, Any]] = []
+    direct_images = 0
+    try:
+        for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+            if entry.is_dir() and not entry.name.startswith("."):
+                sub_rel = str(Path(rel) / entry.name) if rel else entry.name
+                subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                folders.append(
+                    {
+                        "name": entry.name,
+                        "rel_path": sub_rel,
+                        "abs_path": str(entry.resolve()),
+                        "image_count": _count_images(entry),
+                        "subfolder_count": subfolders,
+                    }
+                )
+            elif entry.is_file() and entry.suffix.lower() in SUPPORTED_EXTS:
+                direct_images += 1
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"cannot read directory: {exc}") from exc
+
+    parent = None
+    if rel:
+        parent_path = str(Path(rel).parent)
+        parent = "" if parent_path == "." else parent_path
+
+    return {
+        "root": str(root.resolve()),
+        "path": rel,
+        "abs_path": str(base.resolve()),
+        "parent": parent,
+        "direct_image_count": direct_images,
+        "folders": folders,
+    }
 
 
 def create_app(
@@ -93,11 +150,28 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "service": "argus-curator", "version": __version__}
+        return {
+            "status": "ok",
+            "service": "argus-curator",
+            "version": __version__,
+            "source_root": str(Path(default_source).resolve()) if default_source else None,
+        }
 
     @app.get("/detectors")
     async def detectors() -> dict[str, bool]:
         return _detectors()
+
+    @app.get("/folders")
+    async def folders(
+        path: str = Query("", description="folder path relative to the mount root"),
+    ) -> dict[str, Any]:
+        """Browse Docker-mounted folders under the configured source root."""
+        if not default_source:
+            raise HTTPException(status_code=400, detail="no source root configured (set CURATOR_SOURCE_PATH)")
+        root = Path(default_source)
+        if not root.is_dir():
+            raise HTTPException(status_code=400, detail=f"source root is not a directory: {default_source}")
+        return await asyncio.to_thread(_browse_folders, root, path)
 
     @app.post("/scan/folder", response_model=ScanSummary)
     async def scan_folder(req: ScanRequest) -> ScanSummary:

@@ -109,6 +109,7 @@ argus-curator serve --cors --port 8101 --source-root /data/images
 |---|---|
 | `GET  /health` | Liveness |
 | `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime }` |
+| `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
 | `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount |

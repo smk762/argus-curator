@@ -24,6 +24,33 @@ def test_health(client: TestClient) -> None:
     assert resp.json()["service"] == "argus-curator"
 
 
+def test_folders_browse(dataset: Path, tmp_path: Path) -> None:
+    app = create_app(cache_dir=str(tmp_path / "c2"), source_root=str(dataset))
+    client = TestClient(app)
+
+    assert client.get("/health").json()["source_root"] == str(dataset.resolve())
+
+    root = client.get("/folders").json()
+    names = {f["name"] for f in root["folders"]}
+    assert {"personA", "personB"} <= names
+    assert root["parent"] is None
+
+    person_a = next(f for f in root["folders"] if f["name"] == "personA")
+    assert person_a["rel_path"] == "personA"
+    assert person_a["image_count"] >= 2  # recursive across s1/s2
+    assert person_a["subfolder_count"] == 2
+
+    sub = client.get("/folders", params={"path": "personA"}).json()
+    assert {f["name"] for f in sub["folders"]} == {"s1", "s2"}
+    assert sub["parent"] == ""
+
+    assert client.get("/folders", params={"path": "../../etc"}).status_code == 400
+
+
+def test_folders_requires_source_root(client: TestClient) -> None:
+    assert client.get("/folders").status_code == 400
+
+
 def test_detectors_keys(client: TestClient) -> None:
     resp = client.get("/detectors")
     assert resp.status_code == 200
