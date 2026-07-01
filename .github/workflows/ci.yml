@@ -11,47 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uvx ruff check src/ tests/
-      - run: uvx ruff format --check src/ tests/
-
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv venv --python ${{ matrix.python-version }}
-      - run: uv pip install -e ".[dev,server,cli]"
-      - run: uv run --no-sync pytest --tb=short -q
-      - name: Wire schema is in sync with the models
-        run: uv run --no-sync argus-curator schema --check
-
-  build:
-    runs-on: ubuntu-latest
-    needs: [lint, test]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-          retention-days: 14
+  ci:
+    uses: smk762/argus-ci/.github/workflows/python-ci.yml@v1
+    with:
+      test-extras: "dev,server,cli"
+      post-test: "uv run --no-sync argus-curator schema --check"
