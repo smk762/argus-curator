@@ -48,6 +48,9 @@ def scan(
     cluster_eps: float = Option(0.5, "--cluster-eps", help="Cosine-distance threshold for face clustering"),
     device: str = Option("auto", "--device", help="auto|cpu|cuda for face detection"),
     face_clusters: str | None = Option(None, "--face-clusters", help="Comma-separated cluster ids to export"),
+    face_poses: str | None = Option(
+        None, "--pose", help="Export only these primary-face poses (comma-separated: frontal,three_quarter,profile)"
+    ),
     csv_out: Path | None = Option(None, "--csv", help="Write the per-image CSV report here"),
     json_out: Path | None = Option(None, "--json", help="Write the full ScanSummary JSON here"),
     verbose: bool = Option(False, "--verbose", "-v", help="Print per-image details"),
@@ -93,6 +96,13 @@ def scan(
     typer.echo(f"  Similar clusters (>1): {summary.similar_clusters}  ({summary.duplicates} non-representative)")
     if summary.face_clusters:
         typer.echo(f"  Face identities:       {len(summary.face_clusters)}")
+    pose_counts: dict[str, int] = {}
+    for r in summary.results:
+        if r.primary_face_pose:
+            pose_counts[r.primary_face_pose] = pose_counts.get(r.primary_face_pose, 0) + 1
+    if pose_counts:
+        dist = "  ".join(f"{p}={n}" for p, n in sorted(pose_counts.items()))
+        typer.echo(f"  Primary-face pose:     {dist}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
@@ -103,7 +113,11 @@ def scan(
         typer.echo("\nPer-image (grouped by cluster, then score):")
         for r in sorted(summary.results, key=lambda x: (x.similar_group, -x.score)):
             tag = f"g{r.similar_group}" + ("*" if r.is_representative and r.group_size > 1 else "")
-            face = f" [{r.primary_face_cluster}]" if r.primary_face_cluster else ""
+            if r.primary_face_cluster:
+                pose = f" {r.primary_face_pose}" if r.primary_face_pose else ""
+                face = f" [{r.primary_face_cluster}{pose}]"
+            else:
+                face = ""
             typer.echo(f"  {r.score:.3f} {tag:>5}  {r.rel_path}{face}")
 
     # Persist so the result is reusable by the server / export-by-id.
@@ -125,6 +139,7 @@ def scan(
             keep_similar=keep_similar,
             max_keep=max_keep,
             face_clusters=[c.strip() for c in face_clusters.split(",")] if face_clusters else None,
+            face_poses=[p.strip() for p in face_poses.split(",")] if face_poses else None,
             write_manifest=dest is not None,
         )
         result = export_selection(summary, req)

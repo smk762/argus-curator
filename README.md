@@ -94,6 +94,10 @@ argus-curator scan /data/images \
 argus-curator scan /data/images --faces \
     --face-clusters face_1,face_2 --max-keep 200 --copy-to /data/curated
 
+# Pick a pose-balanced subset (head-on + 3/4 only, drop side profiles)
+argus-curator scan /data/images --faces \
+    --pose frontal,three_quarter --copy-to /data/curated
+
 # Which detectors are available?
 argus-curator detectors
 ```
@@ -137,6 +141,7 @@ argus-curator serve --cors --port 8101 --source-root /data/images
   "preserve_structure": true,
   "min_score": 0.6, "include_rejected": false, "keep_similar": false,
   "face_clusters": ["face_2"],      // optional: export only these identities
+  "face_poses": ["frontal", "three_quarter"],  // optional: export only these head poses
   "write_manifest": true,
   "caption_url": null               // optional: POST manifest to argus-lens
 }
@@ -157,7 +162,8 @@ Export writes a JSONL manifest (one row per selected image):
 
 ```jsonc
 { "rel_path": "...", "abs_path": "...", "target_profile": { ... },
-  "primary_face_cluster": "face_2", "score": 0.87, "similar_group": 3 }
+  "primary_face_cluster": "face_2", "primary_face_pose": "three_quarter",
+  "score": 0.87, "similar_group": 3 }
 ```
 
 argus-lens batch-captions this manifest — categories are already shared, so no

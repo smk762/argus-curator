@@ -85,6 +85,39 @@ def _to_bgr(data: bytes) -> np.ndarray | None:
         return None
 
 
+def classify_pose(yaw: float | None, cfg: FaceConfig) -> str | None:
+    """Bucket a head yaw (degrees) into frontal / three_quarter / profile.
+
+    Uses absolute yaw so left and right map to the same bucket; the signed
+    ``yaw`` is stored alongside if you need to distinguish direction.
+    """
+    if yaw is None:
+        return None
+    ay = abs(yaw)
+    if ay <= cfg.frontal_max_yaw:
+        return "frontal"
+    if ay <= cfg.profile_min_yaw:
+        return "three_quarter"
+    return "profile"
+
+
+def _extract_pose(face: object) -> tuple[float | None, float | None]:
+    """Return ``(yaw, pitch)`` in degrees from an InsightFace face, if present.
+
+    ``buffalo_l`` ships the 3D-68 landmark model, which populates
+    ``face.pose = [pitch, yaw, roll]``. Older packs may omit it.
+    """
+    pose_arr = getattr(face, "pose", None)
+    if pose_arr is None:
+        return None, None
+    try:
+        pitch = float(pose_arr[0])
+        yaw = float(pose_arr[1])
+    except (TypeError, ValueError, IndexError):
+        return None, None
+    return yaw, pitch
+
+
 def _centrality(bbox_xywh: list[float], w: int, h: int) -> float:
     """How central a face is (1 = dead centre) — used to pick the primary face."""
     if w <= 0 or h <= 0:
@@ -189,9 +222,18 @@ def detect_and_cluster(
                     continue
                 emb = emb / (np.linalg.norm(emb) + 1e-9)
             area = bbox[2] * bbox[3]
+            yaw, pitch = _extract_pose(face)
             flat_embeddings.append(np.asarray(emb, dtype=np.float32))
             flat_meta.append((rel, kept, bbox, det_score, _centrality(bbox, w, h), area))
-            r.faces.append(FaceDetection(bbox=bbox, det_score=round(det_score, 4)))
+            r.faces.append(
+                FaceDetection(
+                    bbox=bbox,
+                    det_score=round(det_score, 4),
+                    yaw=round(yaw, 2) if yaw is not None else None,
+                    pitch=round(pitch, 2) if pitch is not None else None,
+                    pose=classify_pose(yaw, cfg),
+                )
+            )
             kept += 1
         r.face_count = kept
 
@@ -225,7 +267,10 @@ def detect_and_cluster(
         )
         for i, f in enumerate(r.faces):
             f.primary = i == primary_i
-        r.primary_face_cluster = r.faces[primary_i].cluster_id
+        primary = r.faces[primary_i]
+        r.primary_face_cluster = primary.cluster_id
+        r.primary_face_pose = primary.pose
+        r.primary_face_yaw = primary.yaw
 
     clusters: list[FaceCluster] = []
     for cluster_id, members in cluster_members.items():

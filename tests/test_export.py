@@ -33,7 +33,15 @@ def test_manifest_rows_carry_target_profile(dataset: Path, tmp_path: Path) -> No
     lines = (dest / "manifest.jsonl").read_text().strip().splitlines()
     assert lines
     row = json.loads(lines[0])
-    assert set(row) == {"rel_path", "abs_path", "target_profile", "primary_face_cluster", "score", "similar_group"}
+    assert set(row) == {
+        "rel_path",
+        "abs_path",
+        "target_profile",
+        "primary_face_cluster",
+        "primary_face_pose",
+        "score",
+        "similar_group",
+    }
     assert row["target_profile"]["target_category"] == "identity"
 
 

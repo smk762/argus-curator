@@ -72,6 +72,7 @@ def decide_selection(
     """
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
+    pose_filter = set(req.face_poses) if req.face_poses else None
 
     eligible: list[ImageResult] = []
     for r in results:
@@ -83,6 +84,8 @@ def decide_selection(
             keep_reason[r.rel_path] = f"similar-to:{r.duplicate_of}"
         elif face_filter is not None and r.primary_face_cluster not in face_filter:
             keep_reason[r.rel_path] = "face-cluster-excluded"
+        elif pose_filter is not None and r.primary_face_pose not in pose_filter:
+            keep_reason[r.rel_path] = "face-pose-excluded"
         else:
             eligible.append(r)
 

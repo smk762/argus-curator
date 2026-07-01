@@ -16,6 +16,10 @@ from pydantic import BaseModel, Field
 TargetStyle = Literal["photo", "anime"]
 TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
 
+# Head-pose bucket of the primary face, derived from InsightFace yaw. Lets the UI
+# pick a balanced subset by orientation (head-on / three-quarter / side profile).
+FacePose = Literal["frontal", "three_quarter", "profile"]
+
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -82,6 +86,13 @@ class FaceConfig(BaseModel):
     # Compute device hint for the InsightFace runtime: "auto" | "cpu" | "cuda".
     device: str = "auto"
 
+    # Head-pose bucketing (absolute yaw, degrees) for the primary face:
+    #   |yaw| <= frontal_max_yaw            -> "frontal"   (head-on)
+    #   frontal_max_yaw < |yaw| <= profile_min_yaw -> "three_quarter"
+    #   |yaw| > profile_min_yaw             -> "profile"   (side)
+    frontal_max_yaw: float = 15.0
+    profile_min_yaw: float = 45.0
+
 
 # ---------------------------------------------------------------------------
 # Per-image result
@@ -95,6 +106,11 @@ class FaceDetection(BaseModel):
     det_score: float
     cluster_id: str | None = None
     primary: bool = False
+    # Head pose (degrees) from InsightFace, when available. Positive yaw = turned
+    # to one side; ``pose`` is the derived bucket (frontal / three_quarter / profile).
+    yaw: float | None = None
+    pitch: float | None = None
+    pose: FacePose | None = None
 
 
 class ImageResult(BaseModel):
@@ -130,6 +146,9 @@ class ImageResult(BaseModel):
     faces: list[FaceDetection] = Field(default_factory=list)
     face_count: int = 0
     primary_face_cluster: str | None = None
+    # Orientation of the primary face (for pose-balanced subset selection).
+    primary_face_pose: FacePose | None = None
+    primary_face_yaw: float | None = None
 
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
@@ -198,6 +217,8 @@ class ExportRequest(BaseModel):
 
     # Optional: export only images whose primary face is in these clusters.
     face_clusters: list[str] | None = None
+    # Optional: export only images whose primary-face pose is in these buckets.
+    face_poses: list[FacePose] | None = None
 
     write_manifest: bool = True
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).
