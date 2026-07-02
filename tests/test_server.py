@@ -94,6 +94,72 @@ def test_scan_then_paginate_then_export(client: TestClient, dataset: Path, tmp_p
     assert (dest / "manifest.jsonl").exists()
 
 
+def _parse_sse(body: str) -> list[tuple[str, dict]]:
+    """Parse ``event:``/``data:`` SSE frames into (event, payload) tuples."""
+    import json
+
+    events = []
+    for frame in body.strip().split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in frame.splitlines())
+        events.append((lines["event"], json.loads(lines["data"])))
+    return events
+
+
+def test_scan_stream_emits_progress_then_complete(client: TestClient, dataset: Path) -> None:
+    resp = client.post(
+        "/scan/folder/stream",
+        json={"folder": str(dataset), "faces": {"enabled": False}},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+
+    events = _parse_sse(resp.text)
+    kinds = [k for k, _ in events]
+    assert "progress" in kinds
+    assert kinds[-1] == "complete"
+
+    summary = events[-1][1]
+    assert summary["total"] == 5
+    # The completed scan is persisted and fetchable like a non-streamed one.
+    assert client.get(f"/scan/{summary['scan_id']}").status_code == 200
+
+
+def test_export_stream_emits_progress_then_complete(client: TestClient, dataset: Path, tmp_path: Path) -> None:
+    scan_id = client.post(
+        "/scan/folder",
+        json={"folder": str(dataset), "faces": {"enabled": False}},
+    ).json()["scan_id"]
+
+    dest = tmp_path / "out"
+    resp = client.post(
+        "/export/stream",
+        json={"scan_id": scan_id, "dest": str(dest), "mode": "copy", "min_score": 0.0},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+
+    events = _parse_sse(resp.text)
+    progress = [p for k, p in events if k == "progress"]
+    assert progress, "expected at least one progress frame"
+    assert all(p["phase"] == "transferring" for p in progress)
+    total = progress[0]["total"]
+    assert progress[-1]["done"] == total
+
+    kind, result = events[-1]
+    assert kind == "complete"
+    assert result["copied"] >= 1
+    assert result["copied"] + result["skipped"] == total
+    assert (dest / "manifest.jsonl").exists()
+
+
+def test_export_stream_unknown_scan_404(client: TestClient) -> None:
+    resp = client.post(
+        "/export/stream",
+        json={"scan_id": "does-not-exist", "dest": "/tmp/unused"},
+    )
+    assert resp.status_code == 404
+
+
 def test_unknown_scan_404(client: TestClient) -> None:
     assert client.get("/scan/does-not-exist").status_code == 404
 

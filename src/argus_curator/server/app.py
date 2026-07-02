@@ -307,4 +307,54 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"export failed: {exc}") from exc
 
+    @app.post("/export/stream")
+    async def run_export_stream(req: ExportRequest) -> StreamingResponse:
+        """Same as POST /export, but streams file-transfer progress over SSE.
+
+        Emits ``event: progress`` frames ({phase: "transferring", done, total})
+        as files are copied, then one ``event: complete`` frame carrying the
+        ExportResult, or ``event: error``.
+        """
+        if not req.scan_id and req.selection is None:
+            raise HTTPException(status_code=400, detail="export requires scan_id or inline selection")
+        summary = store.load(req.scan_id) if req.scan_id else None
+        if req.scan_id and summary is None:
+            raise HTTPException(status_code=404, detail=f"unknown scan_id: {req.scan_id}")
+        if summary is None:
+            raise HTTPException(
+                status_code=400,
+                detail="inline selection export requires a scan_id for the manifest target_profile",
+            )
+
+        events: queue.Queue[tuple[str, Any]] = queue.Queue()
+        _DONE = "__done__"
+
+        def on_progress(payload: dict[str, Any]) -> None:
+            events.put(("progress", payload))
+
+        def run() -> None:
+            try:
+                result = export.export_selection(summary, req, progress=on_progress)
+                events.put(("complete", result.model_dump(mode="json")))
+            except Exception as exc:
+                events.put(("error", {"detail": f"export failed: {exc}"}))
+            finally:
+                events.put((_DONE, None))
+
+        worker = threading.Thread(target=run, name="curator-export", daemon=True)
+        worker.start()
+
+        async def event_stream() -> Any:
+            while True:
+                kind, payload = await asyncio.to_thread(events.get)
+                if kind == _DONE:
+                    break
+                yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     return app

@@ -11,7 +11,9 @@ from __future__ import annotations
 import csv
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -19,6 +21,9 @@ from argus_curator.models import MANIFEST_VERSION, ExportRequest, ExportResult, 
 from argus_curator.selection import decide_selection
 
 logger = structlog.get_logger()
+
+# A progress sink: called with {"phase": str, "done": int, "total": int}.
+ProgressFn = Callable[[dict[str, Any]], None]
 
 MANIFEST_NAME = "manifest.jsonl"
 REPORT_NAME = "curation_report.csv"
@@ -147,8 +152,13 @@ def _post_manifest_to_lens(manifest_path: Path, caption_url: str) -> bool:
         return False
 
 
-def export_selection(summary: ScanSummary, req: ExportRequest) -> ExportResult:
-    """Select per the request, transfer files, and write the manifest/report."""
+def export_selection(summary: ScanSummary, req: ExportRequest, progress: ProgressFn | None = None) -> ExportResult:
+    """Select per the request, transfer files, and write the manifest/report.
+
+    When *progress* is supplied it is called with ``{phase, done, total}`` dicts
+    during the ``transferring`` phase (one update per file), so a caller can
+    drive a live progress bar (see the /export/stream SSE endpoint).
+    """
     results = summary.results
 
     if req.selection is not None:
@@ -161,21 +171,27 @@ def export_selection(summary: ScanSummary, req: ExportRequest) -> ExportResult:
     selected_rel = {r.rel_path for r in selected}
     dest_root = Path(req.dest)
 
+    total = len(selected)
+    if progress is not None:
+        progress({"phase": "transferring", "done": 0, "total": total})
+
     copied = 0
     skipped = 0
-    for r in selected:
+    for i, r in enumerate(selected):
         src = Path(r.abs_path)
         if not src.exists():
             logger.warning("export_source_missing", rel_path=r.rel_path)
             skipped += 1
-            continue
-        dst = _dest_path(dest_root, r, req.preserve_structure)
-        try:
-            _transfer_one(src, dst, req.mode)
-            copied += 1
-        except Exception as exc:
-            logger.warning("export_transfer_failed", rel_path=r.rel_path, error=str(exc))
-            skipped += 1
+        else:
+            dst = _dest_path(dest_root, r, req.preserve_structure)
+            try:
+                _transfer_one(src, dst, req.mode)
+                copied += 1
+            except Exception as exc:
+                logger.warning("export_transfer_failed", rel_path=r.rel_path, error=str(exc))
+                skipped += 1
+        if progress is not None:
+            progress({"phase": "transferring", "done": i + 1, "total": total})
 
     manifest_path: Path | None = None
     if req.write_manifest:
