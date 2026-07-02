@@ -14,6 +14,7 @@ actually enabled (``pip install argus-curator[faces]`` or ``[gpu]``).
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 
 import numpy as np
 import structlog
@@ -174,11 +175,17 @@ def detect_and_cluster(
     results: list[ImageResult],
     items: list[tuple[str, str, bytes]],
     cfg: FaceConfig,
+    progress: Callable[[int, int], None] | None = None,
 ) -> list[FaceCluster]:
     """Detect faces on passing images, cluster identities, mutate ``results``.
 
     Returns the dataset-wide list of :class:`FaceCluster`. Each result gets its
     ``faces`` list, ``face_count``, and ``primary_face_cluster`` populated.
+
+    When *progress* is supplied it is called ``progress(done, total)`` as the
+    per-image detection sweep advances (``total`` = passing images), so a caller
+    can drive a determinate progress bar for the long detection pass. The final
+    embedding-clustering step is a single batched call and is not subdivided.
     """
     if not cfg.enabled:
         return []
@@ -192,12 +199,17 @@ def detect_and_cluster(
     # (rel_path, face_index_within_image, bbox_xywh, det_score, centrality, area)
     flat_meta: list[tuple[str, int, list[float], float, float, float]] = []
 
-    for rel, r in result_by_rel.items():
-        if not r.passed:
-            continue
-        data = data_by_rel.get(rel)
-        if data is None:
-            continue
+    # Materialise the work list up front so we know the total for progress.
+    pending = [(rel, r) for rel, r in result_by_rel.items() if r.passed and data_by_rel.get(rel) is not None]
+    total = len(pending)
+    step = max(1, total // 100)  # throttle to ~100 updates over the sweep
+    if progress is not None:
+        progress(0, total)
+
+    for i, (rel, r) in enumerate(pending):
+        if progress is not None and i % step == 0:
+            progress(i, total)
+        data = data_by_rel[rel]
         bgr = _to_bgr(data)
         if bgr is None:
             continue
@@ -236,6 +248,9 @@ def detect_and_cluster(
             )
             kept += 1
         r.face_count = kept
+
+    if progress is not None:
+        progress(total, total)
 
     if not flat_embeddings:
         return []

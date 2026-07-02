@@ -385,11 +385,16 @@ def scan_items(
     if faces_cfg.enabled:
         from argus_curator import faces as faces_mod
 
-        _emit(progress, "faces", 0, total)
-        face_clusters = faces_mod.detect_and_cluster(results, items, faces_cfg)
+        # detect_and_cluster drives the "faces" phase itself (per-image sweep),
+        # so the browser gets a determinate bar instead of an endless spinner.
+        face_clusters = faces_mod.detect_and_cluster(
+            results,
+            items,
+            faces_cfg,
+            progress=(lambda done, total: _emit(progress, "faces", done, total)) if progress else None,
+        )
         for r in results:
             finalize_score(r, profile, cfg, faces_known=True)
-        _emit(progress, "faces", total, total)
 
     _emit(progress, "clustering", 0, total)
     _mark_duplicates(results, cfg)
