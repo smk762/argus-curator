@@ -1,18 +1,25 @@
 # Argus Curator
 
+[![PyPI](https://img.shields.io/pypi/v/argus-curator)](https://pypi.org/project/argus-curator/)
+[![Python](https://img.shields.io/pypi/pyversions/argus-curator)](https://pypi.org/project/argus-curator/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/smk762/argus-curator/actions/workflows/ci.yml/badge.svg)](https://github.com/smk762/argus-curator/actions/workflows/ci.yml)
+
 The LoRA data-prep front-end — curate by quality and by face, then caption with [argus-lens](https://github.com/smk762/argus-lens).
 
-`argus-curator` is the **curation stage** of the Argus suite. It decides *which
-images, of whom, at what quality* belong in a LoRA training set; argus-lens then
-decides *what's in each image*. They share one `TargetProfile`, so a manifest
-written here is captioned downstream with no remapping.
+`argus-curator` is the **curation stage** of the Argus suite. Upstream,
+[argus-quarry](https://github.com/smk762/argus-quarry) acquires provenance-clean
+images; curator decides *which images, of whom, at what quality* belong in a
+LoRA training set; argus-lens then decides *what's in each image*. Curator and
+lens share one `TargetProfile`, so a manifest written here is captioned
+downstream with no remapping.
 
 ```
-   argus-curator (:8101)        argus-lens (:8100)        imogen / kohya
-   ─ scan + score ─┐            ─ caption ─┐              ─ train ─
-   ─ face-cluster ─┤  manifest  ─ buckets ─┤   dataset    ─ LoRA  ─
-   ─ select ───────┴──────────► (identity/ ─┴──────────►  ───────►
-   ─ export ───────►            wardrobe/…)
+   argus-quarry               argus-curator (:8101)      argus-lens (:8100)      imogen / kohya
+   ─ download   ─┐            ─ scan + score ─┐          ─ caption ─┐            ─ train ─
+   ─ provenance ─┤  images    ─ face-cluster ─┤ manifest ─ buckets ─┤  dataset   ─ LoRA  ─
+   ─ verify ─────┴─────────►  ─ select ───────┴────────► (identity/ ─┴────────►  ───────►
+                              ─ export ───────►          wardrobe/…)
 ```
 
 ## Why not FiftyOne / fastdup / Immich?
@@ -118,6 +125,12 @@ argus-curator serve --cors --port 8101 --source-root /data/images
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
 | `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount |
 | `POST /export` | Structure-preserving transfer + manifest → `ExportResult` |
+| `POST /scan/folder/stream` | Same as `/scan/folder`, streaming live progress over SSE |
+| `POST /export/stream` | Same as `/export`, streaming per-file transfer progress over SSE |
+
+The `*/stream` variants emit `event: progress` frames (`{phase, done, total}`)
+while the work runs, then a single `event: complete` frame carrying the same
+payload the non-streaming endpoint returns (or `event: error`).
 
 `POST /scan/folder` body:
 
@@ -184,6 +197,12 @@ Scans are cached on disk (keyed by `scan_id`, default `~/.cache/argus_curator/sc
 override with `CURATOR_CACHE_DIR`). This is what makes paginated `GET /scan/{id}`
 and export-by-id work without recomputing.
 
+## Related projects
+
+- [**argus-quarry**](https://github.com/smk762/argus-quarry) — provenance-first acquisition of public-domain / CC0 portraits (the suite's input stage).
+- [**argus-lens**](https://github.com/smk762/argus-lens) — intent-aware, multi-model captioning (consumes the manifest this package exports).
+- [**argus-vision-demo**](https://github.com/smk762/argus-vision-demo) — the suite's Next.js web UI (its `/curate` view drives this server).
+
 ## License
 
-MIT — matches argus-lens.
+MIT — matches the rest of the Argus suite.
