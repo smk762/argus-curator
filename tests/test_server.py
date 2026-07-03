@@ -164,6 +164,109 @@ def test_unknown_scan_404(client: TestClient) -> None:
     assert client.get("/scan/does-not-exist").status_code == 404
 
 
+def _png_bytes() -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 30, 30)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.fixture
+def upload_setup(tmp_path: Path) -> tuple[TestClient, Path]:
+    """A client with a tmp source root, plus that root's path."""
+    root = tmp_path / "mount"
+    root.mkdir()
+    app = create_app(cache_dir=str(tmp_path / "cache"), source_root=str(root))
+    return TestClient(app), root
+
+
+def test_upload_happy_path(upload_setup: tuple[TestClient, Path]) -> None:
+    client, root = upload_setup
+    resp = client.post(
+        "/upload",
+        data={"folder": "uploads/session-1"},
+        files=[
+            ("files", ("a.png", _png_bytes(), "image/png")),
+            ("files", ("b.png", _png_bytes(), "image/png")),
+        ],
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"folder": "uploads/session-1", "saved": 2, "skipped": [], "errors": []}
+    assert (root / "uploads" / "session-1" / "a.png").is_file()
+    assert (root / "uploads" / "session-1" / "b.png").is_file()
+
+
+def test_upload_requires_source_root(client: TestClient) -> None:
+    resp = client.post(
+        "/upload",
+        data={"folder": "uploads"},
+        files=[("files", ("a.png", _png_bytes(), "image/png"))],
+    )
+    assert resp.status_code == 400
+
+
+def test_upload_folder_traversal_blocked(upload_setup: tuple[TestClient, Path]) -> None:
+    client, _root = upload_setup
+    resp = client.post(
+        "/upload",
+        data={"folder": "../escape"},
+        files=[("files", ("a.png", _png_bytes(), "image/png"))],
+    )
+    assert resp.status_code == 400
+
+
+def test_upload_filename_sanitized_to_basename(upload_setup: tuple[TestClient, Path]) -> None:
+    client, root = upload_setup
+    resp = client.post(
+        "/upload",
+        data={"folder": "uploads"},
+        files=[("files", ("../../sneaky.png", _png_bytes(), "image/png"))],
+    )
+    assert resp.status_code == 200
+    assert resp.json()["saved"] == 1
+    assert (root / "uploads" / "sneaky.png").is_file()
+    assert not (root.parent / "sneaky.png").exists()
+
+
+def test_upload_skips_non_images(upload_setup: tuple[TestClient, Path]) -> None:
+    client, root = upload_setup
+    resp = client.post(
+        "/upload",
+        data={"folder": "uploads"},
+        files=[
+            ("files", ("notes.txt", b"not an image", "text/plain")),
+            ("files", ("a.png", _png_bytes(), "image/png")),
+        ],
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["saved"] == 1
+    assert body["skipped"] == ["notes.txt"]
+    assert not (root / "uploads" / "notes.txt").exists()
+
+
+def test_upload_skips_existing_names(upload_setup: tuple[TestClient, Path]) -> None:
+    client, root = upload_setup
+    existing = root / "uploads"
+    existing.mkdir()
+    (existing / "a.png").write_bytes(b"original")
+
+    resp = client.post(
+        "/upload",
+        data={"folder": "uploads"},
+        files=[("files", ("a.png", _png_bytes(), "image/png"))],
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["saved"] == 0
+    assert body["skipped"] == ["a.png"]
+    assert (existing / "a.png").read_bytes() == b"original"  # not overwritten
+
+
 def test_thumb_path_traversal_blocked(client: TestClient, dataset: Path) -> None:
     summary = client.post(
         "/scan/folder",

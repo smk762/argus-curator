@@ -7,6 +7,7 @@ Routes (section 4 of the brief):
     POST /scan/folder      -> ScanSummary
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
+    POST /upload           -> save images into a folder under the source root
     POST /export           -> ExportResult
 """
 
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
     from fastapi.responses import Response, StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
@@ -289,6 +290,51 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"cannot render thumb: {exc}") from exc
         return Response(content=data, media_type="image/webp")
+
+    @app.post("/upload")
+    async def upload(
+        files: list[UploadFile] = File(..., description="image files to save"),
+        folder: str = Form(..., description="target folder relative to the source root"),
+    ) -> dict[str, Any]:
+        """Save uploaded images into a folder under the configured source root.
+
+        Non-image files and names that already exist in the target folder are
+        reported in ``skipped`` (existing files are never overwritten).
+        """
+        if not default_source:
+            raise HTTPException(status_code=400, detail="no source root configured (set CURATOR_SOURCE_PATH)")
+        root = Path(default_source)
+        if not root.is_dir():
+            raise HTTPException(status_code=400, detail=f"source root is not a directory: {default_source}")
+
+        target = _resolve_within(root, folder)
+        rel = target.relative_to(root.resolve()).as_posix()
+        rel = "" if rel == "." else rel
+        await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
+
+        saved = 0
+        skipped: list[str] = []
+        errors: list[dict[str, str]] = []
+        for item in files:
+            name = Path(item.filename or "").name  # basename only — no client-supplied paths
+            if not name:
+                errors.append({"name": item.filename or "", "detail": "missing filename"})
+                continue
+            if Path(name).suffix.lower() not in SUPPORTED_EXTS:
+                skipped.append(name)
+                continue
+            dest = target / name
+            if dest.exists():
+                skipped.append(name)
+                continue
+            try:
+                data = await item.read()
+                await asyncio.to_thread(dest.write_bytes, data)
+                saved += 1
+            except OSError as exc:
+                errors.append({"name": name, "detail": f"cannot save: {exc}"})
+
+        return {"folder": rel, "saved": saved, "skipped": skipped, "errors": errors}
 
     @app.post("/export", response_model=ExportResult)
     async def run_export(req: ExportRequest) -> ExportResult:

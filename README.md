@@ -124,6 +124,7 @@ argus-curator serve --cors --port 8101 --source-root /data/images
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
 | `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount |
+| `POST /upload` | Multipart image upload (`files` + `folder`) into a folder under the source root |
 | `POST /export` | Structure-preserving transfer + manifest → `ExportResult` |
 | `POST /scan/folder/stream` | Same as `/scan/folder`, streaming live progress over SSE |
 | `POST /export/stream` | Same as `/export`, streaming per-file transfer progress over SSE |
@@ -201,7 +202,7 @@ and export-by-id work without recomputing.
 
 - [**argus-quarry**](https://github.com/smk762/argus-quarry) — provenance-first acquisition of public-domain / CC0 portraits (the suite's input stage).
 - [**argus-lens**](https://github.com/smk762/argus-lens) — intent-aware, multi-model captioning (consumes the manifest this package exports).
-- [**argus-vision-demo**](https://github.com/smk762/argus-vision-demo) — the suite's Next.js web UI (its `/curate` view drives this server).
+- [**argus-studio**](https://github.com/smk762/argus-studio) — the suite's Next.js web UI (its `/curate` view drives this server).
 
 ## License
 
