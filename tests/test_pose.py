@@ -79,7 +79,7 @@ def test_report_and_manifest_include_pose_columns(tmp_path: Path) -> None:
         results=results,
     )
     manifest = tmp_path / "manifest.jsonl"
-    write_manifest(results, summary, manifest)
+    write_manifest(results, summary, manifest, {r.rel_path: r.rel_path for r in results})
     import json
 
     lines = [json.loads(line) for line in manifest.read_text().splitlines()]

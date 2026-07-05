@@ -37,6 +37,7 @@ def test_manifest_rows_carry_target_profile(dataset: Path, tmp_path: Path) -> No
         "manifest_version",
         "rel_path",
         "abs_path",
+        "exported_path",
         "target_profile",
         "primary_face_cluster",
         "primary_face_pose",
@@ -67,6 +68,45 @@ def test_duplicates_excluded_unless_keep_similar(dataset: Path) -> None:
     req_keep = ExportRequest(scan_id=summary.scan_id, dest="/tmp/unused", min_score=0.0, keep_similar=True)
     selected_keep, _ = decide_selection(summary.results, req_keep, summary.config.diversity_weight)
     assert dup.rel_path in {r.rel_path for r in selected_keep}
+
+
+def test_flattened_export_decollides_basenames(dataset: Path, tmp_path: Path) -> None:
+    """preserve_structure=False must not silently overwrite colliding basenames."""
+    summary = scan_folder(dataset)
+    dest = tmp_path / "flat"
+    colliding = ["personA/s1/img.png", "personA/s2/img.png"]
+    req = ExportRequest(
+        selection=colliding,
+        dest=str(dest),
+        mode="copy",
+        preserve_structure=False,
+    )
+    result = export_selection(summary, req)
+    assert result.copied == 2
+
+    rows = {
+        json.loads(line)["rel_path"]: json.loads(line)
+        for line in (dest / "manifest.jsonl").read_text().strip().splitlines()
+    }
+    assert set(rows) == set(colliding)
+
+    exported = {rows[rel]["exported_path"] for rel in colliding}
+    assert len(exported) == 2, "colliding basenames must map to distinct exported paths"
+    for rel in colliding:
+        out = dest / rows[rel]["exported_path"]
+        assert out.exists()
+        # Each exported file carries its own source's bytes — nothing was overwritten.
+        assert out.read_bytes() == Path(rows[rel]["abs_path"]).read_bytes()
+
+
+def test_flattened_export_unique_basename_keeps_plain_name(dataset: Path, tmp_path: Path) -> None:
+    summary = scan_folder(dataset)
+    dest = tmp_path / "flat"
+    req = ExportRequest(selection=["personA/s1/dup.png"], dest=str(dest), preserve_structure=False)
+    export_selection(summary, req)
+    assert (dest / "dup.png").exists()
+    row = json.loads((dest / "manifest.jsonl").read_text().strip())
+    assert row["exported_path"] == "dup.png"
 
 
 def test_symlink_mode(dataset: Path, tmp_path: Path) -> None:

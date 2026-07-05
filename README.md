@@ -175,10 +175,16 @@ persists the scan cache + InsightFace model downloads across rebuilds.
 Export writes a JSONL manifest (one row per selected image):
 
 ```jsonc
-{ "rel_path": "...", "abs_path": "...", "target_profile": { ... },
+{ "rel_path": "...", "abs_path": "...", "exported_path": "...",
+  "target_profile": { ... },
   "primary_face_cluster": "face_2", "primary_face_pose": "three_quarter",
   "score": 0.87, "similar_group": 3 }
 ```
+
+`exported_path` is the path actually written under the export root — consumers
+should use it rather than re-deriving a location from `rel_path`. Flattened
+exports (`preserve_structure: false`) de-collide duplicate basenames with a
+short hash suffix, so the two can differ.
 
 argus-lens batch-captions this manifest — categories are already shared, so no
 remapping. Set `caption_url` on the export request to POST it straight to lens

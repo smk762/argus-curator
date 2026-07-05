@@ -9,6 +9,7 @@ category remapping (section 8 of the brief).
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import shutil
 from collections.abc import Callable
@@ -29,10 +30,33 @@ MANIFEST_NAME = "manifest.jsonl"
 REPORT_NAME = "curation_report.csv"
 
 
-def _dest_path(dest_root: Path, r: ImageResult, preserve_structure: bool) -> Path:
+def _plan_dest_paths(selected: list[ImageResult], dest_root: Path, preserve_structure: bool) -> dict[str, Path]:
+    """Map each selected rel_path to its destination, de-colliding flattened basenames.
+
+    With ``preserve_structure=False`` two rel_paths can share a basename
+    (``a/IMG_0001.jpg`` + ``b/IMG_0001.jpg``); a naive flatten would silently
+    overwrite one with the other. Every member of a colliding basename group is
+    suffixed with a short hash of its rel_path (order-independent, so the same
+    selection always yields the same names).
+    """
     if preserve_structure:
-        return dest_root / r.rel_path
-    return dest_root / Path(r.rel_path).name
+        return {r.rel_path: dest_root / r.rel_path for r in selected}
+
+    by_name: dict[str, list[ImageResult]] = {}
+    for r in selected:
+        by_name.setdefault(Path(r.rel_path).name, []).append(r)
+
+    dests: dict[str, Path] = {}
+    for name, rows in by_name.items():
+        if len(rows) == 1:
+            dests[rows[0].rel_path] = dest_root / name
+        else:
+            logger.warning("export_basename_collision", basename=name, rel_paths=[r.rel_path for r in rows])
+            for r in rows:
+                p = Path(r.rel_path)
+                digest = hashlib.sha1(r.rel_path.encode("utf-8")).hexdigest()[:8]
+                dests[r.rel_path] = dest_root / f"{p.stem}-{digest}{p.suffix}"
+    return dests
 
 
 def _transfer_one(src: Path, dst: Path, mode: str) -> None:
@@ -51,8 +75,15 @@ def write_manifest(
     selected: list[ImageResult],
     summary: ScanSummary,
     path: Path,
+    exported_paths: dict[str, str],
 ) -> None:
-    """Write the JSONL handoff manifest (one selected image per line)."""
+    """Write the JSONL handoff manifest (one selected image per line).
+
+    ``exported_paths`` maps rel_path to the path actually written under the
+    export root (posix, relative). Consumers must use it instead of re-deriving
+    a destination from ``rel_path`` — flattened exports de-collide basenames,
+    so the two can differ.
+    """
     profile = summary.target_profile.model_dump()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
@@ -61,6 +92,7 @@ def write_manifest(
                 "manifest_version": MANIFEST_VERSION,
                 "rel_path": r.rel_path,
                 "abs_path": r.abs_path,
+                "exported_path": exported_paths[r.rel_path],
                 "target_profile": profile,
                 "primary_face_cluster": r.primary_face_cluster,
                 "primary_face_pose": r.primary_face_pose,
@@ -170,6 +202,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
 
     selected_rel = {r.rel_path for r in selected}
     dest_root = Path(req.dest)
+    dest_paths = _plan_dest_paths(selected, dest_root, req.preserve_structure)
 
     total = len(selected)
     if progress is not None:
@@ -183,7 +216,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
             logger.warning("export_source_missing", rel_path=r.rel_path)
             skipped += 1
         else:
-            dst = _dest_path(dest_root, r, req.preserve_structure)
+            dst = dest_paths[r.rel_path]
             try:
                 _transfer_one(src, dst, req.mode)
                 copied += 1
@@ -196,7 +229,8 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
     manifest_path: Path | None = None
     if req.write_manifest:
         manifest_path = dest_root / MANIFEST_NAME
-        write_manifest(selected, summary, manifest_path)
+        exported_rel = {rel: dst.relative_to(dest_root).as_posix() for rel, dst in dest_paths.items()}
+        write_manifest(selected, summary, manifest_path, exported_rel)
         write_report(results, keep_reason, selected_rel, dest_root / REPORT_NAME)
 
     captioned = False
