@@ -56,7 +56,7 @@ def _img(rel: str, pose: str | None, yaw: float | None) -> ImageResult:
 def test_report_and_manifest_include_pose_columns(tmp_path: Path) -> None:
     results = [_img("a.jpg", "frontal", 4.0), _img("b.jpg", "profile", 61.0)]
     report = tmp_path / "curation_report.csv"
-    write_report(results, {r.rel_path: "" for r in results}, {"a.jpg", "b.jpg"}, report)
+    write_report(results, {r.rel_path: "" for r in results}, {"a.jpg", "b.jpg"}, {}, report)
 
     rows = list(csv.DictReader(report.open()))
     assert "primary_face_pose" in rows[0]

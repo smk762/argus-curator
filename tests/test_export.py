@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 from argus_curator import scan_folder
-from argus_curator.export import export_selection
-from argus_curator.models import MANIFEST_VERSION, ExportRequest
+from argus_curator.export import _plan_dest_paths, export_selection
+from argus_curator.models import MANIFEST_VERSION, ExportRequest, ImageResult
 from argus_curator.selection import decide_selection
+
+
+def _res(rel: str) -> ImageResult:
+    return ImageResult(rel_path=rel, abs_path=f"/src/{rel}")
 
 
 def test_copy_preserves_structure_and_writes_manifest(dataset: Path, tmp_path: Path) -> None:
@@ -20,9 +25,11 @@ def test_copy_preserves_structure_and_writes_manifest(dataset: Path, tmp_path: P
     assert result.copied >= 1
     assert (dest / "manifest.jsonl").exists()
     assert (dest / "curation_report.csv").exists()
-    # Structure preserved: a copied keeper sits at its rel_path under dest.
+    # Structure preserved: a copied keeper sits at its rel_path under dest,
+    # and the result maps every transferred row to that same path.
     for rel in result.selected_rel_paths:
         assert (dest / rel).exists()
+    assert result.exported_paths == {rel: rel for rel in result.selected_rel_paths}
 
 
 def test_manifest_rows_carry_target_profile(dataset: Path, tmp_path: Path) -> None:
@@ -84,19 +91,21 @@ def test_flattened_export_decollides_basenames(dataset: Path, tmp_path: Path) ->
     result = export_selection(summary, req)
     assert result.copied == 2
 
-    rows = {
-        json.loads(line)["rel_path"]: json.loads(line)
-        for line in (dest / "manifest.jsonl").read_text().strip().splitlines()
-    }
+    lines = (dest / "manifest.jsonl").read_text().strip().splitlines()
+    rows = {row["rel_path"]: row for row in map(json.loads, lines)}
     assert set(rows) == set(colliding)
 
     exported = {rows[rel]["exported_path"] for rel in colliding}
     assert len(exported) == 2, "colliding basenames must map to distinct exported paths"
+    # De-collision suffixes every group member: nothing may sit at (or leak to)
+    # the plain colliding basename.
+    assert not (dest / "img.png").exists()
     for rel in colliding:
         out = dest / rows[rel]["exported_path"]
         assert out.exists()
         # Each exported file carries its own source's bytes — nothing was overwritten.
         assert out.read_bytes() == Path(rows[rel]["abs_path"]).read_bytes()
+    assert result.exported_paths == {rel: rows[rel]["exported_path"] for rel in colliding}
 
 
 def test_flattened_export_unique_basename_keeps_plain_name(dataset: Path, tmp_path: Path) -> None:
@@ -107,6 +116,42 @@ def test_flattened_export_unique_basename_keeps_plain_name(dataset: Path, tmp_pa
     assert (dest / "dup.png").exists()
     row = json.loads((dest / "manifest.jsonl").read_text().strip())
     assert row["exported_path"] == "dup.png"
+
+
+def test_plan_decollides_case_insensitive_basenames() -> None:
+    """Case-variant basenames are one directory entry on APFS/NTFS/exFAT dests."""
+    dests = _plan_dest_paths([_res("a/IMG.png"), _res("b/img.png")], preserve_structure=False)
+    assert len({d.casefold() for d in dests.values()}) == 2
+    # Both members of the case-folded collision group get suffixed.
+    assert all(d not in {"IMG.png", "img.png"} for d in dests.values())
+
+
+def test_plan_extends_digest_when_suffixed_name_is_taken() -> None:
+    """A selected file already named like a generated suffix must not be clobbered."""
+    taken = f"img-{hashlib.sha1(b'a/img.png').hexdigest()[:8]}.png"
+    sel = [_res("a/img.png"), _res("b/img.png"), _res(f"old/{taken}")]
+    dests = _plan_dest_paths(sel, preserve_structure=False)
+    assert len(set(dests.values())) == 3
+    assert dests[f"old/{taken}"] == taken  # unique basename keeps its plain name
+
+
+def test_skipped_sources_are_excluded_from_manifest(dataset: Path, tmp_path: Path) -> None:
+    """Manifest rows exist only for files actually written under dest."""
+    summary = scan_folder(dataset)
+    (dataset / "personA" / "s2" / "img.png").unlink()  # vanishes between scan and export
+    dest = tmp_path / "flat"
+    req = ExportRequest(
+        selection=["personA/s1/img.png", "personA/s2/img.png"],
+        dest=str(dest),
+        preserve_structure=False,
+    )
+    result = export_selection(summary, req)
+    assert (result.copied, result.skipped) == (1, 1)
+    assert set(result.exported_paths) == {"personA/s1/img.png"}
+
+    rows = [json.loads(line) for line in (dest / "manifest.jsonl").read_text().strip().splitlines()]
+    assert [r["rel_path"] for r in rows] == ["personA/s1/img.png"]
+    assert (dest / rows[0]["exported_path"]).exists()
 
 
 def test_symlink_mode(dataset: Path, tmp_path: Path) -> None:

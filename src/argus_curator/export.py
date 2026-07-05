@@ -1,7 +1,7 @@
 """Export — structure-preserving transfer + the JSONL manifest argus-lens consumes.
 
 Ported from imogen PR #14's ``_transfer`` / ``_write_csv`` and extended with the
-handoff manifest. The manifest is one JSON object per selected image carrying
+handoff manifest. The manifest is one JSON object per exported image carrying
 the shared ``target_profile``, so argus-lens can batch-caption it with no
 category remapping (section 8 of the brief).
 """
@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import json
 import shutil
+import unicodedata
+from collections import Counter
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import structlog
 
-from argus_curator.models import MANIFEST_VERSION, ExportRequest, ExportResult, ImageResult, ScanSummary
+from argus_curator.models import ExportRequest, ExportResult, ImageResult, ManifestRow, ScanSummary
 from argus_curator.selection import decide_selection
 
 logger = structlog.get_logger()
@@ -30,32 +31,64 @@ MANIFEST_NAME = "manifest.jsonl"
 REPORT_NAME = "curation_report.csv"
 
 
-def _plan_dest_paths(selected: list[ImageResult], dest_root: Path, preserve_structure: bool) -> dict[str, Path]:
-    """Map each selected rel_path to its destination, de-colliding flattened basenames.
+def _norm_name(name: str) -> str:
+    """Collision key for a basename.
+
+    Destination filesystems may be case-insensitive (APFS/NTFS/exFAT/SMB) or
+    Unicode-normalising, so names differing only in case or normal form must
+    count as one destination entry.
+    """
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _suffixed(rel_path: str, digest_len: int) -> str:
+    # surrogateescape keeps un-decodable filesystem bytes hashable; the hash is
+    # naming-only, so opt out of FIPS restrictions on sha1.
+    digest = hashlib.sha1(rel_path.encode("utf-8", "surrogateescape"), usedforsecurity=False).hexdigest()
+    p = PurePosixPath(rel_path)
+    return f"{p.stem}-{digest[:digest_len]}{p.suffix}"
+
+
+def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool) -> dict[str, str]:
+    """Map each selected rel_path to its destination relative to the export root.
 
     With ``preserve_structure=False`` two rel_paths can share a basename
     (``a/IMG_0001.jpg`` + ``b/IMG_0001.jpg``); a naive flatten would silently
-    overwrite one with the other. Every member of a colliding basename group is
-    suffixed with a short hash of its rel_path (order-independent, so the same
-    selection always yields the same names).
+    overwrite one with the other. Basenames are grouped under a case-folded,
+    Unicode-normalised key and every member of a colliding group is suffixed
+    with a short hash of its rel_path (order-independent, so the same selection
+    always yields the same names). The finished plan must then be collision-free
+    as a whole: a generated name that still clashes with anything (e.g. a
+    selected file literally named ``stem-<hash>.ext``) gets a longer digest, and
+    the export fails loudly rather than overwrite if uniqueness is unreachable.
     """
     if preserve_structure:
-        return {r.rel_path: dest_root / r.rel_path for r in selected}
+        return {r.rel_path: r.rel_path for r in selected}
 
-    by_name: dict[str, list[ImageResult]] = {}
+    by_name: dict[str, list[str]] = {}
     for r in selected:
-        by_name.setdefault(Path(r.rel_path).name, []).append(r)
+        by_name.setdefault(_norm_name(PurePosixPath(r.rel_path).name), []).append(r.rel_path)
 
-    dests: dict[str, Path] = {}
-    for name, rows in by_name.items():
-        if len(rows) == 1:
-            dests[rows[0].rel_path] = dest_root / name
+    dests: dict[str, str] = {}
+    digest_len: dict[str, int] = {}
+    for rels in by_name.values():
+        if len(rels) == 1:
+            dests[rels[0]] = PurePosixPath(rels[0]).name
         else:
-            logger.warning("export_basename_collision", basename=name, rel_paths=[r.rel_path for r in rows])
-            for r in rows:
-                p = Path(r.rel_path)
-                digest = hashlib.sha1(r.rel_path.encode("utf-8")).hexdigest()[:8]
-                dests[r.rel_path] = dest_root / f"{p.stem}-{digest}{p.suffix}"
+            logger.warning("export_basename_collision", basename=PurePosixPath(rels[0]).name, rel_paths=rels)
+            digest_len.update(dict.fromkeys(rels, 8))
+
+    pending = set(digest_len)
+    while pending:
+        for rel in pending:
+            dests[rel] = _suffixed(rel, digest_len[rel])
+        counts = Counter(_norm_name(d) for d in dests.values())
+        pending = {rel for rel in digest_len if counts[_norm_name(dests[rel])] > 1}
+        stuck = sorted(rel for rel in pending if digest_len[rel] >= 40)
+        if stuck:
+            raise ValueError(f"cannot de-collide flattened basenames for: {stuck}")
+        for rel in pending:
+            digest_len[rel] += 8
     return dests
 
 
@@ -72,48 +105,55 @@ def _transfer_one(src: Path, dst: Path, mode: str) -> None:
 
 
 def write_manifest(
-    selected: list[ImageResult],
+    exported: list[ImageResult],
     summary: ScanSummary,
     path: Path,
     exported_paths: dict[str, str],
 ) -> None:
-    """Write the JSONL handoff manifest (one selected image per line).
+    """Write the JSONL handoff manifest (one :class:`ManifestRow` per line).
 
-    ``exported_paths`` maps rel_path to the path actually written under the
-    export root (posix, relative). Consumers must use it instead of re-deriving
-    a destination from ``rel_path`` — flattened exports de-collide basenames,
-    so the two can differ.
+    ``exported`` must contain only images whose transfer actually succeeded —
+    the manifest is the captioner's work list and must not claim files that
+    are not on disk. ``exported_paths`` maps rel_path to the path written under
+    the export root (posix, relative); consumers must use it instead of
+    re-deriving a destination from ``rel_path`` — flattened exports de-collide
+    basenames, so the two can differ.
     """
-    profile = summary.target_profile.model_dump()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
-        for r in selected:
-            row = {
-                "manifest_version": MANIFEST_VERSION,
-                "rel_path": r.rel_path,
-                "abs_path": r.abs_path,
-                "exported_path": exported_paths[r.rel_path],
-                "target_profile": profile,
-                "primary_face_cluster": r.primary_face_cluster,
-                "primary_face_pose": r.primary_face_pose,
-                "score": round(r.score, 4),
-                "similar_group": r.similar_group,
-            }
-            f.write(json.dumps(row) + "\n")
+        for r in exported:
+            row = ManifestRow(
+                rel_path=r.rel_path,
+                abs_path=r.abs_path,
+                exported_path=exported_paths[r.rel_path],
+                target_profile=summary.target_profile,
+                primary_face_cluster=r.primary_face_cluster,
+                primary_face_pose=r.primary_face_pose,
+                score=round(r.score, 4),
+                similar_group=r.similar_group,
+            )
+            f.write(row.model_dump_json() + "\n")
 
 
 def write_report(
     results: list[ImageResult],
     keep_reason: dict[str, str],
     selected_rel: set[str],
+    exported_paths: dict[str, str],
     path: Path,
 ) -> None:
-    """Write the full per-image CSV report (HITL transparency, grouped by cluster)."""
+    """Write the full per-image CSV report (HITL transparency, grouped by cluster).
+
+    ``exported_paths`` fills the ``exported_path`` column for rows whose
+    transfer succeeded (empty otherwise), so a reviewer can map report rows to
+    the possibly de-collided files on disk without joining the manifest.
+    """
     fieldnames = [
         "rel_path",
         "score",
         "keep",
         "keep_reason",
+        "exported_path",
         "similar_group",
         "group_size",
         "is_representative",
@@ -143,6 +183,7 @@ def write_report(
                     "score": round(r.score, 4),
                     "keep": r.rel_path in selected_rel,
                     "keep_reason": keep_reason.get(r.rel_path, ""),
+                    "exported_path": exported_paths.get(r.rel_path, ""),
                     "similar_group": r.similar_group,
                     "group_size": r.group_size,
                     "is_representative": r.is_representative,
@@ -202,7 +243,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
 
     selected_rel = {r.rel_path for r in selected}
     dest_root = Path(req.dest)
-    dest_paths = _plan_dest_paths(selected, dest_root, req.preserve_structure)
+    dest_paths = _plan_dest_paths(selected, req.preserve_structure)
 
     total = len(selected)
     if progress is not None:
@@ -210,28 +251,33 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
 
     copied = 0
     skipped = 0
+    transferred: list[ImageResult] = []
     for i, r in enumerate(selected):
         src = Path(r.abs_path)
         if not src.exists():
             logger.warning("export_source_missing", rel_path=r.rel_path)
             skipped += 1
         else:
-            dst = dest_paths[r.rel_path]
+            dst = dest_root / dest_paths[r.rel_path]
             try:
                 _transfer_one(src, dst, req.mode)
                 copied += 1
+                transferred.append(r)
             except Exception as exc:
                 logger.warning("export_transfer_failed", rel_path=r.rel_path, error=str(exc))
                 skipped += 1
         if progress is not None:
             progress({"phase": "transferring", "done": i + 1, "total": total})
 
+    # Only files that actually landed under dest_root — the manifest and the
+    # result must not claim exports that never happened.
+    exported = {r.rel_path: dest_paths[r.rel_path] for r in transferred}
+
     manifest_path: Path | None = None
     if req.write_manifest:
         manifest_path = dest_root / MANIFEST_NAME
-        exported_rel = {rel: dst.relative_to(dest_root).as_posix() for rel, dst in dest_paths.items()}
-        write_manifest(selected, summary, manifest_path, exported_rel)
-        write_report(results, keep_reason, selected_rel, dest_root / REPORT_NAME)
+        write_manifest(transferred, summary, manifest_path, exported)
+        write_report(results, keep_reason, selected_rel, exported, dest_root / REPORT_NAME)
 
     captioned = False
     if req.caption_url and manifest_path is not None:
@@ -253,5 +299,6 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         dest=str(dest_root.resolve()) if dest_root.exists() else str(dest_root),
         mode=req.mode,
         selected_rel_paths=sorted(selected_rel),
+        exported_paths=exported,
         captioned=captioned,
     )
