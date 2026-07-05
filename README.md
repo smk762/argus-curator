@@ -172,13 +172,28 @@ persists the scan cache + InsightFace model downloads across rebuilds.
 
 ## Handoff to argus-lens
 
-Export writes a JSONL manifest (one row per selected image):
+Export writes a JSONL manifest (one row per **exported** image — rows exist
+only for files whose transfer actually succeeded):
 
 ```jsonc
-{ "rel_path": "...", "abs_path": "...", "target_profile": { ... },
+{ "manifest_version": "2.0", "rel_path": "...", "abs_path": "...",
+  "exported_path": "...", "target_profile": { ... },
   "primary_face_cluster": "face_2", "primary_face_pose": "three_quarter",
   "score": 0.87, "similar_group": 3 }
 ```
+
+The row shape is published in the wire schema as `ManifestRow`.
+`exported_path` is the path actually written under the export root — consumers
+must use it rather than re-deriving a location from `rel_path`. Flattened
+exports (`preserve_structure: false`) de-collide duplicate basenames with a
+short hash suffix, so the two can differ; collisions are detected
+case-insensitively (and Unicode-normalised) so the result is safe on
+case-insensitive destination filesystems, and the export fails loudly rather
+than overwrite if a unique name cannot be generated. The same
+`rel_path -> exported_path` mapping is returned as `exported_paths` on the
+export response, so it is available even with `write_manifest: false`. Note
+that each export call plans in isolation: re-exporting into the same
+destination overwrites files (and rewrites the manifest).
 
 argus-lens batch-captions this manifest — categories are already shared, so no
 remapping. Set `caption_url` on the export request to POST it straight to lens

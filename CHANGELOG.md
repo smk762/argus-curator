@@ -12,6 +12,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `POST /upload` server endpoint: multipart image upload into a folder under
   the configured source root (traversal-safe, non-image and duplicate-name
   files skipped, existing files never overwritten).
+- `ExportResult.exported_paths`: the `rel_path -> exported_path` mapping for
+  every successful transfer, so API callers get de-collided names even with
+  `write_manifest: false`. The CSV report gains a matching `exported_path`
+  column.
+
+### Changed
+
+- **Manifest 2.0** (breaking for consumers that derive destinations from
+  `rel_path`): rows are written only for files whose transfer succeeded and
+  carry `exported_path` — the real (possibly de-collided) path under the
+  export root, which consumers must use. The row shape is now published in the
+  wire schema as `ManifestRow`.
+
+### Fixed
+
+- Flattened exports (`preserve_structure: false`) no longer silently overwrite
+  basename collisions: collision detection is case-insensitive and
+  Unicode-normalised (safe on APFS/NTFS/exFAT destinations), generated names
+  are checked against the whole plan (a clash with a pre-suffixed file extends
+  the digest), and the export fails loudly if a unique name cannot be
+  generated.
 
 ## [0.1.0] - 2026-07-02
 

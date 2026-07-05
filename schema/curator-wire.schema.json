@@ -149,6 +149,13 @@
           "title": "Dest",
           "type": "string"
         },
+        "exported_paths": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Exported Paths",
+          "type": "object"
+        },
         "manifest_path": {
           "anyOf": [
             {
@@ -511,6 +518,78 @@
         "abs_path"
       ],
       "title": "ImageResult",
+      "type": "object"
+    },
+    "ManifestRow": {
+      "description": "One line of the JSONL handoff manifest (written by ``export.write_manifest``).\n\n``exported_path`` is the path actually written under the export root\n(posix, relative to it). Consumers must use it instead of re-deriving a\ndestination from ``rel_path`` \u2014 flattened exports de-collide basenames, so\nthe two can differ. Rows exist only for files whose transfer succeeded.",
+      "properties": {
+        "abs_path": {
+          "title": "Abs Path",
+          "type": "string"
+        },
+        "exported_path": {
+          "title": "Exported Path",
+          "type": "string"
+        },
+        "manifest_version": {
+          "default": "2.0",
+          "title": "Manifest Version",
+          "type": "string"
+        },
+        "primary_face_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Face Cluster"
+        },
+        "primary_face_pose": {
+          "anyOf": [
+            {
+              "enum": [
+                "frontal",
+                "three_quarter",
+                "profile"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Face Pose"
+        },
+        "rel_path": {
+          "title": "Rel Path",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "similar_group": {
+          "title": "Similar Group",
+          "type": "integer"
+        },
+        "target_profile": {
+          "$ref": "#/$defs/TargetProfile"
+        }
+      },
+      "required": [
+        "rel_path",
+        "abs_path",
+        "exported_path",
+        "target_profile",
+        "score",
+        "similar_group"
+      ],
+      "title": "ManifestRow",
       "type": "object"
     },
     "ScanConfig": {

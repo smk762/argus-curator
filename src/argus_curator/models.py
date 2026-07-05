@@ -23,9 +23,12 @@ FacePose = Literal["frontal", "three_quarter", "profile"]
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 # Version of the JSONL handoff manifest argus-lens consumes. Bump on any
-# breaking change to the per-row shape; every manifest row carries it so a
-# consumer can refuse an incompatible manifest instead of misreading it.
-MANIFEST_VERSION = "1.0"
+# breaking change to the per-row shape or semantics; every manifest row carries
+# it so a consumer can refuse an incompatible manifest instead of misreading it.
+# 2.0: rows exist only for files actually transferred and carry exported_path —
+# the real path under the export root, which flattened exports de-collide.
+# Consumers must use exported_path instead of deriving locations from rel_path.
+MANIFEST_VERSION = "2.0"
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +233,26 @@ class ExportRequest(BaseModel):
     caption_url: str | None = None
 
 
+class ManifestRow(BaseModel):
+    """One line of the JSONL handoff manifest (written by ``export.write_manifest``).
+
+    ``exported_path`` is the path actually written under the export root
+    (posix, relative to it). Consumers must use it instead of re-deriving a
+    destination from ``rel_path`` — flattened exports de-collide basenames, so
+    the two can differ. Rows exist only for files whose transfer succeeded.
+    """
+
+    manifest_version: str = MANIFEST_VERSION
+    rel_path: str
+    abs_path: str
+    exported_path: str
+    target_profile: TargetProfile
+    primary_face_cluster: str | None = None
+    primary_face_pose: FacePose | None = None
+    score: float
+    similar_group: int
+
+
 class ExportResult(BaseModel):
     manifest_path: str | None = None
     copied: int
@@ -237,6 +260,10 @@ class ExportResult(BaseModel):
     dest: str
     mode: str
     selected_rel_paths: list[str] = Field(default_factory=list)
+    # rel_path -> path actually written under dest (posix, relative), only for
+    # transfers that succeeded — the same mapping the manifest rows carry, so
+    # API callers get the de-collided names even with write_manifest=false.
+    exported_paths: dict[str, str] = Field(default_factory=dict)
     captioned: bool = False
 
 
@@ -246,8 +273,8 @@ class ExportResult(BaseModel):
 
 # The models that make up the public HTTP/manifest contract. Everything a
 # consumer (argus-lens, the frontend) needs to speak to the curator is reachable
-# from these four via their nested $defs.
-WIRE_MODELS: tuple[type[BaseModel], ...] = (ScanRequest, ScanSummary, ExportRequest, ExportResult)
+# from these via their nested $defs — including the manifest row itself.
+WIRE_MODELS: tuple[type[BaseModel], ...] = (ScanRequest, ScanSummary, ExportRequest, ExportResult, ManifestRow)
 
 
 def wire_schema() -> dict:
