@@ -120,12 +120,24 @@ Request-supplied paths are treated as untrusted: scan folders resolve under
 `--source-root` (env: `ARGUS_CURATOR_SCAN_ROOT` / `CURATOR_SOURCE_PATH`) and
 export destinations under `--export-root` (`ARGUS_CURATOR_EXPORT_ROOT` /
 `CURATOR_EXPORT_PATH`). Traversal escapes are refused, and scan/export refuse
-outright when their root is not configured. The destructive `mode: "move"` is
+outright when their root is not configured. Both roots are needed to export:
+the destination resolves under the export root, and the scan being exported
+must itself lie under the source root — a `scan_id` is data from a store the
+CLI also writes to, so its folder is re-checked rather than trusted (the same
+check applies to `/thumb?scan_id=`). The destructive `mode: "move"` is
 rejected unless the server is started with `--allow-move`
 (`CURATOR_ALLOW_MOVE=1`). `--cors` allows only the localhost dev frontend
 (:3000); allow-list other origins with `--cors-origin <origin>`
 (`CURATOR_CORS_ORIGINS`), or use `--cors-any` for a credential-less wildcard
-on public demos.
+on public demos. A literal `*` in the allow-list is treated as `--cors-any`
+(wildcard without credentials), never as origin reflection.
+
+CORS is not a write boundary — `POST /upload` sends `multipart/form-data`, which
+browsers deliver with no preflight — so state-changing requests are additionally
+gated on `Origin`: it must be absent (curl, the CLI, server-to-server),
+same-origin, or on the allow-list, else 403. `--cors-any` therefore permits
+anonymous reads from anywhere but no cross-site writes; name an origin with
+`--cors-origin` to let it write.
 
 | Route | Description |
 |---|---|

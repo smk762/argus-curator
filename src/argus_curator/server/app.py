@@ -25,7 +25,9 @@ from typing import Any
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-    from fastapi.responses import Response, StreamingResponse
+    from fastapi.responses import JSONResponse, Response, StreamingResponse
+    from starlette.datastructures import Headers
+    from starlette.types import ASGIApp, Receive, Scope, Send
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
@@ -44,6 +46,62 @@ _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing sn
 _LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 _TRUTHY = {"1", "true", "yes", "on"}
+
+# Methods that change server state, and so must not be drivable by a page the
+# user merely happens to be visiting.
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+class CrossSiteWriteGuard:
+    """Refuse state-changing requests from origins that are not trusted.
+
+    CORS is not a write boundary. ``POST /upload`` takes ``multipart/form-data``
+    — a CORS-safelisted content type — so a browser sends it with **no
+    preflight**: any page the user visits can drive it, and the same-origin
+    policy only stops that page from *reading* the reply. The write still lands.
+    Since the server has no auth and is commonly bound on localhost or a LAN
+    address the attacker's own server cannot reach, that is enough to poison a
+    dataset (or, via ``/export``, move files about).
+
+    So unsafe methods are gated on ``Origin`` here, ahead of the routes:
+
+    * absent -> allowed. Non-browser clients (curl, the CLI, server-to-server)
+      never send it, and browsers always do for cross-origin state changes.
+    * same-origin as the request -> allowed, so a UI proxied onto this host
+      keeps working without being named in the CORS allow-list.
+    * in *trusted_origins* -> allowed. That is the operator's own allow-list.
+    * anything else -> 403.
+
+    This is deliberately a pure ASGI middleware rather than
+    ``BaseHTTPMiddleware``: it must not wrap or buffer the SSE responses the
+    streaming endpoints return.
+    """
+
+    def __init__(self, app: ASGIApp, trusted_origins: list[str]) -> None:
+        self.app = app
+        self.trusted = set(trusted_origins)
+
+    def _allowed(self, origin: str, headers: Headers) -> bool:
+        if origin in self.trusted:
+            return True
+        # Compare host:port rather than the full origin: behind a TLS-terminating
+        # proxy the app sees http:// while the browser reports https://, and a
+        # same-host request is same-origin for our purposes either way.
+        host = headers.get("host")
+        return bool(host) and origin.partition("://")[2] == host
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["method"] in _UNSAFE_METHODS:
+            headers = Headers(scope=scope)
+            origin = headers.get("origin")
+            if origin is not None and not self._allowed(origin, headers):
+                response = JSONResponse(
+                    {"detail": f"cross-site {scope['method']} from origin {origin} is not allowed"},
+                    status_code=403,
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 def _detectors() -> dict[str, bool]:
@@ -67,11 +125,25 @@ def _detectors() -> dict[str, bool]:
 
 def _resolve_within(root: Path, rel: str) -> Path:
     """Resolve ``rel`` under ``root`` and refuse path traversal escapes."""
-    candidate = (root / rel).resolve()
-    root_resolved = root.resolve()
+    try:
+        candidate = (root / rel).resolve()
+        root_resolved = root.resolve()
+    except (ValueError, OSError) as exc:
+        # e.g. an embedded NUL byte — a malformed path is a client error, not a
+        # 500 with a traceback from the security-critical resolve step.
+        raise HTTPException(status_code=400, detail="invalid path") from exc
     if root_resolved not in candidate.parents and candidate != root_resolved:
         raise HTTPException(status_code=400, detail="path escapes the mount root")
     return candidate
+
+
+def _is_within(root: Path, candidate: Path) -> bool:
+    """True when *candidate* is *root* or lies under it (both resolved)."""
+    try:
+        candidate, root = candidate.resolve(), root.resolve()
+    except (ValueError, OSError):
+        return False
+    return candidate == root or root in candidate.parents
 
 
 def _count_images(directory: Path, cap: int = _COUNT_CAP) -> int:
@@ -155,20 +227,34 @@ def create_app(
 
     if cors_origins is None and (env_origins := os.environ.get("CURATOR_CORS_ORIGINS")):
         cors_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+
+    # A literal wildcard is only honoured by browsers without credentials; with
+    # allow_credentials=True Starlette reflects any Origin back, which defeats
+    # the allow-list entirely. An explicit "*" in the allow-list means the same
+    # thing as --cors-any, so it takes the same safe path rather than silently
+    # becoming origin reflection.
+    wildcard = cors_allow_any or bool(cors_origins and "*" in cors_origins)
+    # Origins the operator has actually named. The wildcard grants anonymous
+    # READ access from anywhere, but never a cross-site write: a public demo
+    # must not double as an upload target for any page its users visit. To
+    # allow cross-site writes, name the origin with --cors-origin.
+    trusted_origins: list[str] = [] if wildcard else list(cors_origins or (_LOCALHOST_ORIGINS if cors else []))
+
+    # Registered before CORSMiddleware so CORS ends up the outer layer
+    # (add_middleware inserts at 0) and can still annotate a rejected write.
+    # That matters under the wildcard, where CORS would allow the origin a read
+    # but the guard refuses the write: the page gets a readable 403 rather than
+    # an opaque CORS error. For a non-allow-listed origin CORS correctly adds
+    # nothing — it must not advertise itself to an origin it does not trust.
+    app.add_middleware(CrossSiteWriteGuard, trusted_origins=trusted_origins)
+
     if cors or cors_origins or cors_allow_any:
         from fastapi.middleware.cors import CORSMiddleware
 
-        if cors_allow_any:
-            # A literal wildcard is only honoured by browsers without
-            # credentials; with allow_credentials=True Starlette would reflect
-            # any Origin back, which defeats the allow-list entirely.
-            origins, credentials = ["*"], False
-        else:
-            origins, credentials = cors_origins or _LOCALHOST_ORIGINS, True
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=origins,
-            allow_credentials=credentials,
+            allow_origins=["*"] if wildcard else (cors_origins or _LOCALHOST_ORIGINS),
+            allow_credentials=not wildcard,
             allow_methods=["*"],
             allow_headers=["*"],
         )
@@ -189,6 +275,24 @@ def create_app(
         if not root.is_dir():
             raise HTTPException(status_code=400, detail=f"{kind} root is not a directory: {configured}")
         return root
+
+    def _scan_root_or_400(summary: ScanSummary) -> Path:
+        """The scan's own folder, once proven to lie under the source root.
+
+        A summary is *data* — it comes from the on-disk store, which the CLI
+        (unconstrained by design) and pre-containment server builds both write
+        to. Trusting ``summary.folder`` as a containment root would let any
+        cached scan of an arbitrary directory read or export files the source
+        root is supposed to fence off, so it is re-checked against config here.
+        """
+        root = _root_or_400(default_source, "source", "CURATOR_SOURCE_PATH")
+        folder = Path(summary.folder)
+        if not _is_within(root, folder):
+            raise HTTPException(
+                status_code=400,
+                detail=f"scan {summary.scan_id} lies outside the source root",
+            )
+        return folder
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -312,11 +416,9 @@ def create_app(
             summary = store.load(scan_id)
             if summary is None:
                 raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
-            root = Path(summary.folder)
-        elif default_source:
-            root = Path(default_source)
+            root = _scan_root_or_400(summary)
         else:
-            raise HTTPException(status_code=400, detail="no scan_id and no configured source root")
+            root = _root_or_400(default_source, "source", "CURATOR_SOURCE_PATH")
 
         target = _resolve_within(root, path)
         if not target.is_file():
@@ -379,9 +481,10 @@ def create_app(
     def _validate_export(req: ExportRequest) -> tuple[ScanSummary, ExportRequest]:
         """Shared gate for both export endpoints.
 
-        Loads the scan, rejects ``mode="move"`` unless the server allows it,
-        and rewrites ``req.dest`` to the containment-checked absolute path
-        under the export root before anything touches the filesystem.
+        Loads the scan, refuses one whose folder is outside the source root,
+        rejects ``mode="move"`` unless the server allows it, and rewrites
+        ``req.dest`` to the containment-checked absolute path under the export
+        root — all before anything touches the filesystem.
         """
         if not req.scan_id and req.selection is None:
             raise HTTPException(status_code=400, detail="export requires scan_id or inline selection")
@@ -393,6 +496,9 @@ def create_app(
                 status_code=400,
                 detail="inline selection export requires a scan_id for the manifest target_profile",
             )
+        # The scan's images are read straight from `abs_path`, so a scan rooted
+        # outside the source root would export files the root should fence off.
+        _scan_root_or_400(summary)
         if req.mode == "move" and not allow_move:
             raise HTTPException(
                 status_code=403,

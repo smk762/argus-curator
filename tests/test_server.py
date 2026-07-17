@@ -311,6 +311,10 @@ def test_scan_folder_traversal_blocked(contained: tuple[TestClient, Path]) -> No
         for endpoint in ("/scan/folder", "/scan/folder/stream"):
             resp = client.post(endpoint, json={"folder": folder, "faces": {"enabled": False}})
             assert resp.status_code == 400, (endpoint, folder)
+            # Assert the containment message specifically: a bare 400 would also
+            # be produced by the is_dir() check, so this entry would still pass
+            # if the escape check were dropped or reordered after it.
+            assert "escapes the mount root" in resp.json()["detail"], (endpoint, folder)
 
 
 def test_scan_accepts_absolute_path_inside_root(contained: tuple[TestClient, Path], dataset: Path) -> None:
@@ -338,6 +342,7 @@ def test_export_dest_traversal_blocked(contained: tuple[TestClient, Path]) -> No
         for endpoint in ("/export", "/export/stream"):
             resp = client.post(endpoint, json={"scan_id": scan_id, "dest": dest, "min_score": 0.0})
             assert resp.status_code == 400, (endpoint, dest)
+            assert "escapes the mount root" in resp.json()["detail"], (endpoint, dest)
 
 
 def test_export_move_rejected_by_default(contained: tuple[TestClient, Path]) -> None:
@@ -398,3 +403,187 @@ def test_cors_wildcard_is_credentialless(tmp_path: Path) -> None:
     resp = client.get("/health", headers={"Origin": "https://anywhere.example"})
     assert resp.headers.get("access-control-allow-origin") == "*"
     assert "access-control-allow-credentials" not in resp.headers
+
+
+@pytest.mark.parametrize("via", ["arg", "env"])
+def test_cors_explicit_star_never_reflects_with_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, via: str
+) -> None:
+    """A "*" in the allow-list must degrade to the credential-less wildcard.
+
+    Taken literally with allow_credentials=True, Starlette reflects whatever
+    Origin it is sent — the exact hole the allow-list exists to close.
+    """
+    if via == "env":
+        monkeypatch.setenv("CURATOR_CORS_ORIGINS", "*")
+        app = create_app(cache_dir=str(tmp_path / "cache"))
+    else:
+        app = create_app(cors_origins=["*"], cache_dir=str(tmp_path / "cache"))
+    resp = TestClient(app).get("/health", headers={"Origin": "https://evil.example"})
+    assert resp.headers.get("access-control-allow-origin") != "https://evil.example"
+    assert resp.headers.get("access-control-allow-origin") == "*"
+    assert "access-control-allow-credentials" not in resp.headers
+
+
+def test_cors_origins_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CURATOR_CORS_ORIGINS is the deployment knob — cover its parsing."""
+    monkeypatch.setenv("CURATOR_CORS_ORIGINS", " https://a.example , https://b.example ")
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache")))
+    for origin in ("https://a.example", "https://b.example"):
+        resp = client.get("/health", headers={"Origin": origin})
+        assert resp.headers.get("access-control-allow-origin") == origin
+    evil = client.get("/health", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in evil.headers
+
+
+# ---------------------------------------------------------------------------
+# A cached scan is data, not config: its folder must be re-checked (issue #3
+# follow-up). The CLI and pre-containment builds both write to the same store.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def outside_scan(dataset: Path, tmp_path: Path) -> tuple[TestClient, str, Path]:
+    """A client rooted at `dataset`, plus a cached scan of a dir outside it."""
+    from argus_curator import scanner
+    from argus_curator.store import ScanStore
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _noise_image_file(outside / "private.png")
+
+    cache = tmp_path / "cache"
+    summary = scanner.scan_folder(outside)
+    ScanStore(str(cache)).save(summary)
+
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    app = create_app(cache_dir=str(cache), source_root=str(dataset), export_root=str(exports))
+    return TestClient(app), summary.scan_id, outside
+
+
+def _noise_image_file(path: Path) -> None:
+    import numpy as np
+    from PIL import Image
+
+    rng = np.random.default_rng(9)
+    Image.fromarray(rng.integers(0, 255, size=(768, 768, 3), dtype=np.uint8), "RGB").save(path)
+
+
+def test_thumb_rejects_scan_outside_source_root(outside_scan: tuple[TestClient, str, Path]) -> None:
+    client, scan_id, _outside = outside_scan
+    resp = client.get("/thumb", params={"path": "private.png", "scan_id": scan_id})
+    assert resp.status_code == 400
+    assert "outside the source root" in resp.json()["detail"]
+
+
+def test_export_rejects_scan_outside_source_root(outside_scan: tuple[TestClient, str, Path]) -> None:
+    client, scan_id, _outside = outside_scan
+    for endpoint in ("/export", "/export/stream"):
+        resp = client.post(endpoint, json={"scan_id": scan_id, "dest": "out", "min_score": 0.0})
+        assert resp.status_code == 400, endpoint
+        assert "outside the source root" in resp.json()["detail"], endpoint
+
+
+def test_thumb_still_serves_scan_inside_source_root(contained: tuple[TestClient, Path]) -> None:
+    """Positive control: the legitimate scan_id path keeps working."""
+    client, _exports = contained
+    summary = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    rel = summary["results"][0]["rel_path"]
+    resp = client.get("/thumb", params={"path": rel, "scan_id": summary["scan_id"]})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/webp"
+
+
+def test_malformed_path_is_400_not_500(contained: tuple[TestClient, Path]) -> None:
+    """A NUL byte makes resolve() raise ValueError — a client error, not a 500."""
+    client, _exports = contained
+    resp = client.post("/scan/folder", json={"folder": "a\x00b", "faces": {"enabled": False}})
+    assert resp.status_code == 400
+    assert "invalid path" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-site writes: CORS is not a write boundary. /upload takes multipart —
+# a safelisted content type — so a browser sends it with no preflight.
+# ---------------------------------------------------------------------------
+
+
+def _upload(client: TestClient, **kwargs: object) -> object:
+    return client.post(
+        "/upload",
+        data={"folder": "uploads"},
+        files=[("files", ("evil.png", _png_bytes(), "image/png"))],
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_upload_from_evil_origin_is_refused(upload_setup: tuple[TestClient, Path]) -> None:
+    """The CSRF repro: a page on evil.example driving /upload with no preflight."""
+    client, root = upload_setup
+    resp = _upload(client, headers={"Origin": "https://evil.example"})
+    assert resp.status_code == 403  # type: ignore[attr-defined]
+    assert "cross-site" in resp.json()["detail"]  # type: ignore[attr-defined]
+    # The point of the gate: nothing was written.
+    assert not (root / "uploads" / "evil.png").exists()
+
+
+def test_upload_without_origin_still_works(upload_setup: tuple[TestClient, Path]) -> None:
+    """Non-browser clients (curl, the CLI) send no Origin and must be unaffected."""
+    client, root = upload_setup
+    resp = _upload(client)
+    assert resp.status_code == 200  # type: ignore[attr-defined]
+    assert (root / "uploads" / "evil.png").is_file()
+
+
+def test_upload_from_allowlisted_origin_works(tmp_path: Path) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    app = create_app(
+        cache_dir=str(tmp_path / "cache"),
+        source_root=str(root),
+        cors_origins=["https://studio.example"],
+    )
+    client = TestClient(app)
+    resp = _upload(client, headers={"Origin": "https://studio.example"})
+    assert resp.status_code == 200  # type: ignore[attr-defined]
+    assert (root / "uploads" / "evil.png").is_file()
+
+
+def test_upload_from_same_origin_works(upload_setup: tuple[TestClient, Path]) -> None:
+    """A UI proxied onto this host is same-origin and needs no allow-list entry."""
+    client, root = upload_setup
+    resp = _upload(client, headers={"Origin": "http://testserver"})
+    assert resp.status_code == 200  # type: ignore[attr-defined]
+    assert (root / "uploads" / "evil.png").is_file()
+
+
+def test_cors_any_does_not_grant_cross_site_writes(tmp_path: Path) -> None:
+    """--cors-any is anonymous READ from anywhere, not a public upload target."""
+    root = tmp_path / "mount"
+    root.mkdir()
+    app = create_app(cache_dir=str(tmp_path / "cache"), source_root=str(root), cors_allow_any=True)
+    client = TestClient(app)
+    assert client.get("/health", headers={"Origin": "https://any.example"}).status_code == 200
+    resp = _upload(client, headers={"Origin": "https://any.example"})
+    assert resp.status_code == 403  # type: ignore[attr-defined]
+    assert not (root / "uploads" / "evil.png").exists()
+
+
+def test_cross_site_guard_covers_scan_and_export(contained: tuple[TestClient, Path]) -> None:
+    """The guard is middleware, so every write route is covered, not just /upload."""
+    client, _exports = contained
+    evil = {"Origin": "https://evil.example"}
+    for endpoint, body in (
+        ("/scan/folder", {"folder": "", "faces": {"enabled": False}}),
+        ("/scan/folder/stream", {"folder": "", "faces": {"enabled": False}}),
+        ("/export", {"scan_id": "x", "dest": "out"}),
+        ("/export/stream", {"scan_id": "x", "dest": "out"}),
+    ):
+        assert client.post(endpoint, json=body, headers=evil).status_code == 403, endpoint
+
+
+def test_cross_site_read_is_unaffected(contained: tuple[TestClient, Path]) -> None:
+    """Only state-changing methods are gated; GETs stay CORS's business."""
+    client, _exports = contained
+    assert client.get("/health", headers={"Origin": "https://evil.example"}).status_code == 200
