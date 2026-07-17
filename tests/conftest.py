@@ -8,6 +8,28 @@ import numpy as np
 import pytest
 from PIL import Image, ImageFilter
 
+# Every env var that feeds server/store configuration. These are exactly the
+# ones docker-compose.yaml and the README tell operators to export, so a dev
+# box or CI job with them set would otherwise reconfigure the app under test —
+# flipping the "refuses without a root" assertions and letting a failing upload
+# test write real files into the ambient source root.
+_CONFIG_ENV = (
+    "ARGUS_CURATOR_SCAN_ROOT",
+    "ARGUS_CURATOR_EXPORT_ROOT",
+    "CURATOR_SOURCE_PATH",
+    "CURATOR_EXPORT_PATH",
+    "CURATOR_ALLOW_MOVE",
+    "CURATOR_CORS_ORIGINS",
+    "CURATOR_CACHE_DIR",
+)
+
+
+@pytest.fixture(autouse=True)
+def hermetic_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Config comes from create_app arguments only, never the ambient shell."""
+    for name in _CONFIG_ENV:
+        monkeypatch.delenv(name, raising=False)
+
 
 def _noise_image(size: int = 768, seed: int = 0) -> Image.Image:
     """A high-frequency noise image — sharp, passes the blur filter."""
