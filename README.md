@@ -113,8 +113,19 @@ argus-curator detectors
 
 ```bash
 pip install "argus-curator[server,faces]"
-argus-curator serve --cors --port 8101 --source-root /data/images
+argus-curator serve --cors --port 8101 --source-root /data/images --export-root /data/out
 ```
+
+Request-supplied paths are treated as untrusted: scan folders resolve under
+`--source-root` (env: `ARGUS_CURATOR_SCAN_ROOT` / `CURATOR_SOURCE_PATH`) and
+export destinations under `--export-root` (`ARGUS_CURATOR_EXPORT_ROOT` /
+`CURATOR_EXPORT_PATH`). Traversal escapes are refused, and scan/export refuse
+outright when their root is not configured. The destructive `mode: "move"` is
+rejected unless the server is started with `--allow-move`
+(`CURATOR_ALLOW_MOVE=1`). `--cors` allows only the localhost dev frontend
+(:3000); allow-list other origins with `--cors-origin <origin>`
+(`CURATOR_CORS_ORIGINS`), or use `--cors-any` for a credential-less wildcard
+on public demos.
 
 | Route | Description |
 |---|---|
@@ -137,7 +148,7 @@ payload the non-streaming endpoint returns (or `event: error`).
 
 ```jsonc
 {
-  "folder": "/data/images",
+  "folder": "shoots/2026-07",         // relative to the server's --source-root ("" = the root)
   "target_profile": { "target_style": "photo", "target_category": "identity" },
   "config": { "min_short_side": 512, "max_aspect_ratio": 3.0, "blur_threshold": 100.0,
               "cluster_distance": 10, "max_workers": 4 },
@@ -150,8 +161,8 @@ payload the non-streaming endpoint returns (or `event: error`).
 ```jsonc
 {
   "scan_id": "...",                 // or inline "selection": ["rel_path", ...]
-  "dest": "/data/out",
-  "mode": "copy",                   // "copy" | "symlink" | "move"
+  "dest": "training-set-v1",        // relative to the server's --export-root
+  "mode": "copy",                   // "copy" | "symlink" | "move" (move needs --allow-move)
   "preserve_structure": true,
   "min_score": 0.6, "include_rejected": false, "keep_similar": false,
   "face_clusters": ["face_2"],      // optional: export only these identities

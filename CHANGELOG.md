@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Server scan/export endpoints now enforce path containment (issue #3):
+  `POST /scan/folder`, `/scan/folder/stream` resolve `folder` under the
+  configured source root (`--source-root`, `ARGUS_CURATOR_SCAN_ROOT` /
+  `CURATOR_SOURCE_PATH`) and `/export`, `/export/stream` resolve `dest` under
+  the export root (`--export-root`, `ARGUS_CURATOR_EXPORT_ROOT` /
+  `CURATOR_EXPORT_PATH`), refusing traversal escapes and refusing outright
+  when the root is unset. **Breaking**: request paths are now root-relative
+  (absolute paths are tolerated only when already inside the root).
+- `mode: "move"` exports are rejected with 403 unless the server is started
+  with `--allow-move` / `CURATOR_ALLOW_MOVE=1`.
+- `--cors` no longer means `allow_origins=["*"]` with credentials (which
+  reflected any origin): it now allows only the localhost dev frontend.
+  Additional origins via `--cors-origin` / `CURATOR_CORS_ORIGINS`; a
+  credential-less wildcard is available behind `--cors-any`.
+- `/health` reports `export_root` and `allow_move` alongside `source_root`.
+
+### Fixed
+
+- `argus-curator scan --csv` crashed with a `TypeError` after the manifest-2.0
+  change (`write_report` gained the `exported_paths` parameter but the CLI
+  call site was not updated).
+
 ### Added
 
 - `POST /upload` server endpoint: multipart image upload into a folder under
