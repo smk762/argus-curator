@@ -24,12 +24,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Additional origins via `--cors-origin` / `CURATOR_CORS_ORIGINS`; a
   credential-less wildcard is available behind `--cors-any`.
 - `/health` reports `export_root` and `allow_move` alongside `source_root`.
+- A cached scan is treated as data, not configuration: `/thumb?scan_id=` and
+  `/export` re-check the scan's own folder against the source root instead of
+  trusting `ScanSummary.folder` as a containment root. The scan store is shared
+  with the CLI (which is unconstrained by design) and carries scans recorded
+  before containment existed, so an arbitrary `folder` could otherwise read or
+  export files the source root is meant to fence off. **Breaking**: `/export`
+  now requires a source root, since it reads the scan's images by `abs_path`.
+- A literal `"*"` in the CORS allow-list (`--cors-origin '*'`,
+  `CURATOR_CORS_ORIGINS=*`) now takes the same credential-less path as
+  `--cors-any`. Passed through verbatim it became `allow_origins=["*"]` with
+  `allow_credentials=True`, which makes Starlette reflect any Origin — exactly
+  the hole the allow-list closes.
+- Malformed paths (e.g. an embedded NUL byte) are refused with 400 rather than
+  raising `ValueError` out of `resolve()` as an unhandled 500 with a traceback.
 
 ### Fixed
 
 - `argus-curator scan --csv` crashed with a `TypeError` after the manifest-2.0
   change (`write_report` gained the `exported_paths` parameter but the CLI
   call site was not updated).
+- `argus-curator scan --csv` with no `--copy-to`/`--move-to`/`--symlink-to` no
+  longer runs a pointless self-export (`dest` == the source), which failed with
+  `SameFileError` for every image — one spurious `export_transfer_failed`
+  warning per file — and left the report's `exported_path` column empty.
 
 ### Added
 

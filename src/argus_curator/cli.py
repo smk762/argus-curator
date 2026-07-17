@@ -142,15 +142,19 @@ def scan(
             face_poses=[p.strip() for p in face_poses.split(",")] if face_poses else None,
             write_manifest=dest is not None,
         )
-        result = export_selection(summary, req)
+        # With no --copy-to/--move-to/--symlink-to there is nowhere to transfer
+        # to: exporting would copy every file onto itself (SameFileError per
+        # image) for a report-only run, so skip it and report no exported paths.
+        result = export_selection(summary, req) if dest is not None else None
         if csv_out:
             from argus_curator.export import write_report
             from argus_curator.selection import decide_selection
 
             selected, keep_reason = decide_selection(summary.results, req, summary.config.diversity_weight)
-            write_report(summary.results, keep_reason, {r.rel_path for r in selected}, result.exported_paths, csv_out)
+            exported_paths = result.exported_paths if result is not None else {}
+            write_report(summary.results, keep_reason, {r.rel_path for r in selected}, exported_paths, csv_out)
             typer.echo(f"CSV report written -> {csv_out}")
-        if dest is not None:
+        if result is not None:
             verb = {"copy": "Copied", "move": "Moved", "symlink": "Symlinked"}[mode]
             typer.echo(f"\n{verb} {result.copied} images -> {result.dest}")
             if result.manifest_path:

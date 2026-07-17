@@ -67,11 +67,25 @@ def _detectors() -> dict[str, bool]:
 
 def _resolve_within(root: Path, rel: str) -> Path:
     """Resolve ``rel`` under ``root`` and refuse path traversal escapes."""
-    candidate = (root / rel).resolve()
-    root_resolved = root.resolve()
+    try:
+        candidate = (root / rel).resolve()
+        root_resolved = root.resolve()
+    except (ValueError, OSError) as exc:
+        # e.g. an embedded NUL byte — a malformed path is a client error, not a
+        # 500 with a traceback from the security-critical resolve step.
+        raise HTTPException(status_code=400, detail="invalid path") from exc
     if root_resolved not in candidate.parents and candidate != root_resolved:
         raise HTTPException(status_code=400, detail="path escapes the mount root")
     return candidate
+
+
+def _is_within(root: Path, candidate: Path) -> bool:
+    """True when *candidate* is *root* or lies under it (both resolved)."""
+    try:
+        candidate, root = candidate.resolve(), root.resolve()
+    except (ValueError, OSError):
+        return False
+    return candidate == root or root in candidate.parents
 
 
 def _count_images(directory: Path, cap: int = _COUNT_CAP) -> int:
@@ -158,10 +172,12 @@ def create_app(
     if cors or cors_origins or cors_allow_any:
         from fastapi.middleware.cors import CORSMiddleware
 
-        if cors_allow_any:
-            # A literal wildcard is only honoured by browsers without
-            # credentials; with allow_credentials=True Starlette would reflect
-            # any Origin back, which defeats the allow-list entirely.
+        # A literal wildcard is only honoured by browsers without credentials;
+        # with allow_credentials=True Starlette reflects any Origin back, which
+        # defeats the allow-list entirely. An explicit "*" in the allow-list
+        # means the same thing as --cors-any, so it takes the same safe path
+        # rather than silently becoming origin reflection.
+        if cors_allow_any or (cors_origins and "*" in cors_origins):
             origins, credentials = ["*"], False
         else:
             origins, credentials = cors_origins or _LOCALHOST_ORIGINS, True
@@ -189,6 +205,24 @@ def create_app(
         if not root.is_dir():
             raise HTTPException(status_code=400, detail=f"{kind} root is not a directory: {configured}")
         return root
+
+    def _scan_root_or_400(summary: ScanSummary) -> Path:
+        """The scan's own folder, once proven to lie under the source root.
+
+        A summary is *data* — it comes from the on-disk store, which the CLI
+        (unconstrained by design) and pre-containment server builds both write
+        to. Trusting ``summary.folder`` as a containment root would let any
+        cached scan of an arbitrary directory read or export files the source
+        root is supposed to fence off, so it is re-checked against config here.
+        """
+        root = _root_or_400(default_source, "source", "CURATOR_SOURCE_PATH")
+        folder = Path(summary.folder)
+        if not _is_within(root, folder):
+            raise HTTPException(
+                status_code=400,
+                detail=f"scan {summary.scan_id} lies outside the source root",
+            )
+        return folder
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -312,11 +346,9 @@ def create_app(
             summary = store.load(scan_id)
             if summary is None:
                 raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
-            root = Path(summary.folder)
-        elif default_source:
-            root = Path(default_source)
+            root = _scan_root_or_400(summary)
         else:
-            raise HTTPException(status_code=400, detail="no scan_id and no configured source root")
+            root = _root_or_400(default_source, "source", "CURATOR_SOURCE_PATH")
 
         target = _resolve_within(root, path)
         if not target.is_file():
@@ -379,9 +411,10 @@ def create_app(
     def _validate_export(req: ExportRequest) -> tuple[ScanSummary, ExportRequest]:
         """Shared gate for both export endpoints.
 
-        Loads the scan, rejects ``mode="move"`` unless the server allows it,
-        and rewrites ``req.dest`` to the containment-checked absolute path
-        under the export root before anything touches the filesystem.
+        Loads the scan, refuses one whose folder is outside the source root,
+        rejects ``mode="move"`` unless the server allows it, and rewrites
+        ``req.dest`` to the containment-checked absolute path under the export
+        root — all before anything touches the filesystem.
         """
         if not req.scan_id and req.selection is None:
             raise HTTPException(status_code=400, detail="export requires scan_id or inline selection")
@@ -393,6 +426,9 @@ def create_app(
                 status_code=400,
                 detail="inline selection export requires a scan_id for the manifest target_profile",
             )
+        # The scan's images are read straight from `abs_path`, so a scan rooted
+        # outside the source root would export files the root should fence off.
+        _scan_root_or_400(summary)
         if req.mode == "move" and not allow_move:
             raise HTTPException(
                 status_code=403,
