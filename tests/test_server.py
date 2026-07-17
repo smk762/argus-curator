@@ -501,3 +501,89 @@ def test_malformed_path_is_400_not_500(contained: tuple[TestClient, Path]) -> No
     resp = client.post("/scan/folder", json={"folder": "a\x00b", "faces": {"enabled": False}})
     assert resp.status_code == 400
     assert "invalid path" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-site writes: CORS is not a write boundary. /upload takes multipart —
+# a safelisted content type — so a browser sends it with no preflight.
+# ---------------------------------------------------------------------------
+
+
+def _upload(client: TestClient, **kwargs: object) -> object:
+    return client.post(
+        "/upload",
+        data={"folder": "uploads"},
+        files=[("files", ("evil.png", _png_bytes(), "image/png"))],
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_upload_from_evil_origin_is_refused(upload_setup: tuple[TestClient, Path]) -> None:
+    """The CSRF repro: a page on evil.example driving /upload with no preflight."""
+    client, root = upload_setup
+    resp = _upload(client, headers={"Origin": "https://evil.example"})
+    assert resp.status_code == 403  # type: ignore[attr-defined]
+    assert "cross-site" in resp.json()["detail"]  # type: ignore[attr-defined]
+    # The point of the gate: nothing was written.
+    assert not (root / "uploads" / "evil.png").exists()
+
+
+def test_upload_without_origin_still_works(upload_setup: tuple[TestClient, Path]) -> None:
+    """Non-browser clients (curl, the CLI) send no Origin and must be unaffected."""
+    client, root = upload_setup
+    resp = _upload(client)
+    assert resp.status_code == 200  # type: ignore[attr-defined]
+    assert (root / "uploads" / "evil.png").is_file()
+
+
+def test_upload_from_allowlisted_origin_works(tmp_path: Path) -> None:
+    root = tmp_path / "mount"
+    root.mkdir()
+    app = create_app(
+        cache_dir=str(tmp_path / "cache"),
+        source_root=str(root),
+        cors_origins=["https://studio.example"],
+    )
+    client = TestClient(app)
+    resp = _upload(client, headers={"Origin": "https://studio.example"})
+    assert resp.status_code == 200  # type: ignore[attr-defined]
+    assert (root / "uploads" / "evil.png").is_file()
+
+
+def test_upload_from_same_origin_works(upload_setup: tuple[TestClient, Path]) -> None:
+    """A UI proxied onto this host is same-origin and needs no allow-list entry."""
+    client, root = upload_setup
+    resp = _upload(client, headers={"Origin": "http://testserver"})
+    assert resp.status_code == 200  # type: ignore[attr-defined]
+    assert (root / "uploads" / "evil.png").is_file()
+
+
+def test_cors_any_does_not_grant_cross_site_writes(tmp_path: Path) -> None:
+    """--cors-any is anonymous READ from anywhere, not a public upload target."""
+    root = tmp_path / "mount"
+    root.mkdir()
+    app = create_app(cache_dir=str(tmp_path / "cache"), source_root=str(root), cors_allow_any=True)
+    client = TestClient(app)
+    assert client.get("/health", headers={"Origin": "https://any.example"}).status_code == 200
+    resp = _upload(client, headers={"Origin": "https://any.example"})
+    assert resp.status_code == 403  # type: ignore[attr-defined]
+    assert not (root / "uploads" / "evil.png").exists()
+
+
+def test_cross_site_guard_covers_scan_and_export(contained: tuple[TestClient, Path]) -> None:
+    """The guard is middleware, so every write route is covered, not just /upload."""
+    client, _exports = contained
+    evil = {"Origin": "https://evil.example"}
+    for endpoint, body in (
+        ("/scan/folder", {"folder": "", "faces": {"enabled": False}}),
+        ("/scan/folder/stream", {"folder": "", "faces": {"enabled": False}}),
+        ("/export", {"scan_id": "x", "dest": "out"}),
+        ("/export/stream", {"scan_id": "x", "dest": "out"}),
+    ):
+        assert client.post(endpoint, json=body, headers=evil).status_code == 403, endpoint
+
+
+def test_cross_site_read_is_unaffected(contained: tuple[TestClient, Path]) -> None:
+    """Only state-changing methods are gated; GETs stay CORS's business."""
+    client, _exports = contained
+    assert client.get("/health", headers={"Origin": "https://evil.example"}).status_code == 200

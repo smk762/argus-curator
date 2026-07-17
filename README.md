@@ -132,6 +132,13 @@ rejected unless the server is started with `--allow-move`
 on public demos. A literal `*` in the allow-list is treated as `--cors-any`
 (wildcard without credentials), never as origin reflection.
 
+CORS is not a write boundary — `POST /upload` sends `multipart/form-data`, which
+browsers deliver with no preflight — so state-changing requests are additionally
+gated on `Origin`: it must be absent (curl, the CLI, server-to-server),
+same-origin, or on the allow-list, else 403. `--cors-any` therefore permits
+anonymous reads from anywhere but no cross-site writes; name an origin with
+`--cors-origin` to let it write.
+
 | Route | Description |
 |---|---|
 | `GET  /health` | Liveness |

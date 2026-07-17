@@ -38,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the hole the allow-list closes.
 - Malformed paths (e.g. an embedded NUL byte) are refused with 400 rather than
   raising `ValueError` out of `resolve()` as an unhandled 500 with a traceback.
+- Cross-site state-changing requests are refused with 403. CORS is not a write
+  boundary: `POST /upload` takes `multipart/form-data`, a CORS-safelisted
+  content type, so browsers send it with **no preflight** — any page the user
+  visited could drive it (the same-origin policy only stops that page from
+  *reading* the reply) and, with no auth on a server usually bound to localhost
+  or a LAN address, poison a dataset. Unsafe methods now require `Origin` to be
+  absent (non-browser clients such as curl and the CLI), same-origin, or on the
+  configured allow-list. **Note**: `--cors-any` grants anonymous *read* access
+  from anywhere but never a cross-site write — name the origin with
+  `--cors-origin` to allow writes from it.
 
 ### Fixed
 
