@@ -148,7 +148,7 @@ def scan(
             from argus_curator.selection import decide_selection
 
             selected, keep_reason = decide_selection(summary.results, req, summary.config.diversity_weight)
-            write_report(summary.results, keep_reason, {r.rel_path for r in selected}, csv_out)
+            write_report(summary.results, keep_reason, {r.rel_path for r in selected}, result.exported_paths, csv_out)
             typer.echo(f"CSV report written -> {csv_out}")
         if dest is not None:
             verb = {"copy": "Copied", "move": "Moved", "symlink": "Symlinked"}[mode]
@@ -163,10 +163,27 @@ def scan(
 def serve(
     port: int = Option(8101, "--port", "-p", help="Port to listen on"),
     host: str = Option("0.0.0.0", "--host", help="Host to bind to"),
-    cors: bool = Option(False, "--cors", help="Enable CORS (allow all origins)"),
-    source_root: str | None = Option(None, "--source-root", help="Default mount root for /thumb"),
+    cors: bool = Option(False, "--cors", help="Enable CORS for the localhost dev frontend (:3000)"),
+    cors_origin: list[str] = Option(
+        [], "--cors-origin", help="Allowed CORS origin (repeatable; implies CORS; or CURATOR_CORS_ORIGINS)"
+    ),
+    cors_any: bool = Option(
+        False, "--cors-any", help="Allow ANY origin, credential-less (public demos only; implies CORS)"
+    ),
+    source_root: str | None = Option(
+        None, "--source-root", help="Root that scan/thumb/upload paths resolve under (ARGUS_CURATOR_SCAN_ROOT)"
+    ),
+    export_root: str | None = Option(
+        None, "--export-root", help="Root that export destinations resolve under (ARGUS_CURATOR_EXPORT_ROOT)"
+    ),
+    allow_move: bool = Option(False, "--allow-move", help='Permit destructive mode="move" exports (default: rejected)'),
 ) -> None:
-    """Start the argus-curator micro-server (FastAPI) on :8101."""
+    """Start the argus-curator micro-server (FastAPI) on :8101.
+
+    Scan folders and export destinations from request bodies are resolved
+    relative to --source-root / --export-root; the endpoints refuse when their
+    root is not configured.
+    """
     try:
         import uvicorn
     except ImportError as _exc:  # pragma: no cover
@@ -175,7 +192,14 @@ def serve(
 
     from argus_curator.server import create_app
 
-    application = create_app(cors=cors, source_root=source_root)
+    application = create_app(
+        cors=cors,
+        cors_origins=cors_origin or None,
+        cors_allow_any=cors_any,
+        source_root=source_root,
+        export_root=export_root,
+        allow_move=allow_move or None,  # None -> fall back to CURATOR_ALLOW_MOVE
+    )
     uvicorn.run(application, host=host, port=port)
 
 

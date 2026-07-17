@@ -14,8 +14,22 @@ from argus_curator.server import create_app  # noqa: E402
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
+    """A rootless client — scan/export/upload must refuse on this one."""
     app = create_app(cache_dir=str(tmp_path / "cache"))
     return TestClient(app)
+
+
+@pytest.fixture
+def contained(dataset: Path, tmp_path: Path) -> tuple[TestClient, Path]:
+    """A client with source root = the dataset and a writable export root."""
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    app = create_app(
+        cache_dir=str(tmp_path / "cache"),
+        source_root=str(dataset),
+        export_root=str(exports),
+    )
+    return TestClient(app), exports
 
 
 def test_health(client: TestClient) -> None:
@@ -57,11 +71,12 @@ def test_detectors_keys(client: TestClient) -> None:
     assert set(resp.json()) == {"torch", "cuda", "clip", "insightface", "onnxruntime"}
 
 
-def test_scan_then_paginate_then_export(client: TestClient, dataset: Path, tmp_path: Path) -> None:
+def test_scan_then_paginate_then_export(contained: tuple[TestClient, Path]) -> None:
+    client, exports = contained
     resp = client.post(
         "/scan/folder",
         json={
-            "folder": str(dataset),
+            "folder": "",  # scan the source root itself
             "target_profile": {"target_category": "identity"},
             "config": {"min_short_side": 512},
             "faces": {"enabled": False},
@@ -83,15 +98,14 @@ def test_scan_then_paginate_then_export(client: TestClient, dataset: Path, tmp_p
     assert thumb.status_code == 200
     assert thumb.headers["content-type"] == "image/webp"
 
-    # Export.
-    dest = tmp_path / "out"
+    # Export to a destination relative to the export root.
     exp = client.post(
         "/export",
-        json={"scan_id": scan_id, "dest": str(dest), "mode": "copy", "min_score": 0.0},
+        json={"scan_id": scan_id, "dest": "out", "mode": "copy", "min_score": 0.0},
     )
     assert exp.status_code == 200
     assert exp.json()["copied"] >= 1
-    assert (dest / "manifest.jsonl").exists()
+    assert (exports / "out" / "manifest.jsonl").exists()
 
 
 def _parse_sse(body: str) -> list[tuple[str, dict]]:
@@ -105,10 +119,11 @@ def _parse_sse(body: str) -> list[tuple[str, dict]]:
     return events
 
 
-def test_scan_stream_emits_progress_then_complete(client: TestClient, dataset: Path) -> None:
+def test_scan_stream_emits_progress_then_complete(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
     resp = client.post(
         "/scan/folder/stream",
-        json={"folder": str(dataset), "faces": {"enabled": False}},
+        json={"folder": "", "faces": {"enabled": False}},
     )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
@@ -124,16 +139,17 @@ def test_scan_stream_emits_progress_then_complete(client: TestClient, dataset: P
     assert client.get(f"/scan/{summary['scan_id']}").status_code == 200
 
 
-def test_export_stream_emits_progress_then_complete(client: TestClient, dataset: Path, tmp_path: Path) -> None:
+def test_export_stream_emits_progress_then_complete(contained: tuple[TestClient, Path]) -> None:
+    client, exports = contained
     scan_id = client.post(
         "/scan/folder",
-        json={"folder": str(dataset), "faces": {"enabled": False}},
+        json={"folder": "", "faces": {"enabled": False}},
     ).json()["scan_id"]
 
-    dest = tmp_path / "out"
+    dest = exports / "out"
     resp = client.post(
         "/export/stream",
-        json={"scan_id": scan_id, "dest": str(dest), "mode": "copy", "min_score": 0.0},
+        json={"scan_id": scan_id, "dest": "out", "mode": "copy", "min_score": 0.0},
     )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
@@ -267,10 +283,118 @@ def test_upload_skips_existing_names(upload_setup: tuple[TestClient, Path]) -> N
     assert (existing / "a.png").read_bytes() == b"original"  # not overwritten
 
 
-def test_thumb_path_traversal_blocked(client: TestClient, dataset: Path) -> None:
+def test_thumb_path_traversal_blocked(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
     summary = client.post(
         "/scan/folder",
-        json={"folder": str(dataset), "faces": {"enabled": False}},
+        json={"folder": "", "faces": {"enabled": False}},
     ).json()
     resp = client.get("/thumb", params={"path": "../../etc/passwd", "scan_id": summary["scan_id"]})
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Containment (issue #3): scan/export must not accept arbitrary paths
+# ---------------------------------------------------------------------------
+
+
+def test_scan_requires_source_root(client: TestClient) -> None:
+    for endpoint in ("/scan/folder", "/scan/folder/stream"):
+        resp = client.post(endpoint, json={"folder": "", "faces": {"enabled": False}})
+        assert resp.status_code == 400, endpoint
+        assert "no source root configured" in resp.json()["detail"]
+
+
+def test_scan_folder_traversal_blocked(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    for folder in ("..", "../..", "/home", "/etc"):
+        for endpoint in ("/scan/folder", "/scan/folder/stream"):
+            resp = client.post(endpoint, json={"folder": folder, "faces": {"enabled": False}})
+            assert resp.status_code == 400, (endpoint, folder)
+
+
+def test_scan_accepts_absolute_path_inside_root(contained: tuple[TestClient, Path], dataset: Path) -> None:
+    """UIs may echo back /folders abs_path values — allowed iff inside the root."""
+    client, _exports = contained
+    resp = client.post("/scan/folder", json={"folder": str(dataset / "personA"), "faces": {"enabled": False}})
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 3
+
+
+def test_export_requires_export_root(dataset: Path, tmp_path: Path) -> None:
+    app = create_app(cache_dir=str(tmp_path / "cache"), source_root=str(dataset))
+    client = TestClient(app)
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    for endpoint in ("/export", "/export/stream"):
+        resp = client.post(endpoint, json={"scan_id": scan_id, "dest": "out", "min_score": 0.0})
+        assert resp.status_code == 400, endpoint
+        assert "no export root configured" in resp.json()["detail"]
+
+
+def test_export_dest_traversal_blocked(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    for dest in ("../escape", "/home/steal"):
+        for endpoint in ("/export", "/export/stream"):
+            resp = client.post(endpoint, json={"scan_id": scan_id, "dest": dest, "min_score": 0.0})
+            assert resp.status_code == 400, (endpoint, dest)
+
+
+def test_export_move_rejected_by_default(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    for endpoint in ("/export", "/export/stream"):
+        resp = client.post(endpoint, json={"scan_id": scan_id, "dest": "out", "mode": "move", "min_score": 0.0})
+        assert resp.status_code == 403, endpoint
+
+
+def test_export_move_allowed_with_flag(dataset: Path, tmp_path: Path) -> None:
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    app = create_app(
+        cache_dir=str(tmp_path / "cache"),
+        source_root=str(dataset),
+        export_root=str(exports),
+        allow_move=True,
+    )
+    client = TestClient(app)
+    assert client.get("/health").json()["allow_move"] is True
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    resp = client.post("/export", json={"scan_id": scan_id, "dest": "out", "mode": "move", "min_score": 0.0})
+    assert resp.status_code == 200
+    assert resp.json()["copied"] >= 1
+
+
+def test_health_reports_roots_and_move_gate(contained: tuple[TestClient, Path]) -> None:
+    client, exports = contained
+    body = client.get("/health").json()
+    assert body["export_root"] == str(exports.resolve())
+    assert body["allow_move"] is False
+
+
+# ---------------------------------------------------------------------------
+# CORS (issue #3): no wildcard-with-credentials reflection
+# ---------------------------------------------------------------------------
+
+
+def test_cors_defaults_to_localhost_not_wildcard(tmp_path: Path) -> None:
+    client = TestClient(create_app(cors=True, cache_dir=str(tmp_path / "cache")))
+    ok = client.get("/health", headers={"Origin": "http://localhost:3000"})
+    assert ok.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    evil = client.get("/health", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in evil.headers
+
+
+def test_cors_explicit_origins(tmp_path: Path) -> None:
+    client = TestClient(create_app(cors_origins=["https://demo.argus.example"], cache_dir=str(tmp_path / "cache")))
+    ok = client.get("/health", headers={"Origin": "https://demo.argus.example"})
+    assert ok.headers.get("access-control-allow-origin") == "https://demo.argus.example"
+    other = client.get("/health", headers={"Origin": "http://localhost:3000"})
+    assert "access-control-allow-origin" not in other.headers
+
+
+def test_cors_wildcard_is_credentialless(tmp_path: Path) -> None:
+    client = TestClient(create_app(cors_allow_any=True, cache_dir=str(tmp_path / "cache")))
+    resp = client.get("/health", headers={"Origin": "https://anywhere.example"})
+    assert resp.headers.get("access-control-allow-origin") == "*"
+    assert "access-control-allow-credentials" not in resp.headers

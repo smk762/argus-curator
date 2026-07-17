@@ -39,6 +39,12 @@ from argus_curator.store import ScanStore
 THUMB_MAX = 384  # longest-edge px for /thumb webp output
 _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing snappy)
 
+# Default CORS origins for `--cors`: the argus-studio dev frontend. Anything
+# else must be allow-listed explicitly (or use the credential-less wildcard).
+_LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
 
 def _detectors() -> dict[str, bool]:
     torch_ok = find_spec("torch") is not None
@@ -127,30 +133,62 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
 def create_app(
     cors: bool = False,
     cors_origins: list[str] | None = None,
+    cors_allow_any: bool = False,
     cache_dir: str | None = None,
     source_root: str | None = None,
+    export_root: str | None = None,
+    allow_move: bool | None = None,
 ) -> FastAPI:
-    """Create the curator FastAPI application."""
+    """Create the curator FastAPI application.
+
+    Request-supplied paths are untrusted: scan folders resolve under
+    *source_root* and export destinations under *export_root* (both refusing
+    traversal escapes), and the endpoints refuse outright when their root is
+    not configured. ``mode="move"`` — the one destructive transfer mode — is
+    rejected unless *allow_move* is enabled.
+    """
     app = FastAPI(
         title="Argus Curator",
         description="LoRA-native dataset curation: score, dedup, face-cluster, export.",
         version=__version__,
     )
 
-    if cors:
+    if cors_origins is None and (env_origins := os.environ.get("CURATOR_CORS_ORIGINS")):
+        cors_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+    if cors or cors_origins or cors_allow_any:
         from fastapi.middleware.cors import CORSMiddleware
 
+        if cors_allow_any:
+            # A literal wildcard is only honoured by browsers without
+            # credentials; with allow_credentials=True Starlette would reflect
+            # any Origin back, which defeats the allow-list entirely.
+            origins, credentials = ["*"], False
+        else:
+            origins, credentials = cors_origins or _LOCALHOST_ORIGINS, True
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=cors_origins or ["*"],
-            allow_credentials=True,
+            allow_origins=origins,
+            allow_credentials=credentials,
             allow_methods=["*"],
             allow_headers=["*"],
         )
 
     store = ScanStore(cache_dir)
-    # Mount root for /thumb when a scan_id is not supplied (NEXT_PUBLIC_CURATOR_SOURCE_PATH).
-    default_source = source_root or os.environ.get("CURATOR_SOURCE_PATH")
+    # Containment roots. Scans/thumbs/uploads resolve under the source root;
+    # export destinations under the export root. The ARGUS_* names are the
+    # deployment-facing ones (argus-halo); CURATOR_* are kept for compose.
+    default_source = source_root or os.environ.get("ARGUS_CURATOR_SCAN_ROOT") or os.environ.get("CURATOR_SOURCE_PATH")
+    default_export = export_root or os.environ.get("ARGUS_CURATOR_EXPORT_ROOT") or os.environ.get("CURATOR_EXPORT_PATH")
+    if allow_move is None:
+        allow_move = os.environ.get("CURATOR_ALLOW_MOVE", "").lower() in _TRUTHY
+
+    def _root_or_400(configured: str | None, kind: str, env: str) -> Path:
+        if not configured:
+            raise HTTPException(status_code=400, detail=f"no {kind} root configured (set {env})")
+        root = Path(configured)
+        if not root.is_dir():
+            raise HTTPException(status_code=400, detail=f"{kind} root is not a directory: {configured}")
+        return root
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -159,6 +197,8 @@ def create_app(
             "service": "argus-curator",
             "version": __version__,
             "source_root": str(Path(default_source).resolve()) if default_source else None,
+            "export_root": str(Path(default_export).resolve()) if default_export else None,
+            "allow_move": allow_move,
         }
 
     @app.get("/detectors")
@@ -170,22 +210,29 @@ def create_app(
         path: str = Query("", description="folder path relative to the mount root"),
     ) -> dict[str, Any]:
         """Browse Docker-mounted folders under the configured source root."""
-        if not default_source:
-            raise HTTPException(status_code=400, detail="no source root configured (set CURATOR_SOURCE_PATH)")
-        root = Path(default_source)
-        if not root.is_dir():
-            raise HTTPException(status_code=400, detail=f"source root is not a directory: {default_source}")
+        root = _root_or_400(default_source, "source", "CURATOR_SOURCE_PATH")
         return await asyncio.to_thread(_browse_folders, root, path)
+
+    def _resolve_scan_folder(requested: str) -> Path:
+        """Resolve a request-supplied scan folder under the source root.
+
+        ``requested`` is canonically relative to the root; an absolute path is
+        tolerated only when it already lies inside the root (compat with UIs
+        that echo back ``abs_path`` from ``/folders``).
+        """
+        root = _root_or_400(default_source, "source", "CURATOR_SOURCE_PATH")
+        folder = _resolve_within(root, requested)
+        if not folder.is_dir():
+            raise HTTPException(status_code=400, detail=f"not a directory under the scan root: {requested}")
+        return folder
 
     @app.post("/scan/folder", response_model=ScanSummary)
     async def scan_folder(req: ScanRequest) -> ScanSummary:
-        folder = Path(req.folder)
-        if not folder.is_dir():
-            raise HTTPException(status_code=400, detail=f"Not a directory: {req.folder}")
+        folder = _resolve_scan_folder(req.folder)
         try:
             summary = await asyncio.to_thread(
                 scanner.scan_folder,
-                req.folder,
+                folder,
                 req.target_profile,
                 req.config,
                 req.faces,
@@ -203,9 +250,7 @@ def create_app(
         then a single ``event: complete`` frame carrying the full ScanSummary (the
         identical payload the non-streaming endpoint returns), or ``event: error``.
         """
-        folder = Path(req.folder)
-        if not folder.is_dir():
-            raise HTTPException(status_code=400, detail=f"Not a directory: {req.folder}")
+        folder = _resolve_scan_folder(req.folder)
 
         # The scan is blocking CPU work, so it runs in a worker thread and hands
         # events back through a thread-safe queue that the async generator drains.
@@ -218,7 +263,7 @@ def create_app(
         def run_scan() -> None:
             try:
                 summary = scanner.scan_folder(
-                    req.folder,
+                    folder,
                     req.target_profile,
                     req.config,
                     req.faces,
@@ -301,12 +346,7 @@ def create_app(
         Non-image files and names that already exist in the target folder are
         reported in ``skipped`` (existing files are never overwritten).
         """
-        if not default_source:
-            raise HTTPException(status_code=400, detail="no source root configured (set CURATOR_SOURCE_PATH)")
-        root = Path(default_source)
-        if not root.is_dir():
-            raise HTTPException(status_code=400, detail=f"source root is not a directory: {default_source}")
-
+        root = _root_or_400(default_source, "source", "CURATOR_SOURCE_PATH")
         target = _resolve_within(root, folder)
         rel = target.relative_to(root.resolve()).as_posix()
         rel = "" if rel == "." else rel
@@ -336,8 +376,13 @@ def create_app(
 
         return {"folder": rel, "saved": saved, "skipped": skipped, "errors": errors}
 
-    @app.post("/export", response_model=ExportResult)
-    async def run_export(req: ExportRequest) -> ExportResult:
+    def _validate_export(req: ExportRequest) -> tuple[ScanSummary, ExportRequest]:
+        """Shared gate for both export endpoints.
+
+        Loads the scan, rejects ``mode="move"`` unless the server allows it,
+        and rewrites ``req.dest`` to the containment-checked absolute path
+        under the export root before anything touches the filesystem.
+        """
         if not req.scan_id and req.selection is None:
             raise HTTPException(status_code=400, detail="export requires scan_id or inline selection")
         summary = store.load(req.scan_id) if req.scan_id else None
@@ -348,6 +393,18 @@ def create_app(
                 status_code=400,
                 detail="inline selection export requires a scan_id for the manifest target_profile",
             )
+        if req.mode == "move" and not allow_move:
+            raise HTTPException(
+                status_code=403,
+                detail='mode "move" is disabled on this server (start with --allow-move / CURATOR_ALLOW_MOVE=1)',
+            )
+        root = _root_or_400(default_export, "export", "CURATOR_EXPORT_PATH")
+        dest = _resolve_within(root, req.dest)
+        return summary, req.model_copy(update={"dest": str(dest)})
+
+    @app.post("/export", response_model=ExportResult)
+    async def run_export(req: ExportRequest) -> ExportResult:
+        summary, req = _validate_export(req)
         try:
             return await asyncio.to_thread(export.export_selection, summary, req)
         except Exception as exc:
@@ -361,16 +418,7 @@ def create_app(
         as files are copied, then one ``event: complete`` frame carrying the
         ExportResult, or ``event: error``.
         """
-        if not req.scan_id and req.selection is None:
-            raise HTTPException(status_code=400, detail="export requires scan_id or inline selection")
-        summary = store.load(req.scan_id) if req.scan_id else None
-        if req.scan_id and summary is None:
-            raise HTTPException(status_code=404, detail=f"unknown scan_id: {req.scan_id}")
-        if summary is None:
-            raise HTTPException(
-                status_code=400,
-                detail="inline selection export requires a scan_id for the manifest target_profile",
-            )
+        summary, req = _validate_export(req)
 
         events: queue.Queue[tuple[str, Any]] = queue.Queue()
         _DONE = "__done__"

@@ -203,6 +203,8 @@ class ScanSummary(BaseModel):
 
 
 class ScanRequest(BaseModel):
+    # The server resolves this under its configured scan root and refuses
+    # traversal escapes; relative paths are canonical ("" scans the root).
     folder: str
     target_profile: TargetProfile = Field(default_factory=TargetProfile)
     config: ScanConfig = Field(default_factory=ScanConfig)
@@ -214,7 +216,12 @@ class ExportRequest(BaseModel):
     # Inline selection of rel_paths (alternative to scan_id-driven selection).
     selection: list[str] | None = None
 
+    # The server resolves this under its configured export root and refuses
+    # traversal escapes; relative paths are canonical. Library/CLI callers
+    # pass a filesystem path directly.
     dest: str
+    # "move" is destructive; the server rejects it unless started with
+    # --allow-move / CURATOR_ALLOW_MOVE=1.
     mode: Literal["copy", "symlink", "move"] = "copy"
     preserve_structure: bool = True
 

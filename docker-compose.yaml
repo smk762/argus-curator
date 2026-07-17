@@ -5,8 +5,13 @@ services:
       - "${CURATOR_PORT:-8101}:8101"
     environment:
       - CURATOR_SOURCE_PATH=/data/images
+      - CURATOR_EXPORT_PATH=/data/out
       - CURATOR_CACHE_DIR=/root/.cache/argus_curator/scans
       - HF_HOME=/root/.cache/huggingface
+      # Browser origins allowed to call the API (defaults to localhost:3000).
+      # - CURATOR_CORS_ORIGINS=https://studio.example.com
+      # Uncomment to permit destructive mode="move" exports.
+      # - CURATOR_ALLOW_MOVE=1
     volumes:
       # Dataset mount the curator scans and serves /thumb from.
       - ${CURATOR_SOURCE_PATH:-./data}:/data/images
