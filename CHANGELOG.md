@@ -60,6 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Manifest 2.1** — `mode: "move"` manifests were unusable. Rows stamped
+  `abs_path` with the *source*, which the transfer had already deleted by the
+  time the manifest was written, so every row named a dead path (issue #9).
+  argus-lens opens rows strictly by `abs_path` and never consults
+  `exported_path`, so a `write_manifest: true` move export produced a manifest
+  it could not read at all. `abs_path` is now the location the image can
+  actually be read from — the destination under `move`, the still-present
+  source under `copy`/`symlink`.
 - `argus-curator scan --csv` crashed with a `TypeError` after the manifest-2.0
   change (`write_report` gained the `exported_paths` parameter but the CLI
   call site was not updated).
@@ -77,6 +85,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every successful transfer, so API callers get de-collided names even with
   `write_manifest: false`. The CSV report gains a matching `exported_path`
   column.
+- `ExportResult.exported_abs_paths` and `ManifestRow.exported_abs_path`: the
+  transferred files' **absolute** locations (issue #10). Joining `dest` onto
+  `exported_path` made clients re-implement a layout rule only the curator
+  knows — and with `preserve_structure: false` the de-collision suffix
+  (`stem-<hash>.ext`) is not reproducible by a client at all. It also makes a
+  manifest row self-contained: the manifest is often read somewhere other than
+  the export root it was written into (argus-lens receives it as an upload) and
+  no row names that root.
+- `manifest_version` on `GET /health` and on `ExportResult` (issue #11).
+  Consumers were compat-detecting by sniffing whether `exported_paths` was
+  present, which cannot distinguish a pre-2.0 curator from a 2.x one that
+  transferred nothing — both yield an empty mapping — and, since the field has
+  a default, made the legacy branch unreachable and untestable. `/health` now
+  declares the manifest contract separately from the package version, so a
+  client can refuse an unknown major instead of guessing.
 
 ### Changed
 
@@ -104,6 +127,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carry `exported_path` — the real (possibly de-collided) path under the
   export root, which consumers must use. The row shape is now published in the
   wire schema as `ManifestRow`.
+- `MANIFEST_VERSION` is `2.1`. The major stays `2`, so a consumer that accepts
+  `2.x` (argus-forge's `SUPPORTED_MANIFEST_MAJORS`) keeps working unchanged and
+  one that already required `exported_path` is unaffected.
+- `ExportResult.selected_rel_paths` is documented as what the selection *chose*,
+  not what landed: it is computed before the transfer loop, so it still lists
+  files whose source vanished or whose transfer failed. `exported_paths` /
+  `exported_abs_paths` are the record of what is on disk.
 
 ### Fixed
 

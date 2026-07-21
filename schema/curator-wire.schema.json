@@ -149,6 +149,13 @@
           "title": "Dest",
           "type": "string"
         },
+        "exported_abs_paths": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Exported Abs Paths",
+          "type": "object"
+        },
         "exported_paths": {
           "additionalProperties": {
             "type": "string"
@@ -167,6 +174,11 @@
           ],
           "default": null,
           "title": "Manifest Path"
+        },
+        "manifest_version": {
+          "default": "2.1",
+          "title": "Manifest Version",
+          "type": "string"
         },
         "mode": {
           "title": "Mode",
@@ -521,10 +533,14 @@
       "type": "object"
     },
     "ManifestRow": {
-      "description": "One line of the JSONL handoff manifest (written by ``export.write_manifest``).\n\n``exported_path`` is the path actually written under the export root\n(posix, relative to it). Consumers must use it instead of re-deriving a\ndestination from ``rel_path`` \u2014 flattened exports de-collide basenames, so\nthe two can differ. Rows exist only for files whose transfer succeeded.",
+      "description": "One line of the JSONL handoff manifest (written by ``export.write_manifest``).\n\n``exported_path`` is the path actually written under the export root\n(posix, relative to it). Consumers must use it instead of re-deriving a\ndestination from ``rel_path`` \u2014 flattened exports de-collide basenames, so\nthe two can differ. Rows exist only for files whose transfer succeeded.\n\n``exported_abs_path`` is that same file's absolute location, so a row is\nself-contained: the manifest is often read somewhere other than the export\nroot it was written into (argus-lens receives it as an upload), and nothing\nin the row names the root to join ``exported_path`` onto.\n\n``abs_path`` is where the image can be *read*, which is not always where it\ncame from: ``mode=\"move\"`` deletes the source during transfer, so for a\nmoved export it equals ``exported_abs_path``. Use ``rel_path`` for the\noriginal location within the scan.",
       "properties": {
         "abs_path": {
           "title": "Abs Path",
+          "type": "string"
+        },
+        "exported_abs_path": {
+          "title": "Exported Abs Path",
           "type": "string"
         },
         "exported_path": {
@@ -532,7 +548,7 @@
           "type": "string"
         },
         "manifest_version": {
-          "default": "2.0",
+          "default": "2.1",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -585,6 +601,7 @@
         "rel_path",
         "abs_path",
         "exported_path",
+        "exported_abs_path",
         "target_profile",
         "score",
         "similar_group"

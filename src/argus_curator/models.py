@@ -28,7 +28,13 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # 2.0: rows exist only for files actually transferred and carry exported_path —
 # the real path under the export root, which flattened exports de-collide.
 # Consumers must use exported_path instead of deriving locations from rel_path.
-MANIFEST_VERSION = "2.0"
+# 2.1: rows carry exported_abs_path (the transferred file's absolute location),
+# and abs_path is now guaranteed readable — under mode="move" it points at the
+# destination, since the source it used to name has been deleted by the time the
+# manifest is written. Additive plus a bug fix, so the major stays 2: a consumer
+# that accepts 2.x keeps working, and one that already required exported_path
+# (argus-forge's MAJORS_REQUIRING_EXPORTED_PATH) is unaffected.
+MANIFEST_VERSION = "2.1"
 
 
 # ---------------------------------------------------------------------------
@@ -247,12 +253,23 @@ class ManifestRow(BaseModel):
     (posix, relative to it). Consumers must use it instead of re-deriving a
     destination from ``rel_path`` — flattened exports de-collide basenames, so
     the two can differ. Rows exist only for files whose transfer succeeded.
+
+    ``exported_abs_path`` is that same file's absolute location, so a row is
+    self-contained: the manifest is often read somewhere other than the export
+    root it was written into (argus-lens receives it as an upload), and nothing
+    in the row names the root to join ``exported_path`` onto.
+
+    ``abs_path`` is where the image can be *read*, which is not always where it
+    came from: ``mode="move"`` deletes the source during transfer, so for a
+    moved export it equals ``exported_abs_path``. Use ``rel_path`` for the
+    original location within the scan.
     """
 
     manifest_version: str = MANIFEST_VERSION
     rel_path: str
     abs_path: str
     exported_path: str
+    exported_abs_path: str
     target_profile: TargetProfile
     primary_face_cluster: str | None = None
     primary_face_pose: FacePose | None = None
@@ -261,16 +278,29 @@ class ManifestRow(BaseModel):
 
 
 class ExportResult(BaseModel):
+    # Version of the manifest this curator writes, declared whether or not a
+    # manifest was requested. Without it a client can only compat-detect by
+    # sniffing which fields are present, which cannot distinguish "old server"
+    # from "new server, nothing transferred" (both yield an empty mapping).
+    manifest_version: str = MANIFEST_VERSION
     manifest_path: str | None = None
     copied: int
     skipped: int
     dest: str
     mode: str
+    # What the selection *chose*, before transfer. A file here can still be
+    # missing from exported_paths — its source vanished, or the transfer failed
+    # — so this is not a record of what landed. Use exported_paths for that.
     selected_rel_paths: list[str] = Field(default_factory=list)
     # rel_path -> path actually written under dest (posix, relative), only for
     # transfers that succeeded — the same mapping the manifest rows carry, so
     # API callers get the de-collided names even with write_manifest=false.
     exported_paths: dict[str, str] = Field(default_factory=dict)
+    # The same mapping, absolute. Joining dest onto exported_paths means a
+    # client re-implements the server's layout rule; with preserve_structure
+    # false the curator de-collides basenames into stem-<hash>.ext, which no
+    # client can reproduce. The process that owns the rule publishes the answer.
+    exported_abs_paths: dict[str, str] = Field(default_factory=dict)
     captioned: bool = False
 
 

@@ -38,7 +38,14 @@ from PIL import Image
 
 from argus_curator import __version__, export, scanner
 from argus_curator.faces import faces_available
-from argus_curator.models import SUPPORTED_EXTS, ExportRequest, ExportResult, ScanRequest, ScanSummary
+from argus_curator.models import (
+    MANIFEST_VERSION,
+    SUPPORTED_EXTS,
+    ExportRequest,
+    ExportResult,
+    ScanRequest,
+    ScanSummary,
+)
 from argus_curator.store import ScanStore
 
 THUMB_MAX = 384  # longest-edge px for /thumb webp output
@@ -255,6 +262,12 @@ def create_app(
             "status": "ok",
             "service": "argus-curator",
             "version": __version__,
+            # The *manifest* contract version, which moves independently of the
+            # package version above. Clients branch on this to refuse an unknown
+            # major, instead of sniffing which fields an ExportResult happens to
+            # carry — a test that cannot tell an old server from a new one that
+            # transferred nothing.
+            "manifest_version": MANIFEST_VERSION,
             "source_root": str(Path(default_source).resolve()) if default_source else None,
             "export_root": str(Path(default_export).resolve()) if default_export else None,
             "allow_move": allow_move,
