@@ -25,12 +25,11 @@ from typing import Any
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-    from fastapi.responses import JSONResponse, Response, StreamingResponse
-    from starlette.datastructures import Headers
-    from starlette.types import ASGIApp, Receive, Scope, Send
+    from fastapi.responses import Response, StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
+from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
 from PIL import Image
 
 from argus_curator import __version__, export, scanner
@@ -44,64 +43,6 @@ _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing sn
 # Default CORS origins for `--cors`: the argus-studio dev frontend. Anything
 # else must be allow-listed explicitly (or use the credential-less wildcard).
 _LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
-
-_TRUTHY = {"1", "true", "yes", "on"}
-
-# Methods that change server state, and so must not be drivable by a page the
-# user merely happens to be visiting.
-_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-
-
-class CrossSiteWriteGuard:
-    """Refuse state-changing requests from origins that are not trusted.
-
-    CORS is not a write boundary. ``POST /upload`` takes ``multipart/form-data``
-    — a CORS-safelisted content type — so a browser sends it with **no
-    preflight**: any page the user visits can drive it, and the same-origin
-    policy only stops that page from *reading* the reply. The write still lands.
-    Since the server has no auth and is commonly bound on localhost or a LAN
-    address the attacker's own server cannot reach, that is enough to poison a
-    dataset (or, via ``/export``, move files about).
-
-    So unsafe methods are gated on ``Origin`` here, ahead of the routes:
-
-    * absent -> allowed. Non-browser clients (curl, the CLI, server-to-server)
-      never send it, and browsers always do for cross-origin state changes.
-    * same-origin as the request -> allowed, so a UI proxied onto this host
-      keeps working without being named in the CORS allow-list.
-    * in *trusted_origins* -> allowed. That is the operator's own allow-list.
-    * anything else -> 403.
-
-    This is deliberately a pure ASGI middleware rather than
-    ``BaseHTTPMiddleware``: it must not wrap or buffer the SSE responses the
-    streaming endpoints return.
-    """
-
-    def __init__(self, app: ASGIApp, trusted_origins: list[str]) -> None:
-        self.app = app
-        self.trusted = set(trusted_origins)
-
-    def _allowed(self, origin: str, headers: Headers) -> bool:
-        if origin in self.trusted:
-            return True
-        # Compare host:port rather than the full origin: behind a TLS-terminating
-        # proxy the app sees http:// while the browser reports https://, and a
-        # same-host request is same-origin for our purposes either way.
-        host = headers.get("host")
-        return bool(host) and origin.partition("://")[2] == host
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["method"] in _UNSAFE_METHODS:
-            headers = Headers(scope=scope)
-            origin = headers.get("origin")
-            if origin is not None and not self._allowed(origin, headers):
-                response = JSONResponse(
-                    {"detail": f"cross-site {scope['method']} from origin {origin} is not allowed"},
-                    status_code=403,
-                )
-                await response(scope, receive, send)
-                return
-        await self.app(scope, receive, send)
 
 
 def _detectors() -> dict[str, bool]:
@@ -240,13 +181,16 @@ def create_app(
     # allow cross-site writes, name the origin with --cors-origin.
     trusted_origins: list[str] = [] if wildcard else list(cors_origins or (_LOCALHOST_ORIGINS if cors else []))
 
+    # CORS is not a write boundary — see cross_site_refuse for why an unauthed
+    # LAN/localhost server must gate unsafe methods on Origin itself.
+    #
     # Registered before CORSMiddleware so CORS ends up the outer layer
     # (add_middleware inserts at 0) and can still annotate a rejected write.
     # That matters under the wildcard, where CORS would allow the origin a read
     # but the guard refuses the write: the page gets a readable 403 rather than
     # an opaque CORS error. For a non-allow-listed origin CORS correctly adds
     # nothing — it must not advertise itself to an origin it does not trust.
-    app.add_middleware(CrossSiteWriteGuard, trusted_origins=trusted_origins)
+    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins))
 
     if cors or cors_origins or cors_allow_any:
         from fastapi.middleware.cors import CORSMiddleware
@@ -266,7 +210,7 @@ def create_app(
     default_source = source_root or os.environ.get("ARGUS_CURATOR_SCAN_ROOT") or os.environ.get("CURATOR_SOURCE_PATH")
     default_export = export_root or os.environ.get("ARGUS_CURATOR_EXPORT_ROOT") or os.environ.get("CURATOR_EXPORT_PATH")
     if allow_move is None:
-        allow_move = os.environ.get("CURATOR_ALLOW_MOVE", "").lower() in _TRUTHY
+        allow_move = env_flag("CURATOR_ALLOW_MOVE")
 
     def _root_or_400(configured: str | None, kind: str, env: str) -> Path:
         if not configured:
