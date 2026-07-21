@@ -47,7 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   absent (non-browser clients such as curl and the CLI), same-origin, or on the
   configured allow-list. **Note**: `--cors-any` grants anonymous *read* access
   from anywhere but never a cross-site write — name the origin with
-  `--cors-origin` to allow writes from it.
+  `--cors-origin` to allow writes from it. The guard itself now ships in
+  `argus_cortex.server` (`WriteGuard` + `cross_site_refuse`) so the suite's
+  servers share one implementation; the policy and its pure-ASGI,
+  non-stream-buffering guarantee are unchanged.
+- A literal `"*"` co-listed with a real origin
+  (`CURATOR_CORS_ORIGINS=*,https://studio.example`) no longer revokes that
+  origin's cross-site writes. The `"*"` still degrades to the credential-less
+  read-only wildcard, but it is now dropped from the allow-list rather than
+  collapsing it, so naming an origin — the one documented way to grant it
+  writes — cannot silently do nothing.
 
 ### Fixed
 
@@ -71,6 +80,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `[server]` extra now depends on `argus-cortex[server]>=0.2.0,<0.3` for the
+  shared write-guard. It is a *server* dependency, not a base one: a plain
+  `pip install argus-curator` stays engine-only. The `<0.3` cap is deliberate —
+  argus-cortex is pre-1.0, where a minor bump carries no compatibility
+  guarantee, and this is security-critical middleware.
+- The `[server]` extra's fastapi floor rises to `>=0.110.1`. fastapi 0.110.0
+  pins `starlette<0.37` while `argus-cortex[server]` needs `starlette>=0.37`, so
+  0.110.0 was never actually installable alongside it; the old `>=0.110` floor
+  advertised support it did not have.
+- The `[all]` extra is now composed from `[server,cli,faces]` instead of
+  hand-duplicating their contents, so a new member of any of them cannot go
+  missing from `all` (it had already drifted).
+- `CURATOR_ALLOW_MOVE` parsing moved to `argus_cortex.server.env_flag`, shared
+  with the other suite servers. Two behaviour changes: surrounding whitespace is
+  now stripped, so an `env_file` line or secret file with a trailing newline
+  (`CURATOR_ALLOW_MOVE=1 `) now *enables* destructive move-exports where it
+  previously read as off; and a set-but-unrecognised value (`=enabled`) logs a
+  warning instead of silently resolving off. **Check your deployment config if
+  you relied on the old whitespace behaviour.**
 - **Manifest 2.0** (breaking for consumers that derive destinations from
   `rel_path`): rows are written only for files whose transfer succeeded and
   carry `exported_path` — the real (possibly de-collided) path under the

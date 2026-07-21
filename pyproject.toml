@@ -33,16 +33,25 @@ dependencies = [
     "ImageHash>=4.3",
     "pydantic>=2.6",
     "structlog>=24.0",
-    # Shared suite foundation; the server uses its write-guard scaffolding
-    # (argus_cortex.server) — 0.2.0+.
-    "argus-cortex>=0.2.0",
 ]
 
 [project.optional-dependencies]
-# httpx powers the optional export -> argus-lens caption handoff (_post_manifest_to_lens);
-# argus-cortex[server] pulls starlette for the shared write-guard (fastapi provides it too,
-# but the extra declares the dependency honestly).
-server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7", "httpx>=0.27", "argus-cortex[server]>=0.2.0"]
+# httpx powers the optional export -> argus-lens caption handoff (_post_manifest_to_lens).
+# argus-cortex supplies the shared write-guard (argus_cortex.server), imported only by
+# server/app.py — hence the [server] extra rather than the base dependencies, so an
+# engine/CLI-only install stays engine-only. Its [server] extra pulls starlette; fastapi
+# provides it too, but declaring it keeps the constraint honest. fastapi>=0.110.1 is the
+# first release requiring starlette>=0.37 — 0.110.0 pins starlette<0.37 and so cannot be
+# resolved alongside argus-cortex[server]. The <0.3 cap is deliberate: argus-cortex is
+# pre-1.0, where a minor bump carries no compatibility guarantee, and this is
+# security-critical middleware resolved fresh on every Docker build.
+server = [
+    "fastapi>=0.110.1",
+    "uvicorn>=0.27",
+    "python-multipart>=0.0.7",
+    "httpx>=0.27",
+    "argus-cortex[server]>=0.2.0,<0.3",
+]
 cli = ["typer>=0.12", "rich>=13.0"]
 gpu = [
     "insightface>=0.7.3",
@@ -56,18 +65,9 @@ faces = [
     "opencv-python-headless>=4.9",
     "scikit-learn>=1.3",
 ]
-all = [
-    "fastapi>=0.110",
-    "uvicorn>=0.27",
-    "python-multipart>=0.0.7",
-    "httpx>=0.27",
-    "typer>=0.12",
-    "rich>=13.0",
-    "insightface>=0.7.3",
-    "onnxruntime>=1.16",
-    "opencv-python-headless>=4.9",
-    "scikit-learn>=1.3",
-]
+# Composed from the extras above rather than hand-duplicating them, so a new
+# member of `server`/`cli`/`faces` cannot silently go missing from `all`.
+all = ["argus-curator[server,cli,faces]"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5", "httpx>=0.27"]
 
 [project.scripts]

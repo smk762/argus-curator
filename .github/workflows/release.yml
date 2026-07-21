@@ -43,6 +43,15 @@ jobs:
           uv venv --python ${{ matrix.python-version }}
           uv pip install dist/*.whl
           uv run --no-sync python -c "from argus_curator import scan_folder, __version__; print(f'argus-curator {__version__} OK')"
+      # The base import never touches server/app.py, so it cannot catch a broken
+      # server dependency edge (argus-cortex is resolved from PyPI at install
+      # time and can move between the last green CI run and a tag push). Import
+      # the server module too, so a missing or renamed argus_cortex.server fails
+      # here rather than on the user's first `argus-curator serve`.
+      - name: Smoke-test the server extra
+        run: |
+          uv pip install "$(echo dist/*.whl)[server]"
+          uv run --no-sync python -c "from argus_curator.server.app import create_app; create_app(); print('argus-curator[server] OK')"
 
   publish-testpypi:
     runs-on: ubuntu-latest

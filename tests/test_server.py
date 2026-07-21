@@ -587,3 +587,86 @@ def test_cross_site_read_is_unaffected(contained: tuple[TestClient, Path]) -> No
     """Only state-changing methods are gated; GETs stay CORS's business."""
     client, _exports = contained
     assert client.get("/health", headers={"Origin": "https://evil.example"}).status_code == 200
+
+
+def test_refused_write_still_carries_cors_headers(tmp_path: Path) -> None:
+    """The guard must stay *inside* CORS, or the 403 is an opaque browser error.
+
+    Registration order is the whole reason WriteGuard is added before
+    CORSMiddleware. Assert the observable consequence, not the ordering: without
+    the CORS headers the calling page cannot read the JSON detail explaining why
+    its upload was refused. The guard now lives in argus-cortex, so this is the
+    only thing pinning that contract from inside this repo.
+    """
+    root = tmp_path / "mount"
+    root.mkdir()
+    app = create_app(cache_dir=str(tmp_path / "cache"), source_root=str(root), cors_allow_any=True)
+    resp = _upload(TestClient(app), headers={"Origin": "https://any.example"})
+    assert resp.status_code == 403  # type: ignore[attr-defined]
+    assert resp.headers.get("access-control-allow-origin") == "*"  # type: ignore[attr-defined]
+    assert "cross-site" in resp.json()["detail"]  # type: ignore[attr-defined]
+
+
+def test_wildcard_does_not_revoke_writes_from_a_named_origin(tmp_path: Path) -> None:
+    """A "*" co-listed with a real origin must not collapse the whole allow-list.
+
+    Naming an origin is the one documented way to grant it cross-site writes, so
+    a stray "*" alongside it must degrade the *wildcard* to read-only without
+    taking the named origin down with it.
+    """
+    root = tmp_path / "mount"
+    root.mkdir()
+    app = create_app(
+        cache_dir=str(tmp_path / "cache"),
+        source_root=str(root),
+        cors_origins=["*", "https://studio.example"],
+    )
+    client = TestClient(app)
+    # The wildcard still grants anonymous reads but no cross-site write...
+    assert client.get("/health", headers={"Origin": "https://evil.example"}).status_code == 200
+    assert _upload(client, headers={"Origin": "https://evil.example"}).status_code == 403  # type: ignore[attr-defined]
+    assert not (root / "uploads" / "evil.png").exists()
+    # ...while the origin the operator actually named keeps its writes.
+    assert _upload(client, headers={"Origin": "https://studio.example"}).status_code == 200  # type: ignore[attr-defined]
+    assert (root / "uploads" / "evil.png").is_file()
+
+
+# ---------------------------------------------------------------------------
+# CURATOR_ALLOW_MOVE is the only gate on the destructive transfer mode, and it
+# is parsed by argus_cortex.server.env_flag. Every other move test passes
+# allow_move= directly, so without these the env path — the one operators
+# actually use — is never executed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", True),
+        ("true", True),
+        ("TRUE", True),
+        ("yes", True),
+        ("on", True),
+        (" 1 ", True),  # surrounding whitespace is stripped (env_file / secret-file shapes)
+        ("0", False),
+        ("false", False),
+        ("", False),
+        ("enabled", False),  # unrecognised -> off, with a warning
+    ],
+)
+def test_allow_move_env_parsing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, expected: bool) -> None:
+    monkeypatch.setenv("CURATOR_ALLOW_MOVE", value)
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache")))
+    assert client.get("/health").json()["allow_move"] is expected
+
+
+def test_allow_move_env_defaults_off_when_unset(tmp_path: Path) -> None:
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache")))
+    assert client.get("/health").json()["allow_move"] is False
+
+
+def test_allow_move_argument_overrides_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit allow_move= wins; the env var is only the default."""
+    monkeypatch.setenv("CURATOR_ALLOW_MOVE", "1")
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache"), allow_move=False))
+    assert client.get("/health").json()["allow_move"] is False
