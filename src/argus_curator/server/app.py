@@ -24,12 +24,16 @@ from pathlib import Path
 from typing import Any
 
 try:
+    # Inside the guard with fastapi: argus_cortex.server ships in argus-cortex 0.2.0+
+    # behind its own [server] extra, so a stale cortex fails here too and must get the
+    # same actionable message rather than a bare ModuleNotFoundError naming a package
+    # the user never installed directly.
+    from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
     from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
     from fastapi.responses import Response, StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
-from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
 from PIL import Image
 
 from argus_curator import __version__, export, scanner
@@ -179,7 +183,14 @@ def create_app(
     # READ access from anywhere, but never a cross-site write: a public demo
     # must not double as an upload target for any page its users visit. To
     # allow cross-site writes, name the origin with --cors-origin.
-    trusted_origins: list[str] = [] if wildcard else list(cors_origins or (_LOCALHOST_ORIGINS if cors else []))
+    #
+    # The "*" is dropped rather than allowed to collapse the whole list: a
+    # wildcard co-listed with a real origin (`--cors-origin '*' --cors-origin
+    # https://studio.example`, or CURATOR_CORS_ORIGINS=*,https://studio.example)
+    # must still grant that named origin its writes, or naming it — the one
+    # documented way to get them — silently does nothing.
+    named = [o for o in (cors_origins or []) if o != "*"]
+    trusted_origins: list[str] = named or ([] if wildcard else (_LOCALHOST_ORIGINS if cors else []))
 
     # CORS is not a write boundary — see cross_site_refuse for why an unauthed
     # LAN/localhost server must gate unsafe methods on Origin itself.
