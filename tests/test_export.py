@@ -45,6 +45,7 @@ def test_manifest_rows_carry_target_profile(dataset: Path, tmp_path: Path) -> No
         "rel_path",
         "abs_path",
         "exported_path",
+        "exported_abs_path",
         "target_profile",
         "primary_face_cluster",
         "primary_face_pose",
@@ -162,3 +163,158 @@ def test_symlink_mode(dataset: Path, tmp_path: Path) -> None:
     assert result.copied >= 1
     a_link = dest / result.selected_rel_paths[0]
     assert a_link.is_symlink()
+
+
+# ---------------------------------------------------------------------------
+# Manifest/result path contract (issues #9, #10, #11). The recurring failure is
+# a consumer having to reconstruct the server's layout — or being handed a path
+# the server already deleted.
+# ---------------------------------------------------------------------------
+
+
+def test_move_manifest_abs_path_points_at_the_moved_file(dataset: Path, tmp_path: Path) -> None:
+    """Issue #9: under move the source is gone, so abs_path must name the destination.
+
+    argus-lens opens rows strictly by abs_path, so writing the source there made
+    a move export's manifest unusable — every row a dead path.
+    """
+    summary = scan_folder(dataset)
+    dest = tmp_path / "moved"
+    result = export_selection(
+        summary,
+        ExportRequest(scan_id=summary.scan_id, dest=str(dest), mode="move", min_score=0.0),
+    )
+    assert result.copied >= 1
+
+    rows = [json.loads(line) for line in (dest / "manifest.jsonl").read_text().strip().splitlines()]
+    assert rows
+    for row in rows:
+        # The whole point: every path the row hands a consumer is openable.
+        assert Path(row["abs_path"]).is_file(), row["abs_path"]
+        assert Path(row["exported_abs_path"]).is_file()
+        assert row["abs_path"] == row["exported_abs_path"]
+        # ...and it is the destination, not the source the transfer deleted.
+        assert Path(row["abs_path"]).is_relative_to(dest.resolve())
+        assert not Path(dataset / row["rel_path"]).exists()
+
+
+def test_copy_manifest_abs_path_still_names_the_source(dataset: Path, tmp_path: Path) -> None:
+    """The move fix must not disturb copy: the source survives and stays authoritative."""
+    summary = scan_folder(dataset)
+    dest = tmp_path / "copied"
+    export_selection(
+        summary,
+        ExportRequest(scan_id=summary.scan_id, dest=str(dest), mode="copy", min_score=0.0),
+    )
+    rows = [json.loads(line) for line in (dest / "manifest.jsonl").read_text().strip().splitlines()]
+    assert rows
+    for row in rows:
+        assert Path(row["abs_path"]).is_relative_to(dataset.resolve())
+        assert Path(row["abs_path"]).is_file()
+        # The copy is still reachable, just via the dedicated field.
+        assert Path(row["exported_abs_path"]).is_file()
+        assert Path(row["exported_abs_path"]).is_relative_to(dest.resolve())
+
+
+def test_symlink_exported_abs_path_is_the_link_not_its_target(dataset: Path, tmp_path: Path) -> None:
+    """Resolving the destination would follow the link back to the source.
+
+    That would report the very location the export exists to move away from, so
+    the root is resolved and the destination joined onto it.
+    """
+    summary = scan_folder(dataset)
+    dest = tmp_path / "linked"
+    result = export_selection(
+        summary,
+        ExportRequest(scan_id=summary.scan_id, dest=str(dest), mode="symlink", min_score=0.0),
+    )
+    assert result.exported_abs_paths
+    for abs_path in result.exported_abs_paths.values():
+        assert Path(abs_path).is_symlink()
+        assert Path(abs_path).is_relative_to(dest.resolve())
+
+
+def test_exported_abs_paths_survive_flattened_de_collision(dataset: Path, tmp_path: Path) -> None:
+    """Issue #10: with preserve_structure=False the client cannot derive the name.
+
+    De-collided basenames are stem-<sha1 prefix>.ext, so a client joining dest
+    onto rel_path lands nowhere. The absolute mapping is the only usable answer.
+    """
+    summary = scan_folder(dataset)
+    dest = tmp_path / "flat"
+    result = export_selection(
+        summary,
+        ExportRequest(
+            scan_id=summary.scan_id,
+            dest=str(dest),
+            min_score=0.0,
+            preserve_structure=False,
+        ),
+    )
+    assert result.exported_abs_paths
+    assert set(result.exported_abs_paths) == set(result.exported_paths)
+    for rel, abs_path in result.exported_abs_paths.items():
+        assert Path(abs_path).is_file()
+        assert Path(abs_path) == dest.resolve() / result.exported_paths[rel]
+        # Absolute, so no client-side join against dest is needed at all.
+        assert Path(abs_path).is_absolute()
+
+
+def test_export_result_declares_manifest_version_even_without_a_manifest(dataset: Path, tmp_path: Path) -> None:
+    """Issue #11: the version must not depend on a manifest being requested."""
+    summary = scan_folder(dataset)
+    result = export_selection(
+        summary,
+        ExportRequest(
+            scan_id=summary.scan_id,
+            dest=str(tmp_path / "nomanifest"),
+            min_score=0.0,
+            write_manifest=False,
+        ),
+    )
+    assert result.manifest_path is None
+    assert result.manifest_version == MANIFEST_VERSION
+    # Still populated, which is the point of exported_paths existing at all.
+    assert result.exported_abs_paths
+
+
+def test_empty_export_is_distinguishable_from_a_legacy_server(dataset: Path, tmp_path: Path) -> None:
+    """The sniffing failure mode #11 describes: an empty mapping is not "old server".
+
+    A 2.x curator that transferred nothing sends {} — identical to what a
+    presence check would read as legacy — so the declared version is the only
+    thing that separates the two.
+    """
+    summary = scan_folder(dataset)
+    result = export_selection(
+        summary,
+        ExportRequest(
+            scan_id=summary.scan_id,
+            dest=str(tmp_path / "none"),
+            min_score=99.0,  # nothing clears this
+        ),
+    )
+    assert result.copied == 0
+    assert result.exported_paths == {}
+    assert result.exported_abs_paths == {}
+    assert result.manifest_version == MANIFEST_VERSION
+
+
+def test_selected_rel_paths_is_not_a_record_of_what_landed(dataset: Path, tmp_path: Path) -> None:
+    """The truthfulness nit in #9: selection is computed before the transfer loop.
+
+    A source that vanishes between scan and export is still "selected" but never
+    lands, so only exported_paths answers "what is on disk".
+    """
+    summary = scan_folder(dataset)
+    doomed = summary.results[0]
+    Path(doomed.abs_path).unlink()
+
+    result = export_selection(
+        summary,
+        ExportRequest(scan_id=summary.scan_id, dest=str(tmp_path / "partial"), min_score=0.0),
+    )
+    assert doomed.rel_path in result.selected_rel_paths
+    assert doomed.rel_path not in result.exported_paths
+    assert doomed.rel_path not in result.exported_abs_paths
+    assert result.skipped >= 1

@@ -109,6 +109,8 @@ def write_manifest(
     summary: ScanSummary,
     path: Path,
     exported_paths: dict[str, str],
+    exported_abs_paths: dict[str, str] | None = None,
+    mode: str = "copy",
 ) -> None:
     """Write the JSONL handoff manifest (one :class:`ManifestRow` per line).
 
@@ -117,15 +119,25 @@ def write_manifest(
     are not on disk. ``exported_paths`` maps rel_path to the path written under
     the export root (posix, relative); consumers must use it instead of
     re-deriving a destination from ``rel_path`` — flattened exports de-collide
-    basenames, so the two can differ.
+    basenames, so the two can differ. ``exported_abs_paths`` is that mapping
+    made absolute, so each row is usable without knowing the export root.
+
+    Under ``mode="move"`` the transfer deleted the source, so ``abs_path`` —
+    which consumers open the image from — is written as the *destination*.
+    Writing the source there names a file that no longer exists, which is the
+    whole of issue #9: argus-lens reads rows strictly by ``abs_path``, so a
+    moved export produced a manifest it could not use at all.
     """
+    abs_paths = exported_abs_paths or {}
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for r in exported:
+            exported_abs = abs_paths.get(r.rel_path) or str(path.parent / exported_paths[r.rel_path])
             row = ManifestRow(
                 rel_path=r.rel_path,
-                abs_path=r.abs_path,
+                abs_path=exported_abs if mode == "move" else r.abs_path,
                 exported_path=exported_paths[r.rel_path],
+                exported_abs_path=exported_abs,
                 target_profile=summary.target_profile,
                 primary_face_cluster=r.primary_face_cluster,
                 primary_face_pose=r.primary_face_pose,
@@ -272,11 +284,16 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
     # Only files that actually landed under dest_root — the manifest and the
     # result must not claim exports that never happened.
     exported = {r.rel_path: dest_paths[r.rel_path] for r in transferred}
+    # Resolve the root, not each destination: under mode="symlink" resolving a
+    # destination would follow the link straight back to the source, reporting
+    # the location the export exists to move away from.
+    dest_abs_root = dest_root.resolve()
+    exported_abs = {rel: str(dest_abs_root / dest) for rel, dest in exported.items()}
 
     manifest_path: Path | None = None
     if req.write_manifest:
         manifest_path = dest_root / MANIFEST_NAME
-        write_manifest(transferred, summary, manifest_path, exported)
+        write_manifest(transferred, summary, manifest_path, exported, exported_abs, req.mode)
         write_report(results, keep_reason, selected_rel, exported, dest_root / REPORT_NAME)
 
     captioned = False
@@ -300,5 +317,6 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         mode=req.mode,
         selected_rel_paths=sorted(selected_rel),
         exported_paths=exported,
+        exported_abs_paths=exported_abs,
         captioned=captioned,
     )

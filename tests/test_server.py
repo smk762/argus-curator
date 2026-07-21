@@ -38,6 +38,20 @@ def test_health(client: TestClient) -> None:
     assert resp.json()["service"] == "argus-curator"
 
 
+def test_health_declares_manifest_version(client: TestClient) -> None:
+    """Issue #11: clients must be able to ask, not sniff which fields turned up.
+
+    The package version moves independently of the manifest contract, so it
+    cannot stand in for it — assert they are reported separately.
+    """
+    from argus_curator.models import MANIFEST_VERSION
+
+    body = client.get("/health").json()
+    assert body["manifest_version"] == MANIFEST_VERSION
+    assert body["manifest_version"].split(".")[0] == "2"
+    assert "version" in body and body["version"] != body["manifest_version"]
+
+
 def test_folders_browse(dataset: Path, tmp_path: Path) -> None:
     app = create_app(cache_dir=str(tmp_path / "c2"), source_root=str(dataset))
     client = TestClient(app)

@@ -199,8 +199,8 @@ Export writes a JSONL manifest (one row per **exported** image — rows exist
 only for files whose transfer actually succeeded):
 
 ```jsonc
-{ "manifest_version": "2.0", "rel_path": "...", "abs_path": "...",
-  "exported_path": "...", "target_profile": { ... },
+{ "manifest_version": "2.1", "rel_path": "...", "abs_path": "...",
+  "exported_path": "...", "exported_abs_path": "...", "target_profile": { ... },
   "primary_face_cluster": "face_2", "primary_face_pose": "three_quarter",
   "score": 0.87, "similar_group": 3 }
 ```
@@ -217,6 +217,24 @@ than overwrite if a unique name cannot be generated. The same
 export response, so it is available even with `write_manifest: false`. Note
 that each export call plans in isolation: re-exporting into the same
 destination overwrites files (and rewrites the manifest).
+
+`exported_abs_path` is that file's absolute location, and `exported_abs_paths`
+the matching mapping on the export response. Prefer them: joining the export
+root onto `exported_path` means reconstructing the server's layout rule
+somewhere that does not own it, and the de-collision suffix above is not
+reproducible by a client anyway. A manifest is also frequently read somewhere
+other than the root it was written into — argus-lens receives it as an upload —
+and nothing in a row names that root.
+
+`abs_path` is where the image can be **read**, which is not always where it came
+from: `mode: "move"` deletes the source during transfer, so for a moved export
+`abs_path` equals `exported_abs_path`. Use `rel_path` for the original location
+within the scan.
+
+`GET /health` reports `manifest_version` alongside the package `version`, so a
+consumer can check the contract it is about to speak — and refuse an unknown
+major — rather than inferring it from which fields a response happens to carry.
+The two versions move independently.
 
 argus-lens batch-captions this manifest — categories are already shared, so no
 remapping. Set `caption_url` on the export request to POST it straight to lens
