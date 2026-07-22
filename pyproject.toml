@@ -68,7 +68,7 @@ faces = [
 # Composed from the extras above rather than hand-duplicating them, so a new
 # member of `server`/`cli`/`faces` cannot silently go missing from `all`.
 all = ["argus-curator[server,cli,faces]"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5", "httpx>=0.27"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5", "httpx>=0.27", "httpx2>=2.7"]
 
 [project.scripts]
 argus-curator = "argus_curator.cli:app"
