@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- NudeNet nudity detection through a NudeNet server over HTTP
+  (`ARGUS_CURATOR_NUDENET_URL`, plus `_TIMEOUT` / `_WORKERS`); curator never
+  imports NudeNet (AGPL-3.0). Each image records its detections, the highest
+  score per class and an exposed score over the five exposed-nudity classes
+  (`ImageResult.nsfw`, plus `nsfw_exposed_score` / `nsfw_labels` CSV columns),
+  as a new `nsfw` progress phase covering every image, quality rejects
+  included. `GET /detectors` reports `nudenet`.
+- NSFW export filters: `nsfw_threshold` on the exposed score and
+  `nsfw_label_thresholds` per class (CLI `--nsfw-threshold`, `--nsfw-label`),
+  with `nsfw_exposed_labels` choosing what the total covers. Thresholds are
+  inclusive; unchecked images are excluded (`nsfw-unchecked`).
+- `docker-compose.yaml` runs a NudeNet server (pinned by digest) next to
+  curator and points it there unless `.env` says otherwise.
+
+### Changed
+
+- The NudeNet check is opt-out: whenever `ARGUS_CURATOR_NUDENET_URL` is set,
+  scans run it unless they pass `--no-nsfw` / `"nsfw": {"enabled": false}`.
+  Deployments that do not set the URL are unaffected; the bundled
+  `docker compose` setup sets it, so set it empty there to opt out.
+
 ## [0.3.0] - 2026-10-25
 
 ### Added

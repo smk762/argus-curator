@@ -10,7 +10,8 @@ from __future__ import annotations
 import imagehash
 
 from argus_curator.garments import outfit, outfit_similarity
-from argus_curator.models import ExportRequest, ImageResult
+from argus_curator.models import ExportRequest, ImageResult, ScanSummary
+from argus_curator.nsfw import exposed_score
 
 _MAX_DIST = 64.0  # maximum 64-bit pHash Hamming distance
 
@@ -182,6 +183,35 @@ def _garment_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
     return None
 
 
+def _nsfw_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
+    """Keep-reason when *r* fails the NudeNet thresholds, else ``None``.
+
+    Thresholds are inclusive (a score equal to one excludes). An image that was
+    never checked, or whose check failed, is excluded rather than waved
+    through: an NSFW filter that passes unknowns is not a filter.
+    """
+    if req.nsfw_threshold is None and not req.nsfw_label_thresholds:
+        return None
+    if r.nsfw is None:
+        return "nsfw-unchecked"
+    if req.nsfw_threshold is not None and exposed_score(r.nsfw.labels, req.nsfw_exposed_labels) >= req.nsfw_threshold:
+        return "nsfw-exposed"
+    for label, threshold in (req.nsfw_label_thresholds or {}).items():
+        if r.nsfw.labels.get(label, 0.0) >= threshold:
+            return f"nsfw-{label.lower().replace('_', '-')}"
+    return None
+
+
+def nsfw_filter_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """Why *req*'s NSFW filters cannot be applied to *summary*, else ``None``."""
+    uses_nsfw = req.nsfw_threshold is not None or bool(req.nsfw_label_thresholds)
+    if uses_nsfw and not summary.nsfw_config.enabled:
+        return (
+            "NSFW thresholds need a scan that ran NudeNet; this one did not (set ARGUS_CURATOR_NUDENET_URL and rescan)"
+        )
+    return None
+
+
 def garment_floor_problem(req: ExportRequest, recorded_from: float) -> str | None:
     """Why *req*'s garment floor cannot be honoured by a scan, else ``None``.
 
@@ -205,8 +235,8 @@ def decide_selection(
     """Return ``(selected_results, keep_reason_by_rel)`` for an export request.
 
     Mirrors PR #14's ``_decide_keep``: applies score threshold, rejected/duplicate
-    gates, optional face-cluster / pose / attribute / scene / garment filters,
-    then an optional diversity cap.
+    gates, optional face-cluster / pose / attribute / scene / garment / NSFW
+    filters, then an optional diversity cap.
     """
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
@@ -230,6 +260,8 @@ def decide_selection(
             keep_reason[r.rel_path] = scene_reason
         elif (garment_reason := _garment_exclusion(r, req)) is not None:
             keep_reason[r.rel_path] = garment_reason
+        elif (nsfw_reason := _nsfw_exclusion(r, req)) is not None:
+            keep_reason[r.rel_path] = nsfw_reason
         else:
             eligible.append(r)
 

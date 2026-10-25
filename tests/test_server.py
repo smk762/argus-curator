@@ -92,6 +92,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "mivolo",
         "places365",
         "garments",
+        "nudenet",
     }
 
 
@@ -722,3 +723,33 @@ def test_export_refuses_garment_floor_below_what_the_scan_recorded(contained: tu
         resp = client.post(endpoint, json=body)
         assert resp.status_code == 400, endpoint
         assert "rescan" in resp.json()["detail"]
+
+
+def test_scan_requiring_nudenet_without_url_is_refused(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    for endpoint in ("/scan/folder", "/scan/folder/stream"):
+        resp = client.post(endpoint, json={"folder": "", "nsfw": {"enabled": True}})
+        assert resp.status_code == 400, endpoint
+        assert "ARGUS_CURATOR_NUDENET_URL is not set" in resp.json()["detail"]
+
+
+def test_malformed_nudenet_url_is_refused_without_echoing_it(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _exports = contained
+    monkeypatch.setenv("ARGUS_CURATOR_NUDENET_URL", "ftp://user:secret@nudenet")
+    resp = client.post("/scan/folder", json={"folder": ""})  # opt-out default: the check is on
+    assert resp.status_code == 400
+    assert "not a valid http(s) URL" in resp.json()["detail"]
+    assert "secret" not in resp.json()["detail"]
+
+
+def test_export_with_nsfw_thresholds_on_unchecked_scan_is_refused(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    assert scan["nsfw_config"]["enabled"] is False
+    body = {"scan_id": scan["scan_id"], "dest": "out", "nsfw_threshold": 0.5}
+    for endpoint in ("/export", "/export/stream"):
+        resp = client.post(endpoint, json=body)
+        assert resp.status_code == 400, endpoint
+        assert "NudeNet" in resp.json()["detail"]

@@ -309,6 +309,84 @@
           "title": "Mode",
           "type": "string"
         },
+        "nsfw_exposed_labels": {
+          "items": {
+            "enum": [
+              "FEMALE_GENITALIA_COVERED",
+              "FACE_FEMALE",
+              "BUTTOCKS_EXPOSED",
+              "FEMALE_BREAST_EXPOSED",
+              "FEMALE_GENITALIA_EXPOSED",
+              "MALE_BREAST_EXPOSED",
+              "ANUS_EXPOSED",
+              "FEET_EXPOSED",
+              "BELLY_COVERED",
+              "FEET_COVERED",
+              "ARMPITS_COVERED",
+              "ARMPITS_EXPOSED",
+              "FACE_MALE",
+              "BELLY_EXPOSED",
+              "MALE_GENITALIA_EXPOSED",
+              "ANUS_COVERED",
+              "FEMALE_BREAST_COVERED",
+              "BUTTOCKS_COVERED"
+            ],
+            "type": "string"
+          },
+          "title": "Nsfw Exposed Labels",
+          "type": "array"
+        },
+        "nsfw_label_thresholds": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "propertyNames": {
+                "enum": [
+                  "FEMALE_GENITALIA_COVERED",
+                  "FACE_FEMALE",
+                  "BUTTOCKS_EXPOSED",
+                  "FEMALE_BREAST_EXPOSED",
+                  "FEMALE_GENITALIA_EXPOSED",
+                  "MALE_BREAST_EXPOSED",
+                  "ANUS_EXPOSED",
+                  "FEET_EXPOSED",
+                  "BELLY_COVERED",
+                  "FEET_COVERED",
+                  "ARMPITS_COVERED",
+                  "ARMPITS_EXPOSED",
+                  "FACE_MALE",
+                  "BELLY_EXPOSED",
+                  "MALE_GENITALIA_EXPOSED",
+                  "ANUS_COVERED",
+                  "FEMALE_BREAST_COVERED",
+                  "BUTTOCKS_COVERED"
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nsfw Label Thresholds"
+        },
+        "nsfw_threshold": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.2,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nsfw Threshold"
+        },
         "preserve_structure": {
           "default": true,
           "title": "Preserve Structure",
@@ -970,6 +1048,17 @@
           "title": "Keep Reason",
           "type": "string"
         },
+        "nsfw": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NsfwResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "passed": {
           "default": false,
           "title": "Passed",
@@ -1171,6 +1260,123 @@
       "title": "ManifestRow",
       "type": "object"
     },
+    "NsfwConfig": {
+      "description": "NudeNet nudity detection via a remote NudeNet server (see nsfw.py).\n\nThe server URL is process configuration (ARGUS_CURATOR_NUDENET_URL),\ndeliberately not a field here: a request-supplied URL would let any API\ncaller make this server send images to an address of their choosing.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        }
+      },
+      "title": "NsfwConfig",
+      "type": "object"
+    },
+    "NsfwDetection": {
+      "description": "One NudeNet detection.",
+      "properties": {
+        "bbox": {
+          "description": "[x, y, w, h]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Bbox",
+          "type": "array"
+        },
+        "label": {
+          "enum": [
+            "FEMALE_GENITALIA_COVERED",
+            "FACE_FEMALE",
+            "BUTTOCKS_EXPOSED",
+            "FEMALE_BREAST_EXPOSED",
+            "FEMALE_GENITALIA_EXPOSED",
+            "MALE_BREAST_EXPOSED",
+            "ANUS_EXPOSED",
+            "FEET_EXPOSED",
+            "BELLY_COVERED",
+            "FEET_COVERED",
+            "ARMPITS_COVERED",
+            "ARMPITS_EXPOSED",
+            "FACE_MALE",
+            "BELLY_EXPOSED",
+            "MALE_GENITALIA_EXPOSED",
+            "ANUS_COVERED",
+            "FEMALE_BREAST_COVERED",
+            "BUTTOCKS_COVERED"
+          ],
+          "title": "Label",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "score",
+        "bbox"
+      ],
+      "title": "NsfwDetection",
+      "type": "object"
+    },
+    "NsfwResult": {
+      "description": "NudeNet's view of one image.\n\nThe server reports only detections scoring >= 0.2, so a class missing from\n``labels`` scored below that. ``exposed_score`` is the highest score among\n:data:`DEFAULT_EXPOSED_LABELS`; filters can recompute it over another set.",
+      "properties": {
+        "detections": {
+          "items": {
+            "$ref": "#/$defs/NsfwDetection"
+          },
+          "title": "Detections",
+          "type": "array"
+        },
+        "exposed_score": {
+          "default": 0.0,
+          "title": "Exposed Score",
+          "type": "number"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "propertyNames": {
+            "enum": [
+              "FEMALE_GENITALIA_COVERED",
+              "FACE_FEMALE",
+              "BUTTOCKS_EXPOSED",
+              "FEMALE_BREAST_EXPOSED",
+              "FEMALE_GENITALIA_EXPOSED",
+              "MALE_BREAST_EXPOSED",
+              "ANUS_EXPOSED",
+              "FEET_EXPOSED",
+              "BELLY_COVERED",
+              "FEET_COVERED",
+              "ARMPITS_COVERED",
+              "ARMPITS_EXPOSED",
+              "FACE_MALE",
+              "BELLY_EXPOSED",
+              "MALE_GENITALIA_EXPOSED",
+              "ANUS_COVERED",
+              "FEMALE_BREAST_COVERED",
+              "BUTTOCKS_COVERED"
+            ]
+          },
+          "title": "Labels",
+          "type": "object"
+        }
+      },
+      "title": "NsfwResult",
+      "type": "object"
+    },
     "ScanConfig": {
       "description": "Tunable parameters for a training-suitability scan.",
       "properties": {
@@ -1253,6 +1459,9 @@
         "garments": {
           "$ref": "#/$defs/GarmentConfig"
         },
+        "nsfw": {
+          "$ref": "#/$defs/NsfwConfig"
+        },
         "scenes": {
           "$ref": "#/$defs/SceneConfig"
         },
@@ -1304,6 +1513,9 @@
           ],
           "default": null,
           "title": "Limit"
+        },
+        "nsfw_config": {
+          "$ref": "#/$defs/NsfwConfig"
         },
         "offset": {
           "default": 0,

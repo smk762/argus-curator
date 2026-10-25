@@ -197,6 +197,8 @@ def write_report(
         "scene_environment",
         "scene_environment_conf",
         "garments",
+        "nsfw_exposed_score",
+        "nsfw_labels",
         "width",
         "height",
         "abs_path",
@@ -247,6 +249,9 @@ def write_report(
                     "garments": ";".join(
                         f"{g.label}:{g.conf:.2f}:{g.color}{'*' if g.touches_edge else ''}" for g in r.garments or []
                     ),
+                    "nsfw_exposed_score": r.nsfw.exposed_score if r.nsfw else "",
+                    # "LABEL:score" per detected class, highest first.
+                    "nsfw_labels": ";".join(f"{k}:{v:.2f}" for k, v in r.nsfw.labels.items()) if r.nsfw else "",
                     "width": r.width,
                     "height": r.height,
                     "abs_path": r.abs_path,

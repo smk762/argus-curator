@@ -25,6 +25,11 @@ _CONFIG_ENV = (
     "ARGUS_CURATOR_MIVOLO_MODEL",
     "ARGUS_CURATOR_PLACES365_MODEL",
     "ARGUS_CURATOR_GARMENTS_MODEL",
+    # A real NudeNet server in the shell would turn the opt-out check on for
+    # every scan under test.
+    "ARGUS_CURATOR_NUDENET_URL",
+    "ARGUS_CURATOR_NUDENET_TIMEOUT",
+    "ARGUS_CURATOR_NUDENET_WORKERS",
 )
 
 
