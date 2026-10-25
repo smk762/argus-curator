@@ -18,6 +18,86 @@
           "title": "Dest",
           "type": "string"
         },
+        "diversify_outfits": {
+          "default": false,
+          "title": "Diversify Outfits",
+          "type": "boolean"
+        },
+        "diversify_scenes": {
+          "default": false,
+          "title": "Diversify Scenes",
+          "type": "boolean"
+        },
+        "exclude_garments": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "shirt_blouse",
+                  "top_tshirt_sweatshirt",
+                  "sweater",
+                  "cardigan",
+                  "jacket",
+                  "vest",
+                  "pants",
+                  "shorts",
+                  "skirt",
+                  "coat",
+                  "dress",
+                  "jumpsuit",
+                  "cape",
+                  "glasses",
+                  "hat",
+                  "headband_hair_accessory",
+                  "tie",
+                  "glove",
+                  "watch",
+                  "belt",
+                  "leg_warmer",
+                  "tights_stockings",
+                  "sock",
+                  "shoe",
+                  "bag_wallet",
+                  "scarf",
+                  "umbrella"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Garments"
+        },
+        "face_ages": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "0-2",
+                  "3-9",
+                  "10-19",
+                  "20-29",
+                  "30-39",
+                  "40-49",
+                  "50-59",
+                  "60-69",
+                  "70+"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Ages"
+        },
         "face_clusters": {
           "anyOf": [
             {
@@ -32,6 +112,25 @@
           ],
           "default": null,
           "title": "Face Clusters"
+        },
+        "face_genders": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "male",
+                  "female"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Genders"
         },
         "face_poses": {
           "anyOf": [
@@ -53,6 +152,79 @@
           "default": null,
           "title": "Face Poses"
         },
+        "face_races": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "white",
+                  "black",
+                  "latino_hispanic",
+                  "east_asian",
+                  "southeast_asian",
+                  "indian",
+                  "middle_eastern"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Races"
+        },
+        "garments": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "shirt_blouse",
+                  "top_tshirt_sweatshirt",
+                  "sweater",
+                  "cardigan",
+                  "jacket",
+                  "vest",
+                  "pants",
+                  "shorts",
+                  "skirt",
+                  "coat",
+                  "dress",
+                  "jumpsuit",
+                  "cape",
+                  "glasses",
+                  "hat",
+                  "headband_hair_accessory",
+                  "tie",
+                  "glove",
+                  "watch",
+                  "belt",
+                  "leg_warmer",
+                  "tights_stockings",
+                  "sock",
+                  "shoe",
+                  "bag_wallet",
+                  "scarf",
+                  "umbrella"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Garments"
+        },
+        "garments_uncropped": {
+          "default": false,
+          "title": "Garments Uncropped",
+          "type": "boolean"
+        },
         "include_rejected": {
           "default": false,
           "title": "Include Rejected",
@@ -62,6 +234,19 @@
           "default": false,
           "title": "Keep Similar",
           "type": "boolean"
+        },
+        "max_age_years": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Age Years"
         },
         "max_keep": {
           "anyOf": [
@@ -74,6 +259,40 @@
           ],
           "default": null,
           "title": "Max Keep"
+        },
+        "min_age_years": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Age Years"
+        },
+        "min_attribute_conf": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Attribute Conf",
+          "type": "number"
+        },
+        "min_garment_conf": {
+          "default": 0.5,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Garment Conf",
+          "type": "number"
+        },
+        "min_scene_conf": {
+          "default": 0.1,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Scene Conf",
+          "type": "number"
         },
         "min_score": {
           "default": 0.6,
@@ -106,6 +325,40 @@
           ],
           "default": null,
           "title": "Scan Id"
+        },
+        "scene_environments": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "indoor",
+                  "outdoor"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Environments"
+        },
+        "scenes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenes"
         },
         "selection": {
           "anyOf": [
@@ -205,9 +458,167 @@
       "title": "ExportResult",
       "type": "object"
     },
+    "FaceAttributes": {
+      "description": "Predicted attributes of one face (or a cluster's pooled prediction).\n\nEach ``*_conf`` is the softmax probability of the chosen label, so a low\nvalue means the model was torn between labels. ``race`` comes only from\nFairFace. Gender and age come from MiVOLO when it ran, else FairFace (see\n``*_source``); a MiVOLO age is a regression, so ``age_years`` is set,\n``age`` is its derived bracket, and ``age_conf`` is ``None``.",
+      "properties": {
+        "age": {
+          "anyOf": [
+            {
+              "enum": [
+                "0-2",
+                "3-9",
+                "10-19",
+                "20-29",
+                "30-39",
+                "40-49",
+                "50-59",
+                "60-69",
+                "70+"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age"
+        },
+        "age_conf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Conf"
+        },
+        "age_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "fairface",
+                "mivolo"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Source"
+        },
+        "age_years": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Years"
+        },
+        "gender": {
+          "anyOf": [
+            {
+              "enum": [
+                "male",
+                "female"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gender"
+        },
+        "gender_conf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gender Conf"
+        },
+        "gender_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "fairface",
+                "mivolo"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gender Source"
+        },
+        "race": {
+          "anyOf": [
+            {
+              "enum": [
+                "white",
+                "black",
+                "latino_hispanic",
+                "east_asian",
+                "southeast_asian",
+                "indian",
+                "middle_eastern"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Race"
+        },
+        "race_conf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Race Conf"
+        }
+      },
+      "title": "FaceAttributes",
+      "type": "object"
+    },
     "FaceCluster": {
       "description": "A clustered identity across the scanned dataset.",
       "properties": {
+        "attributes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceAttributes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "cluster_id": {
           "title": "Cluster Id",
           "type": "string"
@@ -262,6 +673,11 @@
           "title": "Enabled",
           "type": "boolean"
         },
+        "fairface": {
+          "default": false,
+          "title": "Fairface",
+          "type": "boolean"
+        },
         "frontal_max_yaw": {
           "default": 15.0,
           "title": "Frontal Max Yaw",
@@ -271,6 +687,11 @@
           "default": 0.5,
           "title": "Min Det Score",
           "type": "number"
+        },
+        "mivolo": {
+          "default": false,
+          "title": "Mivolo",
+          "type": "boolean"
         },
         "model": {
           "default": "buffalo_l",
@@ -289,6 +710,17 @@
     "FaceDetection": {
       "description": "One detected face within an image.",
       "properties": {
+        "attributes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceAttributes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "bbox": {
           "description": "[x, y, w, h]",
           "items": {
@@ -369,6 +801,99 @@
       "title": "FaceDetection",
       "type": "object"
     },
+    "GarmentConfig": {
+      "description": "Fashionpedia garment detection on whole images (see garments.py).\n\nThe model file is process configuration (ARGUS_CURATOR_GARMENTS_MODEL),\ndeliberately not a field here.",
+      "properties": {
+        "device": {
+          "default": "auto",
+          "title": "Device",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "min_conf": {
+          "default": 0.3,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Conf",
+          "type": "number"
+        }
+      },
+      "title": "GarmentConfig",
+      "type": "object"
+    },
+    "GarmentDetection": {
+      "description": "One detected garment.",
+      "properties": {
+        "bbox": {
+          "description": "[x, y, w, h]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Bbox",
+          "type": "array"
+        },
+        "color": {
+          "title": "Color",
+          "type": "string"
+        },
+        "conf": {
+          "title": "Conf",
+          "type": "number"
+        },
+        "label": {
+          "enum": [
+            "shirt_blouse",
+            "top_tshirt_sweatshirt",
+            "sweater",
+            "cardigan",
+            "jacket",
+            "vest",
+            "pants",
+            "shorts",
+            "skirt",
+            "coat",
+            "dress",
+            "jumpsuit",
+            "cape",
+            "glasses",
+            "hat",
+            "headband_hair_accessory",
+            "tie",
+            "glove",
+            "watch",
+            "belt",
+            "leg_warmer",
+            "tights_stockings",
+            "sock",
+            "shoe",
+            "bag_wallet",
+            "scarf",
+            "umbrella"
+          ],
+          "title": "Label",
+          "type": "string"
+        },
+        "touches_edge": {
+          "default": false,
+          "title": "Touches Edge",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "label",
+        "conf",
+        "bbox",
+        "color"
+      ],
+      "title": "GarmentDetection",
+      "type": "object"
+    },
     "ImageResult": {
       "description": "Per-image curation record \u2014 superset of imogen's scanner output.\n\n``rel_path`` is the path relative to the scanned root and is the stable key\neverywhere (it stays unique across sub-folders, unlike a bare basename).",
       "properties": {
@@ -405,6 +930,21 @@
           "title": "Faces",
           "type": "array"
         },
+        "garments": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/GarmentDetection"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Garments"
+        },
         "group_size": {
           "default": 1,
           "title": "Group Size",
@@ -439,6 +979,17 @@
           "default": "",
           "title": "Phash",
           "type": "string"
+        },
+        "primary_face_attributes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceAttributes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "primary_face_cluster": {
           "anyOf": [
@@ -496,6 +1047,17 @@
         "rel_path": {
           "title": "Rel Path",
           "type": "string"
+        },
+        "scene": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SceneTags"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "score": {
           "default": 0.0,
@@ -688,6 +1250,12 @@
           "title": "Folder",
           "type": "string"
         },
+        "garments": {
+          "$ref": "#/$defs/GarmentConfig"
+        },
+        "scenes": {
+          "$ref": "#/$defs/SceneConfig"
+        },
         "target_profile": {
           "$ref": "#/$defs/TargetProfile"
         }
@@ -721,6 +1289,9 @@
         "folder": {
           "title": "Folder",
           "type": "string"
+        },
+        "garments_config": {
+          "$ref": "#/$defs/GarmentConfig"
         },
         "limit": {
           "anyOf": [
@@ -770,6 +1341,9 @@
           "title": "Scan Id",
           "type": "string"
         },
+        "scenes_config": {
+          "$ref": "#/$defs/SceneConfig"
+        },
         "similar_clusters": {
           "title": "Similar Clusters",
           "type": "integer"
@@ -795,6 +1369,78 @@
         "similar_clusters"
       ],
       "title": "ScanSummary",
+      "type": "object"
+    },
+    "SceneConfig": {
+      "description": "Places365 scene tagging of whole images (see scenes.py).\n\nThe model file is process configuration (ARGUS_CURATOR_PLACES365_MODEL),\ndeliberately not a field here.",
+      "properties": {
+        "device": {
+          "default": "auto",
+          "title": "Device",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "top_k": {
+          "default": 5,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "title": "SceneConfig",
+      "type": "object"
+    },
+    "SceneLabel": {
+      "properties": {
+        "conf": {
+          "title": "Conf",
+          "type": "number"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "conf"
+      ],
+      "title": "SceneLabel",
+      "type": "object"
+    },
+    "SceneTags": {
+      "description": "Places365 prediction for one image.\n\n``categories`` are the top-k scene labels, most probable first, each with\nits softmax probability. ``environment_conf`` is the probability mass on\ncategories of the chosen environment, so it is always at least 0.5.",
+      "properties": {
+        "categories": {
+          "items": {
+            "$ref": "#/$defs/SceneLabel"
+          },
+          "title": "Categories",
+          "type": "array"
+        },
+        "environment": {
+          "enum": [
+            "indoor",
+            "outdoor"
+          ],
+          "title": "Environment",
+          "type": "string"
+        },
+        "environment_conf": {
+          "title": "Environment Conf",
+          "type": "number"
+        }
+      },
+      "required": [
+        "environment",
+        "environment_conf"
+      ],
+      "title": "SceneTags",
       "type": "object"
     },
     "TargetProfile": {

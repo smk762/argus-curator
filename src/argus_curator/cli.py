@@ -19,6 +19,10 @@ app = typer.Typer(
 )
 
 
+def _csv_list(value: str | None) -> list[str] | None:
+    return [v.strip() for v in value.split(",") if v.strip()] if value else None
+
+
 @app.command()
 def scan(
     source: Path = Argument(..., help="Root folder to scan (recurses into sub-folders)"),
@@ -47,23 +51,107 @@ def scan(
     min_det_score: float = Option(0.5, "--min-det-score", help="Minimum face detection score"),
     cluster_eps: float = Option(0.5, "--cluster-eps", help="Cosine-distance threshold for face clustering"),
     device: str = Option("auto", "--device", help="auto|cpu|cuda for face detection"),
+    fairface: bool = Option(
+        False, "--fairface", help="Predict race/gender/age bracket per face with FairFace (implies --faces)"
+    ),
+    mivolo: bool = Option(
+        False, "--mivolo", help="Predict age in years + gender per face with MiVOLO (implies --faces)"
+    ),
+    fairface_model: Path | None = Option(
+        None, "--fairface-model", help="Converted FairFace ONNX model (ARGUS_CURATOR_FAIRFACE_MODEL)"
+    ),
+    mivolo_model: Path | None = Option(
+        None, "--mivolo-model", help="Converted MiVOLO ONNX model (ARGUS_CURATOR_MIVOLO_MODEL)"
+    ),
+    scenes: bool = Option(False, "--scenes", help="Tag each image's scene + indoor/outdoor with Places365"),
+    scene_top_k: int = Option(5, "--scene-top-k", help="Scene categories recorded per image"),
+    places365_model: Path | None = Option(
+        None, "--places365-model", help="Converted Places365 ONNX model (ARGUS_CURATOR_PLACES365_MODEL)"
+    ),
+    garments: bool = Option(False, "--garments", help="Detect garments (type, colour, cut-off) with Fashionpedia"),
+    garments_model: Path | None = Option(
+        None, "--garments-model", help="Converted garment-detector ONNX model (ARGUS_CURATOR_GARMENTS_MODEL)"
+    ),
     face_clusters: str | None = Option(None, "--face-clusters", help="Comma-separated cluster ids to export"),
     face_poses: str | None = Option(
         None, "--pose", help="Export only these primary-face poses (comma-separated: frontal,three_quarter,profile)"
+    ),
+    face_races: str | None = Option(
+        None,
+        "--race",
+        help="Export only these primary-face races (comma-separated: white,black,latino_hispanic,"
+        "east_asian,southeast_asian,indian,middle_eastern)",
+    ),
+    face_genders: str | None = Option(None, "--gender", help="Export only these primary-face genders (male,female)"),
+    face_ages: str | None = Option(
+        None, "--age", help="Export only these primary-face age brackets (comma-separated, e.g. 20-29,30-39)"
+    ),
+    min_age_years: float | None = Option(
+        None, "--min-age", help="Export only primary faces at least this old (MiVOLO)"
+    ),
+    max_age_years: float | None = Option(None, "--max-age", help="Export only primary faces at most this old (MiVOLO)"),
+    min_attribute_conf: float = Option(
+        0.0, "--min-attr-conf", help="Minimum confidence for a filtered attribute to count as a match (0..1)"
+    ),
+    scene_filter: str | None = Option(
+        None,
+        "--scene",
+        help="Export only images showing one of these Places365 scenes (comma-separated, e.g. beach,coast)",
+    ),
+    environment: str | None = Option(
+        None, "--environment", help="Export only indoor or outdoor images (indoor,outdoor)"
+    ),
+    min_scene_conf: float = Option(
+        0.1, "--min-scene-conf", help="Minimum probability for a scene / environment to count as a match"
+    ),
+    diversify_scenes: bool = Option(
+        False, "--diversify-scenes", help="With --max-keep, also spread the selection across scenes"
+    ),
+    garment_filter: str | None = Option(
+        None, "--garment", help="Export only images wearing one of these garments (comma-separated, e.g. dress,skirt)"
+    ),
+    exclude_garments: str | None = Option(
+        None, "--exclude-garment", help="Drop images showing any of these garments (e.g. bag_wallet,umbrella)"
+    ),
+    min_garment_conf: float = Option(
+        0.5, "--min-garment-conf", help="Minimum probability for a garment to count (filters + outfit diversity)"
+    ),
+    garments_uncropped: bool = Option(
+        False, "--uncropped", help="With --garment, the garment must not be cut off by the frame edge"
+    ),
+    diversify_outfits: bool = Option(
+        False, "--diversify-outfits", help="With --max-keep, also spread the selection across outfits"
     ),
     csv_out: Path | None = Option(None, "--csv", help="Write the per-image CSV report here"),
     json_out: Path | None = Option(None, "--json", help="Write the full ScanSummary JSON here"),
     verbose: bool = Option(False, "--verbose", "-v", help="Print per-image details"),
 ) -> None:
     """Scan a folder, rank for training suitability, and optionally export keepers."""
+    from pydantic import ValidationError
+
     from argus_curator.export import export_selection
-    from argus_curator.models import ExportRequest, FaceConfig, ScanConfig, TargetProfile
+    from argus_curator.models import ExportRequest, FaceConfig, GarmentConfig, ScanConfig, SceneConfig, TargetProfile
     from argus_curator.scanner import scan_folder as _scan
     from argus_curator.store import ScanStore
 
     if not source.is_dir():
         typer.echo(f"Error: not a directory: {source}", err=True)
         raise typer.Exit(1)
+    import os
+
+    from argus_curator import fairface as fairface_mod
+    from argus_curator import garments as garments_mod
+    from argus_curator import mivolo as mivolo_mod
+    from argus_curator import scenes as scenes_mod
+
+    for model_file, env in (
+        (fairface_model, fairface_mod.MODEL_ENV),
+        (mivolo_model, mivolo_mod.MODEL_ENV),
+        (places365_model, scenes_mod.MODEL_ENV),
+        (garments_model, garments_mod.MODEL_ENV),
+    ):
+        if model_file is not None:
+            os.environ[env] = str(model_file)
 
     profile = TargetProfile(
         target_style=style,
@@ -85,10 +173,70 @@ def scan(
         min_det_score=min_det_score,
         cluster_eps=cluster_eps,
         device=device,
+        fairface=fairface,
+        mivolo=mivolo,
     )
 
+    scene_cfg = SceneConfig(enabled=scenes, top_k=scene_top_k, device=device)
+    # Record garments at least as low as the export floor asks for: a scan
+    # keeps nothing below GarmentConfig.min_conf, so a lower floor would match
+    # nothing extra.
+    garment_cfg = GarmentConfig(
+        enabled=garments, device=device, min_conf=min(GarmentConfig().min_conf, min_garment_conf)
+    )
+
+    # Everything that can be wrong with the request fails here, before the
+    # scan rather than after it: unknown labels, inverted ranges, missing models.
+    dest = move_to or copy_to or symlink_to
+    mode = "move" if move_to else ("symlink" if symlink_to else "copy")
+    try:
+        export_req = ExportRequest(
+            dest=str(dest) if dest else str(source),
+            mode=mode,
+            min_score=min_score,
+            include_rejected=include_rejected,
+            keep_similar=keep_similar,
+            max_keep=max_keep,
+            face_clusters=[c.strip() for c in face_clusters.split(",")] if face_clusters else None,
+            face_poses=_csv_list(face_poses),
+            face_races=_csv_list(face_races),
+            face_genders=_csv_list(face_genders),
+            face_ages=_csv_list(face_ages),
+            min_age_years=min_age_years,
+            max_age_years=max_age_years,
+            min_attribute_conf=min_attribute_conf,
+            scenes=_csv_list(scene_filter),
+            scene_environments=_csv_list(environment),
+            min_scene_conf=min_scene_conf,
+            diversify_scenes=diversify_scenes,
+            garments=_csv_list(garment_filter),
+            exclude_garments=_csv_list(exclude_garments),
+            min_garment_conf=min_garment_conf,
+            garments_uncropped=garments_uncropped,
+            diversify_outfits=diversify_outfits,
+            write_manifest=dest is not None,
+        )
+    except ValidationError as exc:
+        for err in exc.errors():
+            field = ".".join(str(x) for x in err["loc"]) or "request"
+            typer.echo(f"Error: {field}: {err['msg']}", err=True)
+        raise typer.Exit(2) from exc
+
+    from argus_curator.attributes import fairface_available, mivolo_available
+
+    needed = (
+        (fairface, fairface_available, "FairFace", fairface_mod.MODEL_ENV, "fairface-convert <weights.pt>"),
+        (mivolo, mivolo_available, "MiVOLO", mivolo_mod.MODEL_ENV, "mivolo-convert"),
+        (scenes, scenes_mod.scenes_available, "Places365", scenes_mod.MODEL_ENV, "places365-convert"),
+        (garments, garments_mod.garments_available, "garment-detector", garments_mod.MODEL_ENV, "garments-convert"),
+    )
+    for wanted, available, name, env, command in needed:
+        if wanted and not available():
+            typer.echo(f"Error: no {name} model (run `argus-curator {command}` or set {env})", err=True)
+            raise typer.Exit(1)
+
     typer.echo(f"Scanning {source} (recursive) ...")
-    summary = _scan(source, profile, cfg, faces_cfg)
+    summary = _scan(source, profile, cfg, faces_cfg, scene_cfg=scene_cfg, garment_cfg=garment_cfg)
 
     typer.echo("=" * 56)
     typer.echo(f"  Scanned:               {summary.total}")
@@ -103,6 +251,34 @@ def scan(
     if pose_counts:
         dist = "  ".join(f"{p}={n}" for p, n in sorted(pose_counts.items()))
         typer.echo(f"  Primary-face pose:     {dist}")
+    for name in ("race", "gender", "age"):
+        counts: dict[str, int] = {}
+        for r in summary.results:
+            label = getattr(r.primary_face_attributes, name, None)
+            if label:
+                counts[label] = counts.get(label, 0) + 1
+        if counts:
+            dist = "  ".join(f"{k}={n}" for k, n in sorted(counts.items()))
+            typer.echo(f"  Primary-face {name + ':':<9}{dist}")
+    env_counts: dict[str, int] = {}
+    scene_counts: dict[str, int] = {}
+    for r in summary.results:
+        if r.scene:
+            env_counts[r.scene.environment] = env_counts.get(r.scene.environment, 0) + 1
+            if r.scene.categories:
+                top = r.scene.categories[0].label
+                scene_counts[top] = scene_counts.get(top, 0) + 1
+    if env_counts:
+        typer.echo(f"  Environment:           {'  '.join(f'{k}={n}' for k, n in sorted(env_counts.items()))}")
+        common = sorted(scene_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+        typer.echo(f"  Top scenes:            {'  '.join(f'{k}={n}' for k, n in common)}")
+    garment_counts: dict[str, int] = {}
+    for r in summary.results:
+        for label in {g.label for g in r.garments or [] if g.conf >= min_garment_conf}:
+            garment_counts[label] = garment_counts.get(label, 0) + 1
+    if garment_counts:
+        common = sorted(garment_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+        typer.echo(f"  Garments (images):     {'  '.join(f'{k}={n}' for k, n in common)}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
@@ -115,10 +291,20 @@ def scan(
             tag = f"g{r.similar_group}" + ("*" if r.is_representative and r.group_size > 1 else "")
             if r.primary_face_cluster:
                 pose = f" {r.primary_face_pose}" if r.primary_face_pose else ""
-                face = f" [{r.primary_face_cluster}{pose}]"
+                a = r.primary_face_attributes
+                age = f"{a.age_years:.0f}y" if a and a.age_years is not None else (a.age if a else None)
+                attrs = " ".join(str(v) for v in (a.race, a.gender, age) if v) if a else ""
+                attrs = f" {attrs}" if attrs else ""
+                face = f" [{r.primary_face_cluster}{pose}{attrs}]"
             else:
                 face = ""
-            typer.echo(f"  {r.score:.3f} {tag:>5}  {r.rel_path}{face}")
+            scene = ""
+            if r.scene and r.scene.categories:
+                scene = f" <{r.scene.categories[0].label}, {r.scene.environment}>"
+            worn = sorted({g.label for g in r.garments or [] if g.conf >= min_garment_conf})
+            if worn:
+                scene += f" {{{', '.join(worn)}}}"
+            typer.echo(f"  {r.score:.3f} {tag:>5}  {r.rel_path}{face}{scene}")
 
     # Persist so the result is reusable by the server / export-by-id.
     ScanStore().save(summary)
@@ -127,21 +313,8 @@ def scan(
         json_out.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
         typer.echo(f"\nJSON summary written -> {json_out}")
 
-    dest = move_to or copy_to or symlink_to
     if dest is not None or csv_out is not None:
-        mode = "move" if move_to else ("symlink" if symlink_to else "copy")
-        req = ExportRequest(
-            scan_id=summary.scan_id,
-            dest=str(dest) if dest else str(source),
-            mode=mode,
-            min_score=min_score,
-            include_rejected=include_rejected,
-            keep_similar=keep_similar,
-            max_keep=max_keep,
-            face_clusters=[c.strip() for c in face_clusters.split(",")] if face_clusters else None,
-            face_poses=[p.strip() for p in face_poses.split(",")] if face_poses else None,
-            write_manifest=dest is not None,
-        )
+        req = export_req.model_copy(update={"scan_id": summary.scan_id})
         # With no --copy-to/--move-to/--symlink-to there is nowhere to transfer
         # to: exporting would copy every file onto itself (SameFileError per
         # image) for a report-only run, so skip it and report no exported paths.
@@ -215,6 +388,107 @@ def detectors() -> None:
     for name, ok in _detectors().items():
         marker = "+" if ok else "-"
         typer.echo(f"  [{marker}] {name}")
+
+
+@app.command("fairface-convert")
+def fairface_convert(
+    weights: Path = Argument(..., help="Official FairFace 7-race weights (fairface_alldata_20191111.pt)"),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+) -> None:
+    """Convert the FairFace PyTorch weights to the ONNX model --fairface runs.
+
+    Download the weights from the FairFace repo (github.com/dchen236/FairFace,
+    CC BY 4.0). Needs: pip install argus-curator[fairface-convert]
+    """
+    from argus_curator.attributes import AttributesUnavailable
+    from argus_curator.fairface import export_onnx, model_path
+
+    if not weights.is_file():
+        typer.echo(f"Error: not a file: {weights}", err=True)
+        raise typer.Exit(1)
+    try:
+        written = export_onnx(weights, output or model_path())
+    except AttributesUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote FairFace ONNX model -> {written}")
+
+
+@app.command("mivolo-convert")
+def mivolo_convert(
+    weights: Path | None = Option(
+        None, "--weights", help="Local model.safetensors (default: download the pinned iitolstykh/mivolo_v2)"
+    ),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+) -> None:
+    """Fetch, verify and convert MiVOLO v2 to the ONNX model --mivolo runs.
+
+    Weights: huggingface.co/iitolstykh/mivolo_v2 (Apache-2.0), pinned by commit
+    and sha256. Needs: pip install argus-curator[mivolo-convert]
+    """
+    from argus_curator.attributes import AttributesUnavailable
+    from argus_curator.mivolo import export_onnx, fetch_weights, model_path
+
+    try:
+        source = weights or fetch_weights()
+        written = export_onnx(source, output or model_path())
+    except AttributesUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote MiVOLO ONNX model -> {written}")
+
+
+@app.command("places365-convert")
+def places365_convert(
+    arch: str = Option("resnet18", "--arch", help="resnet18 (default, 45 MB) or resnet50 (97 MB, ~1 pt better top-1)"),
+    weights: Path | None = Option(
+        None, "--weights", help="Local <arch>_places365.pth.tar (default: download it; sha256-checked)"
+    ),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+) -> None:
+    """Fetch, verify and convert a Places365-CNN to the ONNX model --scenes runs.
+
+    Weights: places2.csail.mit.edu (CC BY), pinned by sha256 since upstream
+    serves them over plain HTTP. Needs: pip install argus-curator[places365-convert]
+    """
+    from argus_curator.runtime import ModelUnavailable
+    from argus_curator.scenes import WEIGHTS, export_onnx, fetch_weights, model_path
+
+    if arch not in WEIGHTS:
+        typer.echo(f"Error: --arch must be one of {', '.join(WEIGHTS)}", err=True)
+        raise typer.Exit(1)
+    try:
+        source = weights or fetch_weights(arch)
+        written = export_onnx(source, arch, output or model_path())
+    except ModelUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote Places365 ({arch}) ONNX model -> {written}")
+
+
+@app.command("garments-convert")
+def garments_convert(
+    checkpoint: Path | None = Option(
+        None, "--checkpoint", help="Local dir with config.json + pytorch_model.bin (default: download the pinned one)"
+    ),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+) -> None:
+    """Fetch, verify and convert the Fashionpedia garment detector for --garments.
+
+    Weights: huggingface.co/valentinafevu/yolos-fashionpedia (MIT; trained on
+    Fashionpedia, CC BY 4.0), pinned by commit and sha256.
+    Needs: pip install argus-curator[garments-convert]
+    """
+    from argus_curator.garments import export_onnx, fetch_weights, model_path
+    from argus_curator.runtime import ModelUnavailable
+
+    try:
+        source = checkpoint or fetch_weights()
+        written = export_onnx(source, output or model_path())
+    except ModelUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote garment-detector ONNX model -> {written}")
 
 
 DEFAULT_SCHEMA_PATH = Path("schema/curator-wire.schema.json")

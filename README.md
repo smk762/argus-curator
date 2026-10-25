@@ -105,9 +105,162 @@ argus-curator scan /data/images --faces \
 argus-curator scan /data/images --faces \
     --pose frontal,three_quarter --copy-to /data/curated
 
+# Predict attributes per face (FairFace: race/gender/age bracket; MiVOLO: age in years/gender),
+# then keep adults up to 35 with a confident race prediction
+argus-curator scan /data/images --fairface --mivolo \
+    --race east_asian --min-attr-conf 0.6 --min-age 18 --max-age 35 --copy-to /data/curated
+
 # Which detectors are available?
 argus-curator detectors
 ```
+
+### Face attributes (FairFace + MiVOLO)
+
+Two optional models read each detected face; either switch implies `--faces`.
+
+| | [FairFace](https://github.com/dchen236/FairFace) (`--fairface`) | [MiVOLO v2](https://huggingface.co/iitolstykh/mivolo_v2) (`--mivolo`) |
+|---|---|---|
+| Predicts | race (7), gender, age bracket | age in **years**, gender |
+| Confidence | softmax probability per label | gender probability; age is a regression (none) |
+| Input | 224 px chip aligned on the 5 face keypoints | 384 px face box, letterboxed; face-only |
+| Weights | CC BY 4.0, Google Drive | Apache-2.0, Hugging Face |
+
+Race labels: white, black, latino_hispanic, east_asian, southeast_asian,
+indian, middle_eastern. Age brackets: 0-2, 3-9, 10-19, …, 60-69, 70+.
+
+With both on, MiVOLO wins gender and age (it is far stronger at both) and
+FairFace alone supplies race; the bracket is then derived from MiVOLO's years,
+so `--age` filters work with either model. `gender_source` / `age_source` say
+which model produced each value. Results land per face (`faces[].attributes`),
+on the primary face (`primary_face_attributes`, also in the CSV report), and
+pooled per identity cluster (`face_clusters[].attributes`): probabilities are
+averaged and ages take the median over every member face, so one odd frame
+cannot flip or drag an identity's label.
+
+MiVOLO is built to read a face *and* a person crop; there is no person
+detector here, so it runs face-only (a supported mode, slightly less accurate
+than MiVOLO's published face+body numbers).
+
+These are a model's guess from appearance, not facts about anyone; expect
+errors on ambiguous faces, mixed heritage, heavy makeup or poor lighting, and
+check `*_conf` before relying on a label.
+
+**Filters** (all on the primary face): `--race`, `--gender`, `--age`
+(brackets), `--min-age` / `--max-age` (years, MiVOLO). `--min-attr-conf` /
+`min_attribute_conf` additionally requires a filtered label's confidence to
+reach the floor (a MiVOLO age has none, so it is not held to it). Excluded
+images say why in `keep_reason`: `face-<attr>-excluded`,
+`face-<attr>-low-confidence`, `face-<attr>-missing`,
+`face-age-out-of-range`, `face-age-years-missing`, or
+`face-attributes-missing`.
+
+**Models** are not on PyPI; each is converted to ONNX once, after which
+inference runs on the `[faces]` onnxruntime stack with no torch:
+
+```bash
+# MiVOLO: downloads the pinned checkpoint (commit + sha256 checked)
+pip install "argus-curator[mivolo-convert]"
+argus-curator mivolo-convert          # -> ~/.cache/argus_curator/models/mivolo_v2_d1_384.onnx
+
+# FairFace: download fairface_alldata_20191111.pt from the FairFace repo first
+pip install "argus-curator[fairface-convert]"
+argus-curator fairface-convert fairface_alldata_20191111.pt
+                                      # -> ~/.cache/argus_curator/models/fairface_res34_race7.onnx
+```
+
+Point elsewhere with `--fairface-model` / `--mivolo-model` or
+`ARGUS_CURATOR_FAIRFACE_MODEL` / `ARGUS_CURATOR_MIVOLO_MODEL`. Model paths are
+server configuration, never part of a request; a server without a requested
+model refuses the scan with 400 before scoring anything, and `GET /detectors`
+reports `fairface` / `mivolo`.
+
+### Scene tags (Places365)
+
+`--scenes` (or `"scenes": {"enabled": true}` on the scan request) runs a
+[Places365](https://github.com/CSAILVision/places365)-CNN (Zhou et al., TPAMI
+2017) on every passing image and records its top-k scene categories (365 of
+them: `beach`, `bedroom`, `gas_station`, `forest_path`, …) with their softmax
+probabilities, plus an indoor/outdoor call. `environment_conf` is the
+probability mass on categories of that environment, not upstream's top-10
+vote. Results land on `results[].scene` and in the CSV report.
+
+Top-1 accuracy on Places365 is about 55% (top-5 about 85%), and neighbouring
+categories overlap (`lagoon` / `beach` / `coast`), which is why filters match
+any of the recorded top-k rather than only the first:
+
+- `--scene beach,coast` / `scenes`: keep images with one of these among their
+  top-k at probability ≥ `--min-scene-conf` / `min_scene_conf` (default 0.1, so
+  a label lingering in the tail at 3% does not count). Unknown labels are
+  rejected with 422 rather than silently matching nothing.
+- `--environment outdoor` / `scene_environments`: indoor or outdoor, held to the
+  same floor.
+- `--diversify-scenes` / `diversify_scenes` (with `--max-keep`): the diversity
+  cap also spreads the selection across backdrops, so an identity set is not
+  two hundred bathroom selfies.
+
+Excluded images say why: `scene-excluded`, `scene-low-confidence`,
+`scene-environment-excluded`, `scene-environment-low-confidence`, or
+`scene-missing`.
+
+The weights are converted once to ONNX, like the face models:
+
+```bash
+pip install "argus-curator[places365-convert]"   # torch, only for this step
+argus-curator places365-convert                  # resnet18 (default) or --arch resnet50
+# -> ~/.cache/argus_curator/models/places365_resnet18.onnx
+```
+
+Upstream serves the checkpoints over plain HTTP, so each is pinned by sha256.
+ResNet-50 is twice the size for about one point of top-1 (55.6% vs 54.5%).
+Point elsewhere with `--places365-model` / `ARGUS_CURATOR_PLACES365_MODEL`.
+
+### Garments (Fashionpedia)
+
+`--garments` (or `"garments": {"enabled": true}`) runs a YOLOS-small detector
+fine-tuned on [Fashionpedia](https://fashionpedia.github.io/home/)
+([`valentinafevu/yolos-fashionpedia`](https://huggingface.co/valentinafevu/yolos-fashionpedia),
+MIT; dataset CC BY 4.0) on every passing image. Each detection records its
+garment type (27 classes: `dress`, `pants`, `shoe`, `bag_wallet`, `hat`, …),
+probability, box, whether the box touches the frame edge (likely cut off), and
+a dominant colour from the box's centre. Results land on `results[].garments`
+(`[]` = ran, found nothing) and in the CSV as `label:conf:#colour`, with `*`
+marking a cut-off garment.
+
+Measured on 300 Fashionpedia validation images (CPU, ~0.3 s/image):
+
+| | |
+|---|---|
+| Garments, AP50 / mAP | 0.327 / 0.193 |
+| Strong (P / R at 0.5) | shoe 0.96 / 0.97 · pants 0.83 / 0.87 · dress 0.75 / 0.91 · hat 0.86 / 0.78 · jacket 0.86 / 0.58 |
+| Weak | skirt 0.38 / 0.31 · coat 0.43 / 0.15 · shirt/blouse recall 0.31 |
+| "Is garment X in the image?", all classes | P 0.64 / R 0.76 at 0.3 · **0.77 / 0.66 at 0.5** · 0.86 / 0.56 at 0.7 |
+
+Fashionpedia's 19 garment *parts* (sleeve, pocket, zipper, …) scored AP50
+0.105 and are not recorded; neither are its 294 fine-grained attributes, which
+no published checkpoint predicts. Detections are recorded from 0.3 so reviewers
+see the doubtful ones; filters count them from `--min-garment-conf` (0.5). A
+floor below what the scan recorded cannot be honoured, so the server refuses it
+with 400; the CLI instead records from the lower floor in the first place.
+
+- `--garment dress,skirt` / `garments`: wearing at least one of these.
+- `--exclude-garment bag_wallet,umbrella` / `exclude_garments`: none of these.
+  Exclusion wants recall, so consider a lower `--min-garment-conf` for it.
+- `--uncropped` / `garments_uncropped`: the matching garment is not cut off.
+- `--diversify-outfits` / `diversify_outfits` (with `--max-keep`): the
+  diversity cap also spreads the selection across outfits (garment types and
+  their colours), so an identity LoRA does not learn one outfit as part of the
+  person.
+
+Exclusions say why: `garment-not-found`, `garment-low-confidence` (present,
+below the floor), `garment-excluded`, `garment-cropped`, `garments-missing`.
+
+```bash
+pip install "argus-curator[garments-convert]"   # torch + transformers, only for this step
+argus-curator garments-convert                  # pinned commit + sha256
+# -> ~/.cache/argus_curator/models/yolos_fashionpedia.onnx
+```
+
+Point elsewhere with `--garments-model` / `ARGUS_CURATOR_GARMENTS_MODEL`.
 
 ### HTTP server (:8101, peer to argus-lens)
 
@@ -142,7 +295,7 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 | Route | Description |
 |---|---|
 | `GET  /health` | Liveness |
-| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime }` |
+| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
@@ -179,6 +332,15 @@ payload the non-streaming endpoint returns (or `event: error`).
   "min_score": 0.6, "include_rejected": false, "keep_similar": false,
   "face_clusters": ["face_2"],      // optional: export only these identities
   "face_poses": ["frontal", "three_quarter"],  // optional: export only these head poses
+  "face_races": null, "face_genders": null,    // optional: attribute filters on the primary face
+  "face_ages": null,                // FairFace brackets ("20-29", ...)
+  "min_age_years": 18, "max_age_years": 35,     // optional: MiVOLO age range
+  "min_attribute_conf": 0.6,        // filtered attributes must be at least this confident
+  "scenes": ["beach", "coast"],     // optional: Places365 scenes among the image's top-k
+  "scene_environments": ["outdoor"],
+  "min_scene_conf": 0.1, "diversify_scenes": false,
+  "garments": ["dress"], "exclude_garments": ["bag_wallet"],  // optional: Fashionpedia
+  "min_garment_conf": 0.5, "garments_uncropped": false, "diversify_outfits": true,
   "write_manifest": true,
   "caption_url": null               // optional: POST manifest to argus-lens
 }
@@ -191,7 +353,9 @@ docker compose up --build
 ```
 
 Bind-mounts a dataset into `/data/images`, an output dir into `/data/out`, and
-persists the scan cache + InsightFace model downloads across rebuilds.
+persists the scan cache + InsightFace model downloads across rebuilds. A
+converted FairFace / MiVOLO model under `~/.cache/argus_curator/models/` is
+picked up through the same cache mount.
 
 ## Handoff to argus-lens
 

@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Face attributes from two optional models (`FaceConfig.fairface` /
+  `FaceConfig.mivolo`, CLI `--fairface` / `--mivolo`; either implies face
+  detection). FairFace gives race (7 classes), gender and age bracket, each
+  with its softmax confidence; MiVOLO v2 gives age in years and gender, and
+  supersedes FairFace for both when the two run together (`gender_source` /
+  `age_source` record which). Recorded per face, on the primary face
+  (`ImageResult.primary_face_attributes`, plus CSV report columns), and pooled
+  per identity (`FaceCluster.attributes`: averaged probabilities, median age).
+- Both run on onnxruntime. `argus-curator fairface-convert <weights.pt>` and
+  `argus-curator mivolo-convert` (downloads `iitolstykh/mivolo_v2` pinned by
+  commit and sha256) export the ONNX models once, behind the
+  `[fairface-convert]` / `[mivolo-convert]` extras. Model paths come from
+  `ARGUS_CURATOR_FAIRFACE_MODEL` / `ARGUS_CURATOR_MIVOLO_MODEL` (or
+  `--fairface-model` / `--mivolo-model`), never from a request; the server
+  refuses a scan asking for a model it lacks with 400 before scoring.
+- Export filters on those attributes: `face_races`, `face_genders`,
+  `face_ages`, `min_age_years` / `max_age_years` and `min_attribute_conf`
+  (CLI `--race`, `--gender`, `--age`, `--min-age`, `--max-age`,
+  `--min-attr-conf`), each exclusion with its own `keep_reason`.
+- Places365 scene tags (`ScanRequest.scenes` / `SceneConfig`, CLI
+  `--scenes`): each passing image gets its top-k scene categories with
+  softmax probabilities and an indoor/outdoor call (`ImageResult.scene`, plus
+  CSV columns), as a new `scenes` progress phase. Converted once with
+  `argus-curator places365-convert` (`[places365-convert]` extra; ResNet-18 or
+  ResNet-50, sha256-pinned since upstream serves plain HTTP); the model path is
+  `ARGUS_CURATOR_PLACES365_MODEL` / `--places365-model`.
+- Export filters `scenes`, `scene_environments` and `min_scene_conf` (CLI
+  `--scene`, `--environment`, `--min-scene-conf`), and `diversify_scenes`
+  (`--diversify-scenes`) to spread a `max_keep` selection across backdrops.
+- Fashionpedia garment detection (`ScanRequest.garments` / `GarmentConfig`,
+  CLI `--garments`): each passing image gets its garments (27 classes) with
+  probability, box, a frame-edge "cut off" flag and a dominant colour
+  (`ImageResult.garments`, plus a CSV column), as a new `garments` progress
+  phase. Converted once with `argus-curator garments-convert`
+  (`[garments-convert]` extra; `valentinafevu/yolos-fashionpedia` pinned by
+  commit and sha256); the model path is `ARGUS_CURATOR_GARMENTS_MODEL` /
+  `--garments-model`.
+- Export filters `garments`, `exclude_garments`, `min_garment_conf` and
+  `garments_uncropped` (CLI `--garment`, `--exclude-garment`,
+  `--min-garment-conf`, `--uncropped`), and `diversify_outfits`
+  (`--diversify-outfits`) to spread a `max_keep` selection across outfits.
+- `GET /detectors` reports `fairface`, `mivolo`, `places365` and `garments`.
+
 ### Security
 
 - Server scan/export endpoints now enforce path containment (issue #3):

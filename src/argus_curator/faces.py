@@ -19,7 +19,9 @@ from collections.abc import Callable
 import numpy as np
 import structlog
 
+from argus_curator.attributes import RawAttributes, pool, to_attributes
 from argus_curator.models import FaceCluster, FaceConfig, FaceDetection, ImageResult
+from argus_curator.runtime import providers
 
 logger = structlog.get_logger()
 
@@ -40,24 +42,6 @@ def faces_available() -> bool:
         return False
 
 
-def _providers(device: str) -> list[str]:
-    dev = (device or "auto").lower()
-    if dev == "cpu":
-        return ["CPUExecutionProvider"]
-    try:
-        import onnxruntime as ort
-
-        available = set(ort.get_available_providers())
-    except Exception:
-        available = set()
-    if dev == "cuda":
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    # auto: prefer CUDA when present.
-    if "CUDAExecutionProvider" in available:
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    return ["CPUExecutionProvider"]
-
-
 def _get_app(cfg: FaceConfig):
     """Build (and cache) an InsightFace ``FaceAnalysis`` app for the model."""
     key = f"{cfg.model}:{cfg.device}"
@@ -68,8 +52,8 @@ def _get_app(cfg: FaceConfig):
     except Exception as exc:  # pragma: no cover - exercised only without deps
         raise FacesUnavailable("Face detection requires: pip install argus-curator[faces]  (or [gpu])") from exc
 
-    app = FaceAnalysis(name=cfg.model, providers=_providers(cfg.device))
-    ctx_id = 0 if "CUDAExecutionProvider" in _providers(cfg.device) else -1
+    app = FaceAnalysis(name=cfg.model, providers=providers(cfg.device))
+    ctx_id = 0 if "CUDAExecutionProvider" in providers(cfg.device) else -1
     app.prepare(ctx_id=ctx_id, det_size=(640, 640))
     _APP_CACHE[key] = app
     return app
@@ -171,6 +155,59 @@ def _cluster_embeddings(embeddings: np.ndarray, eps: float) -> list[int]:
         return labels
 
 
+def _attribute_sessions(cfg: FaceConfig) -> tuple[object | None, object | None]:
+    """``(fairface, mivolo)`` onnxruntime sessions for the enabled models."""
+    provs = providers(cfg.device)
+    ff = mv = None
+    if cfg.fairface:
+        from argus_curator import fairface
+
+        ff = fairface.get_session(provs)
+    if cfg.mivolo:
+        from argus_curator import mivolo
+
+        mv = mivolo.get_session(provs)
+    return ff, mv
+
+
+def _face_attributes(
+    sessions: tuple[object | None, object | None],
+    bgr: np.ndarray,
+    kps_by_face: list[np.ndarray | None],
+    bboxes: list[list[float]],
+    rel: str,
+) -> list[RawAttributes]:
+    """Raw model outputs per face of one image; a model that fails is skipped."""
+    raws = [RawAttributes() for _ in bboxes]
+    ff_session, mv_session = sessions
+    if (ff_session is None and mv_session is None) or not bboxes:
+        return raws
+    from PIL import Image
+
+    image = Image.fromarray(bgr[:, :, ::-1])
+    if ff_session is not None:
+        from argus_curator import fairface
+
+        # FairFace aligns on the 5 keypoints; a face without them is skipped.
+        idx = [i for i, kps in enumerate(kps_by_face) if kps is not None]
+        try:
+            probs = fairface.predict(ff_session, image, [kps_by_face[i] for i in idx])
+            for i, row in zip(idx, probs, strict=True):
+                raws[i].fairface = row
+        except Exception as exc:
+            logger.warning("fairface_failed", rel_path=rel, error=str(exc))
+    if mv_session is not None:
+        from argus_curator import mivolo
+
+        try:
+            for raw, pred in zip(raws, mivolo.predict(mv_session, image, bboxes), strict=True):
+                if pred is not None:
+                    raw.mivolo_gender, raw.mivolo_age = pred
+        except Exception as exc:
+            logger.warning("mivolo_failed", rel_path=rel, error=str(exc))
+    return raws
+
+
 def detect_and_cluster(
     results: list[ImageResult],
     items: list[tuple[str, str, bytes]],
@@ -180,7 +217,9 @@ def detect_and_cluster(
     """Detect faces on passing images, cluster identities, mutate ``results``.
 
     Returns the dataset-wide list of :class:`FaceCluster`. Each result gets its
-    ``faces`` list, ``face_count``, and ``primary_face_cluster`` populated.
+    ``faces`` list, ``face_count``, and ``primary_face_cluster`` populated; with
+    ``cfg.fairface`` / ``cfg.mivolo`` each face, primary face and cluster also
+    gets predicted attributes (see :mod:`argus_curator.attributes`).
 
     When *progress* is supplied it is called ``progress(done, total)`` as the
     per-image detection sweep advances (``total`` = passing images), so a caller
@@ -191,6 +230,7 @@ def detect_and_cluster(
         return []
 
     app = _get_app(cfg)
+    sessions = _attribute_sessions(cfg)
     data_by_rel = {rel: data for rel, _abs, data in items}
     result_by_rel = {r.rel_path: r for r in results}
 
@@ -198,6 +238,8 @@ def detect_and_cluster(
     flat_embeddings: list[np.ndarray] = []
     # (rel_path, face_index_within_image, bbox_xywh, det_score, centrality, area)
     flat_meta: list[tuple[str, int, list[float], float, float, float]] = []
+    # Per-face raw attribute outputs, aligned with flat_meta (pooled per cluster).
+    flat_raw: list[RawAttributes] = []
 
     # Materialise the work list up front so we know the total for progress.
     pending = [(rel, r) for rel, r in result_by_rel.items() if r.passed and data_by_rel.get(rel) is not None]
@@ -221,6 +263,7 @@ def detect_and_cluster(
 
         h, w = bgr.shape[:2]
         kept = 0
+        kps_by_face: list[np.ndarray | None] = []
         for face in detections:
             det_score = float(getattr(face, "det_score", 0.0))
             if det_score < cfg.min_det_score:
@@ -246,8 +289,14 @@ def detect_and_cluster(
                     pose=classify_pose(yaw, cfg),
                 )
             )
+            kps_by_face.append(getattr(face, "kps", None))
             kept += 1
         r.face_count = kept
+
+        raws = _face_attributes(sessions, bgr, kps_by_face, [f.bbox for f in r.faces], rel)
+        for f, raw in zip(r.faces, raws, strict=True):
+            f.attributes = to_attributes(raw)
+        flat_raw.extend(raws)
 
     if progress is not None:
         progress(total, total)
@@ -266,11 +315,13 @@ def detect_and_cluster(
 
     # Track, per cluster, the best representative face (highest det_score x area).
     cluster_members: dict[str, list[tuple[str, list[float], float]]] = {}
+    cluster_raw: dict[str, list[RawAttributes]] = {}
 
-    for (rel, face_idx, bbox, det_score, _central, area), lbl in zip(flat_meta, labels, strict=True):
+    for (rel, face_idx, bbox, det_score, _central, area), raw, lbl in zip(flat_meta, flat_raw, labels, strict=True):
         cluster_id = label_to_id[lbl]
         result_by_rel[rel].faces[face_idx].cluster_id = cluster_id
         cluster_members.setdefault(cluster_id, []).append((rel, bbox, det_score * (area or 1.0)))
+        cluster_raw.setdefault(cluster_id, []).append(raw)
 
     # Per-image primary face = largest * most-central detected face.
     for r in results:
@@ -286,6 +337,7 @@ def detect_and_cluster(
         r.primary_face_cluster = primary.cluster_id
         r.primary_face_pose = primary.pose
         r.primary_face_yaw = primary.yaw
+        r.primary_face_attributes = primary.attributes
 
     clusters: list[FaceCluster] = []
     for cluster_id, members in cluster_members.items():
@@ -296,6 +348,7 @@ def detect_and_cluster(
                 size=len(members),
                 representative_rel_path=rep_rel,
                 representative_bbox=rep_bbox,
+                attributes=pool(cluster_raw[cluster_id]),
             )
         )
     clusters.sort(key=lambda c: -c.size)

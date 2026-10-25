@@ -82,7 +82,17 @@ def test_folders_requires_source_root(client: TestClient) -> None:
 def test_detectors_keys(client: TestClient) -> None:
     resp = client.get("/detectors")
     assert resp.status_code == 200
-    assert set(resp.json()) == {"torch", "cuda", "clip", "insightface", "onnxruntime"}
+    assert set(resp.json()) == {
+        "torch",
+        "cuda",
+        "clip",
+        "insightface",
+        "onnxruntime",
+        "fairface",
+        "mivolo",
+        "places365",
+        "garments",
+    }
 
 
 def test_scan_then_paginate_then_export(contained: tuple[TestClient, Path]) -> None:
@@ -684,3 +694,31 @@ def test_allow_move_argument_overrides_env(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setenv("CURATOR_ALLOW_MOVE", "1")
     client = TestClient(create_app(cache_dir=str(tmp_path / "cache"), allow_move=False))
     assert client.get("/health").json()["allow_move"] is False
+
+
+def test_scan_refuses_models_it_does_not_have(contained: tuple[TestClient, Path]) -> None:
+    """Fail before scoring the whole folder, and without naming server paths."""
+    client, _exports = contained
+    cases = (
+        ("faces", "fairface", "FairFace", "ARGUS_CURATOR_FAIRFACE_MODEL"),
+        ("faces", "mivolo", "MiVOLO", "ARGUS_CURATOR_MIVOLO_MODEL"),
+        ("scenes", "enabled", "Places365", "ARGUS_CURATOR_PLACES365_MODEL"),
+        ("garments", "enabled", "Fashionpedia", "ARGUS_CURATOR_GARMENTS_MODEL"),
+    )
+    for section, flag, name, env in cases:
+        for endpoint in ("/scan/folder", "/scan/folder/stream"):
+            resp = client.post(endpoint, json={"folder": "", section: {flag: True}})
+            assert resp.status_code == 400, (endpoint, flag)
+            detail = resp.json()["detail"]
+            assert name in detail and env in detail
+            assert "/" not in detail.split("(")[0]
+
+
+def test_export_refuses_garment_floor_below_what_the_scan_recorded(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    body = {"scan_id": scan["scan_id"], "dest": "out", "garments": ["dress"], "min_garment_conf": 0.2}
+    for endpoint in ("/export", "/export/stream"):
+        resp = client.post(endpoint, json=body)
+        assert resp.status_code == 400, endpoint
+        assert "rescan" in resp.json()["detail"]

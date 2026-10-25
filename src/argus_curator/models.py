@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 TargetStyle = Literal["photo", "anime"]
 TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
@@ -19,6 +19,53 @@ TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
 # Head-pose bucket of the primary face, derived from InsightFace yaw. Lets the UI
 # pick a balanced subset by orientation (head-on / three-quarter / side profile).
 FacePose = Literal["frontal", "three_quarter", "profile"]
+
+# FairFace attribute labels, in the model's output order (see attributes.py).
+# These are a model's prediction from appearance, not ground truth about anyone.
+FaceRace = Literal["white", "black", "latino_hispanic", "east_asian", "southeast_asian", "indian", "middle_eastern"]
+FaceGender = Literal["male", "female"]
+FaceAge = Literal["0-2", "3-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70+"]
+FACE_RACES: tuple[FaceRace, ...] = FaceRace.__args__
+FACE_GENDERS: tuple[FaceGender, ...] = FaceGender.__args__
+FACE_AGES: tuple[FaceAge, ...] = FaceAge.__args__
+AttributeSource = Literal["fairface", "mivolo"]
+
+# Places365 indoor/outdoor call for a whole image.
+SceneEnvironment = Literal["indoor", "outdoor"]
+
+# Fashionpedia's 27 garment classes, in model output order (ids 0-26), as
+# comma-free slugs so they survive comma-separated CLI lists. Parts (sleeve,
+# pocket, ...; ids 27-45) are not recorded — see garments.py.
+GarmentLabel = Literal[
+    "shirt_blouse",  # shirt, blouse
+    "top_tshirt_sweatshirt",  # top, t-shirt, sweatshirt
+    "sweater",
+    "cardigan",
+    "jacket",
+    "vest",
+    "pants",
+    "shorts",
+    "skirt",
+    "coat",
+    "dress",
+    "jumpsuit",
+    "cape",
+    "glasses",
+    "hat",
+    "headband_hair_accessory",  # headband, head covering, hair accessory
+    "tie",
+    "glove",
+    "watch",
+    "belt",
+    "leg_warmer",
+    "tights_stockings",  # tights, stockings
+    "sock",
+    "shoe",
+    "bag_wallet",  # bag, wallet
+    "scarf",
+    "umbrella",
+]
+GARMENT_LABELS: tuple[GarmentLabel, ...] = GarmentLabel.__args__
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -107,10 +154,74 @@ class FaceConfig(BaseModel):
     frontal_max_yaw: float = 15.0
     profile_min_yaw: float = 45.0
 
+    # Face-attribute models (see attributes.py). Model files are process
+    # configuration (ARGUS_CURATOR_FAIRFACE_MODEL / ARGUS_CURATOR_MIVOLO_MODEL),
+    # deliberately not fields here. Either one implies face detection.
+    fairface: bool = False  # race, gender, age bracket
+    mivolo: bool = False  # age in years, gender (supersedes FairFace's)
+
+    @model_validator(mode="after")
+    def _attributes_need_faces(self) -> FaceConfig:
+        # Attributes are read off detected faces; asking for them without
+        # detection would otherwise silently yield nothing.
+        if self.fairface or self.mivolo:
+            self.enabled = True
+        return self
+
+
+class SceneConfig(BaseModel):
+    """Places365 scene tagging of whole images (see scenes.py).
+
+    The model file is process configuration (ARGUS_CURATOR_PLACES365_MODEL),
+    deliberately not a field here.
+    """
+
+    enabled: bool = False
+    # How many top categories to record per image (and match filters against).
+    top_k: int = Field(5, ge=1, le=20)
+    # Compute device hint for onnxruntime: "auto" | "cpu" | "cuda".
+    device: str = "auto"
+
+
+class GarmentConfig(BaseModel):
+    """Fashionpedia garment detection on whole images (see garments.py).
+
+    The model file is process configuration (ARGUS_CURATOR_GARMENTS_MODEL),
+    deliberately not a field here.
+    """
+
+    enabled: bool = False
+    # Detections below this probability are not recorded at all. Lower than
+    # the export filter's default (0.5) so reviewers still see the doubtful ones.
+    min_conf: float = Field(0.3, ge=0.0, le=1.0)
+    # Compute device hint for onnxruntime: "auto" | "cpu" | "cuda".
+    device: str = "auto"
+
 
 # ---------------------------------------------------------------------------
 # Per-image result
 # ---------------------------------------------------------------------------
+
+
+class FaceAttributes(BaseModel):
+    """Predicted attributes of one face (or a cluster's pooled prediction).
+
+    Each ``*_conf`` is the softmax probability of the chosen label, so a low
+    value means the model was torn between labels. ``race`` comes only from
+    FairFace. Gender and age come from MiVOLO when it ran, else FairFace (see
+    ``*_source``); a MiVOLO age is a regression, so ``age_years`` is set,
+    ``age`` is its derived bracket, and ``age_conf`` is ``None``.
+    """
+
+    race: FaceRace | None = None
+    race_conf: float | None = None
+    gender: FaceGender | None = None
+    gender_conf: float | None = None
+    gender_source: AttributeSource | None = None
+    age: FaceAge | None = None
+    age_conf: float | None = None
+    age_years: float | None = None
+    age_source: AttributeSource | None = None
 
 
 class FaceDetection(BaseModel):
@@ -125,6 +236,37 @@ class FaceDetection(BaseModel):
     yaw: float | None = None
     pitch: float | None = None
     pose: FacePose | None = None
+    attributes: FaceAttributes | None = None
+
+
+class SceneLabel(BaseModel):
+    label: str
+    conf: float
+
+
+class SceneTags(BaseModel):
+    """Places365 prediction for one image.
+
+    ``categories`` are the top-k scene labels, most probable first, each with
+    its softmax probability. ``environment_conf`` is the probability mass on
+    categories of the chosen environment, so it is always at least 0.5.
+    """
+
+    categories: list[SceneLabel] = Field(default_factory=list)
+    environment: SceneEnvironment
+    environment_conf: float
+
+
+class GarmentDetection(BaseModel):
+    """One detected garment."""
+
+    label: GarmentLabel
+    conf: float
+    bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
+    # The box reaches the frame edge, so the garment is likely cut off.
+    touches_edge: bool = False
+    # Mean colour of the box's central half, "#rrggbb".
+    color: str
 
 
 class ImageResult(BaseModel):
@@ -163,6 +305,13 @@ class ImageResult(BaseModel):
     # Orientation of the primary face (for pose-balanced subset selection).
     primary_face_pose: FacePose | None = None
     primary_face_yaw: float | None = None
+    # Attributes of the primary face (when FaceConfig.fairface / .mivolo ran).
+    primary_face_attributes: FaceAttributes | None = None
+
+    # Places365 scene tags (when SceneConfig.enabled ran).
+    scene: SceneTags | None = None
+    # Fashionpedia garments, most confident first (None = detection not run).
+    garments: list[GarmentDetection] | None = None
 
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
@@ -176,6 +325,9 @@ class FaceCluster(BaseModel):
     size: int
     representative_rel_path: str
     representative_bbox: list[float] | None = None
+    # Pooled over every member face: per-head probabilities are averaged before
+    # taking the top label, so one odd frame cannot flip an identity's label.
+    attributes: FaceAttributes | None = None
 
 
 class ScanSummary(BaseModel):
@@ -186,6 +338,9 @@ class ScanSummary(BaseModel):
     target_profile: TargetProfile
     config: ScanConfig
     faces_config: FaceConfig
+    # Defaulted so scans cached before scene tagging existed still load.
+    scenes_config: SceneConfig = Field(default_factory=SceneConfig)
+    garments_config: GarmentConfig = Field(default_factory=GarmentConfig)
 
     total: int
     passed: int
@@ -215,6 +370,8 @@ class ScanRequest(BaseModel):
     target_profile: TargetProfile = Field(default_factory=TargetProfile)
     config: ScanConfig = Field(default_factory=ScanConfig)
     faces: FaceConfig = Field(default_factory=FaceConfig)
+    scenes: SceneConfig = Field(default_factory=SceneConfig)
+    garments: GarmentConfig = Field(default_factory=GarmentConfig)
 
 
 class ExportRequest(BaseModel):
@@ -240,10 +397,65 @@ class ExportRequest(BaseModel):
     face_clusters: list[str] | None = None
     # Optional: export only images whose primary-face pose is in these buckets.
     face_poses: list[FacePose] | None = None
+    # Optional: export only images whose primary face's predicted attributes
+    # are in these labels. An image without them is excluded once any is set.
+    face_races: list[FaceRace] | None = None
+    face_genders: list[FaceGender] | None = None
+    face_ages: list[FaceAge] | None = None
+    # Optional inclusive age range in years (needs MiVOLO's age_years).
+    min_age_years: float | None = Field(None, ge=0.0)
+    max_age_years: float | None = Field(None, ge=0.0)
+    # Minimum confidence a filtered attribute must reach to count as a match.
+    # Applies only where a confidence exists: MiVOLO ages are regressions.
+    min_attribute_conf: float = Field(0.0, ge=0.0, le=1.0)
+
+    # Optional: export only images with one of these Places365 scenes among
+    # their recorded top-k at >= min_scene_conf (e.g. ["beach", "coast"]).
+    scenes: list[str] | None = None
+    scene_environments: list[SceneEnvironment] | None = None
+    # Floor for a scene label (or the indoor/outdoor call) to count as a match.
+    # Non-zero by default: the top-k tail is often a few percent, not a claim.
+    min_scene_conf: float = Field(0.1, ge=0.0, le=1.0)
+    # With max_keep: also spread the selection across scenes, not just pHash.
+    diversify_scenes: bool = False
+
+    # Optional: export only images wearing at least one of these garments, and
+    # none of the excluded ones, counting detections >= min_garment_conf.
+    garments: list[GarmentLabel] | None = None
+    exclude_garments: list[GarmentLabel] | None = None
+    min_garment_conf: float = Field(0.5, ge=0.0, le=1.0)
+    # With `garments`: the matching garment must not touch the frame edge.
+    garments_uncropped: bool = False
+    # With max_keep: also spread the selection across outfits (garment types
+    # and their colours), so an identity set is not one outfit throughout.
+    diversify_outfits: bool = False
 
     write_manifest: bool = True
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).
     caption_url: str | None = None
+
+    @model_validator(mode="after")
+    def _age_range_in_order(self) -> ExportRequest:
+        if (
+            self.min_age_years is not None
+            and self.max_age_years is not None
+            and self.min_age_years > self.max_age_years
+        ):
+            raise ValueError(f"min_age_years ({self.min_age_years}) is above max_age_years ({self.max_age_years})")
+        return self
+
+    @field_validator("scenes")
+    @classmethod
+    def _known_scenes(cls, value: list[str] | None) -> list[str] | None:
+        # A typo ("beech") would otherwise silently match nothing.
+        if value is None:
+            return None
+        from argus_curator._places365_labels import CATEGORIES
+
+        unknown = sorted(set(value) - set(CATEGORIES))
+        if unknown:
+            raise ValueError(f"unknown Places365 scene(s): {', '.join(unknown)}")
+        return value
 
 
 class ManifestRow(BaseModel):
