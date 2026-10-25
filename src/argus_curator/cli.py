@@ -68,6 +68,10 @@ def scan(
     places365_model: Path | None = Option(
         None, "--places365-model", help="Converted Places365 ONNX model (ARGUS_CURATOR_PLACES365_MODEL)"
     ),
+    garments: bool = Option(False, "--garments", help="Detect garments (type, colour, cut-off) with Fashionpedia"),
+    garments_model: Path | None = Option(
+        None, "--garments-model", help="Converted garment-detector ONNX model (ARGUS_CURATOR_GARMENTS_MODEL)"
+    ),
     face_clusters: str | None = Option(None, "--face-clusters", help="Comma-separated cluster ids to export"),
     face_poses: str | None = Option(
         None, "--pose", help="Export only these primary-face poses (comma-separated: frontal,three_quarter,profile)"
@@ -103,13 +107,28 @@ def scan(
     diversify_scenes: bool = Option(
         False, "--diversify-scenes", help="With --max-keep, also spread the selection across scenes"
     ),
+    garment_filter: str | None = Option(
+        None, "--garment", help="Export only images wearing one of these garments (comma-separated, e.g. dress,skirt)"
+    ),
+    exclude_garments: str | None = Option(
+        None, "--exclude-garment", help="Drop images showing any of these garments (e.g. bag_wallet,umbrella)"
+    ),
+    min_garment_conf: float = Option(
+        0.5, "--min-garment-conf", help="Minimum probability for a garment to count (filters + outfit diversity)"
+    ),
+    garments_uncropped: bool = Option(
+        False, "--uncropped", help="With --garment, the garment must not be cut off by the frame edge"
+    ),
+    diversify_outfits: bool = Option(
+        False, "--diversify-outfits", help="With --max-keep, also spread the selection across outfits"
+    ),
     csv_out: Path | None = Option(None, "--csv", help="Write the per-image CSV report here"),
     json_out: Path | None = Option(None, "--json", help="Write the full ScanSummary JSON here"),
     verbose: bool = Option(False, "--verbose", "-v", help="Print per-image details"),
 ) -> None:
     """Scan a folder, rank for training suitability, and optionally export keepers."""
     from argus_curator.export import export_selection
-    from argus_curator.models import ExportRequest, FaceConfig, ScanConfig, SceneConfig, TargetProfile
+    from argus_curator.models import ExportRequest, FaceConfig, GarmentConfig, ScanConfig, SceneConfig, TargetProfile
     from argus_curator.scanner import scan_folder as _scan
     from argus_curator.store import ScanStore
 
@@ -119,6 +138,7 @@ def scan(
     import os
 
     from argus_curator import fairface as fairface_mod
+    from argus_curator import garments as garments_mod
     from argus_curator import mivolo as mivolo_mod
     from argus_curator import scenes as scenes_mod
 
@@ -126,6 +146,7 @@ def scan(
         (fairface_model, fairface_mod.MODEL_ENV),
         (mivolo_model, mivolo_mod.MODEL_ENV),
         (places365_model, scenes_mod.MODEL_ENV),
+        (garments_model, garments_mod.MODEL_ENV),
     ):
         if model_file is not None:
             os.environ[env] = str(model_file)
@@ -155,9 +176,10 @@ def scan(
     )
 
     scene_cfg = SceneConfig(enabled=scenes, top_k=scene_top_k, device=device)
+    garment_cfg = GarmentConfig(enabled=garments, device=device)
 
     typer.echo(f"Scanning {source} (recursive) ...")
-    summary = _scan(source, profile, cfg, faces_cfg, scene_cfg=scene_cfg)
+    summary = _scan(source, profile, cfg, faces_cfg, scene_cfg=scene_cfg, garment_cfg=garment_cfg)
 
     typer.echo("=" * 56)
     typer.echo(f"  Scanned:               {summary.total}")
@@ -193,6 +215,13 @@ def scan(
         typer.echo(f"  Environment:           {'  '.join(f'{k}={n}' for k, n in sorted(env_counts.items()))}")
         common = sorted(scene_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
         typer.echo(f"  Top scenes:            {'  '.join(f'{k}={n}' for k, n in common)}")
+    garment_counts: dict[str, int] = {}
+    for r in summary.results:
+        for label in {g.label for g in r.garments or [] if g.conf >= min_garment_conf}:
+            garment_counts[label] = garment_counts.get(label, 0) + 1
+    if garment_counts:
+        common = sorted(garment_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+        typer.echo(f"  Garments (images):     {'  '.join(f'{k}={n}' for k, n in common)}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
@@ -215,6 +244,9 @@ def scan(
             scene = ""
             if r.scene and r.scene.categories:
                 scene = f" <{r.scene.categories[0].label}, {r.scene.environment}>"
+            worn = sorted({g.label for g in r.garments or [] if g.conf >= min_garment_conf})
+            if worn:
+                scene += f" {{{', '.join(worn)}}}"
             typer.echo(f"  {r.score:.3f} {tag:>5}  {r.rel_path}{face}{scene}")
 
     # Persist so the result is reusable by the server / export-by-id.
@@ -247,6 +279,11 @@ def scan(
             scene_environments=_csv_list(environment),
             min_scene_conf=min_scene_conf,
             diversify_scenes=diversify_scenes,
+            garments=_csv_list(garment_filter),
+            exclude_garments=_csv_list(exclude_garments),
+            min_garment_conf=min_garment_conf,
+            garments_uncropped=garments_uncropped,
+            diversify_outfits=diversify_outfits,
             write_manifest=dest is not None,
         )
         # With no --copy-to/--move-to/--symlink-to there is nowhere to transfer
@@ -398,6 +435,31 @@ def places365_convert(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"Wrote Places365 ({arch}) ONNX model -> {written}")
+
+
+@app.command("garments-convert")
+def garments_convert(
+    checkpoint: Path | None = Option(
+        None, "--checkpoint", help="Local dir with config.json + pytorch_model.bin (default: download the pinned one)"
+    ),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+) -> None:
+    """Fetch, verify and convert the Fashionpedia garment detector for --garments.
+
+    Weights: huggingface.co/valentinafevu/yolos-fashionpedia (MIT; trained on
+    Fashionpedia, CC BY 4.0), pinned by commit and sha256.
+    Needs: pip install argus-curator[garments-convert]
+    """
+    from argus_curator.garments import export_onnx, fetch_weights, model_path
+    from argus_curator.runtime import ModelUnavailable
+
+    try:
+        source = checkpoint or fetch_weights()
+        written = export_onnx(source, output or model_path())
+    except ModelUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote garment-detector ONNX model -> {written}")
 
 
 DEFAULT_SCHEMA_PATH = Path("schema/curator-wire.schema.json")

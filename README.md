@@ -214,6 +214,52 @@ Upstream serves the checkpoints over plain HTTP, so each is pinned by sha256.
 ResNet-50 is twice the size for about one point of top-1 (55.6% vs 54.5%).
 Point elsewhere with `--places365-model` / `ARGUS_CURATOR_PLACES365_MODEL`.
 
+### Garments (Fashionpedia)
+
+`--garments` (or `"garments": {"enabled": true}`) runs a YOLOS-small detector
+fine-tuned on [Fashionpedia](https://fashionpedia.github.io/home/)
+([`valentinafevu/yolos-fashionpedia`](https://huggingface.co/valentinafevu/yolos-fashionpedia),
+MIT; dataset CC BY 4.0) on every passing image. Each detection records its
+garment type (27 classes: `dress`, `pants`, `shoe`, `bag_wallet`, `hat`, …),
+probability, box, whether the box touches the frame edge (likely cut off), and
+a dominant colour from the box's centre. Results land on `results[].garments`
+(`[]` = ran, found nothing) and in the CSV as `label:conf:#colour`, with `*`
+marking a cut-off garment.
+
+Measured on 300 Fashionpedia validation images (CPU, ~0.3 s/image):
+
+| | |
+|---|---|
+| Garments, AP50 / mAP | 0.327 / 0.193 |
+| Strong (P / R at 0.5) | shoe 0.96 / 0.97 · pants 0.83 / 0.87 · dress 0.75 / 0.91 · hat 0.86 / 0.78 · jacket 0.86 / 0.58 |
+| Weak | skirt 0.38 / 0.31 · coat 0.43 / 0.15 · shirt/blouse recall 0.31 |
+| "Is garment X in the image?", all classes | P 0.64 / R 0.76 at 0.3 · **0.77 / 0.66 at 0.5** · 0.86 / 0.56 at 0.7 |
+
+Fashionpedia's 19 garment *parts* (sleeve, pocket, zipper, …) scored AP50
+0.105 and are not recorded; neither are its 294 fine-grained attributes, which
+no published checkpoint predicts. Detections are recorded from 0.3 so reviewers
+see the doubtful ones; filters count them from `--min-garment-conf` (0.5).
+
+- `--garment dress,skirt` / `garments`: wearing at least one of these.
+- `--exclude-garment bag_wallet,umbrella` / `exclude_garments`: none of these.
+  Exclusion wants recall, so consider a lower `--min-garment-conf` for it.
+- `--uncropped` / `garments_uncropped`: the matching garment is not cut off.
+- `--diversify-outfits` / `diversify_outfits` (with `--max-keep`): the
+  diversity cap also spreads the selection across outfits (garment types and
+  their colours), so an identity LoRA does not learn one outfit as part of the
+  person.
+
+Exclusions say why: `garment-not-found`, `garment-low-confidence` (present,
+below the floor), `garment-excluded`, `garment-cropped`, `garments-missing`.
+
+```bash
+pip install "argus-curator[garments-convert]"   # torch + transformers, only for this step
+argus-curator garments-convert                  # pinned commit + sha256
+# -> ~/.cache/argus_curator/models/yolos_fashionpedia.onnx
+```
+
+Point elsewhere with `--garments-model` / `ARGUS_CURATOR_GARMENTS_MODEL`.
+
 ### HTTP server (:8101, peer to argus-lens)
 
 ```bash
@@ -247,7 +293,7 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 | Route | Description |
 |---|---|
 | `GET  /health` | Liveness |
-| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365 }` |
+| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
@@ -291,6 +337,8 @@ payload the non-streaming endpoint returns (or `event: error`).
   "scenes": ["beach", "coast"],     // optional: Places365 scenes among the image's top-k
   "scene_environments": ["outdoor"],
   "min_scene_conf": 0.1, "diversify_scenes": false,
+  "garments": ["dress"], "exclude_garments": ["bag_wallet"],  // optional: Fashionpedia
+  "min_garment_conf": 0.5, "garments_uncropped": false, "diversify_outfits": true,
   "write_manifest": true,
   "caption_url": null               // optional: POST manifest to argus-lens
 }

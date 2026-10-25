@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import imagehash
 
+from argus_curator.garments import outfit, outfit_similarity
 from argus_curator.models import ExportRequest, ImageResult
 
 _MAX_DIST = 64.0  # maximum 64-bit pHash Hamming distance
@@ -28,6 +29,8 @@ def select_diverse(
     diversity_weight: float,
     *,
     scenes: bool = False,
+    outfits: bool = False,
+    outfit_conf: float = 0.5,
 ) -> list[ImageResult]:
     """Greedy diversity-aware selection.
 
@@ -36,10 +39,12 @@ def select_diverse(
     the minimum pHash Hamming distance to any already-selected image. ``dw=0``
     reduces to pure score ranking; ``dw=1`` maximises visual spread.
 
-    ``scenes`` adds a novelty term — one minus the largest scene overlap with
-    anything selected — and the diversity term becomes the mean of pHash
-    spread and that novelty, so near-identical backdrops are spread out even
-    when the pixels differ. An image without scene tags contributes no term.
+    ``scenes`` and ``outfits`` each add a novelty term — one minus the largest
+    scene overlap / outfit similarity (garment types and colours, detections
+    >= ``outfit_conf``) with anything selected — and the diversity term becomes
+    the mean of pHash spread and the enabled novelties, so near-identical
+    backdrops or outfits are spread out even when the pixels differ. An image
+    the term cannot judge (no tags, nothing worn) simply contributes no term.
     """
     if n >= len(candidates) or diversity_weight <= 0.0:
         return sorted(candidates, key=lambda r: -r.score)[:n]
@@ -55,6 +60,8 @@ def select_diverse(
     selected_idx: list[int] = []
     selected_hashes: list[imagehash.ImageHash] = []
     selected_scenes: list[ImageResult] = []
+    sigs = [outfit(r.garments, outfit_conf) if outfits else {} for r in candidates]
+    selected_outfits: list[dict] = []
     remaining = list(range(len(candidates)))
 
     for _ in range(n):
@@ -70,6 +77,8 @@ def select_diverse(
             terms = [div_norm]
             if scenes and candidates[i].scene is not None and selected_scenes:
                 terms.append(1.0 - max(_scene_overlap(candidates[i], o) for o in selected_scenes))
+            if sigs[i] and selected_outfits:
+                terms.append(1.0 - max(outfit_similarity(sigs[i], o) for o in selected_outfits))
             div_norm = sum(terms) / len(terms)
             val = score_norm * (1.0 - diversity_weight) + div_norm * diversity_weight
             if val > best_val:
@@ -81,6 +90,8 @@ def select_diverse(
             selected_hashes.append(hashes[best_idx])
         if candidates[best_idx].scene is not None:
             selected_scenes.append(candidates[best_idx])
+        if sigs[best_idx]:
+            selected_outfits.append(sigs[best_idx])
         remaining.remove(best_idx)
 
     return [candidates[i] for i in selected_idx]
@@ -143,6 +154,29 @@ def _scene_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
     return None
 
 
+def _garment_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
+    """Keep-reason when *r* fails the Fashionpedia filters, else ``None``."""
+    if not req.garments and not req.exclude_garments:
+        return None
+    if r.garments is None:
+        return "garments-missing"
+    worn = [g for g in r.garments if g.conf >= req.min_garment_conf]
+    if req.exclude_garments:
+        banned = set(req.exclude_garments)
+        if any(g.label in banned for g in worn):
+            return "garment-excluded"
+    if req.garments:
+        wanted = set(req.garments)
+        hits = [g for g in worn if g.label in wanted]
+        if not hits:
+            # Distinguish "not there" from "there, but the model wasn't sure".
+            doubtful = any(g.label in wanted for g in r.garments)
+            return "garment-low-confidence" if doubtful else "garment-not-found"
+        if req.garments_uncropped and all(g.touches_edge for g in hits):
+            return "garment-cropped"
+    return None
+
+
 def decide_selection(
     results: list[ImageResult],
     req: ExportRequest,
@@ -151,8 +185,8 @@ def decide_selection(
     """Return ``(selected_results, keep_reason_by_rel)`` for an export request.
 
     Mirrors PR #14's ``_decide_keep``: applies score threshold, rejected/duplicate
-    gates, optional face-cluster / pose / attribute / scene filters, then an
-    optional diversity cap.
+    gates, optional face-cluster / pose / attribute / scene / garment filters,
+    then an optional diversity cap.
     """
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
@@ -174,6 +208,8 @@ def decide_selection(
             keep_reason[r.rel_path] = attr_reason
         elif (scene_reason := _scene_exclusion(r, req)) is not None:
             keep_reason[r.rel_path] = scene_reason
+        elif (garment_reason := _garment_exclusion(r, req)) is not None:
+            keep_reason[r.rel_path] = garment_reason
         else:
             eligible.append(r)
 
@@ -184,6 +220,8 @@ def decide_selection(
             req.max_keep,
             diversity_weight,
             scenes=req.diversify_scenes,
+            outfits=req.diversify_outfits,
+            outfit_conf=req.min_garment_conf,
         )
         chosen_set = {r.rel_path for r in chosen}
         for r in eligible:

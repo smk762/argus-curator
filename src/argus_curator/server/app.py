@@ -3,7 +3,7 @@
 Routes (section 4 of the brief):
 
     GET  /health
-    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365 }
+    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments }
     POST /scan/folder      -> ScanSummary
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
@@ -39,6 +39,7 @@ from PIL import Image
 from argus_curator import __version__, export, scanner
 from argus_curator.attributes import fairface_available, mivolo_available
 from argus_curator.faces import faces_available
+from argus_curator.garments import garments_available
 from argus_curator.models import (
     MANIFEST_VERSION,
     SUPPORTED_EXTS,
@@ -77,6 +78,7 @@ def _detectors() -> dict[str, bool]:
         "fairface": fairface_available(),
         "mivolo": mivolo_available(),
         "places365": scenes_available(),
+        "garments": garments_available(),
     }
 
 
@@ -313,6 +315,13 @@ def create_app(
             (req.faces.fairface, fairface_available, "FairFace", "ARGUS_CURATOR_FAIRFACE_MODEL", "fairface-convert"),
             (req.faces.mivolo, mivolo_available, "MiVOLO", "ARGUS_CURATOR_MIVOLO_MODEL", "mivolo-convert"),
             (req.scenes.enabled, scenes_available, "Places365", "ARGUS_CURATOR_PLACES365_MODEL", "places365-convert"),
+            (
+                req.garments.enabled,
+                garments_available,
+                "Fashionpedia",
+                "ARGUS_CURATOR_GARMENTS_MODEL",
+                "garments-convert",
+            ),
         )
         for requested, available, name, env, command in wanted:
             if requested and not available():
@@ -334,6 +343,7 @@ def create_app(
                 req.config,
                 req.faces,
                 scene_cfg=req.scenes,
+                garment_cfg=req.garments,
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
@@ -367,6 +377,7 @@ def create_app(
                     req.config,
                     req.faces,
                     scene_cfg=req.scenes,
+                    garment_cfg=req.garments,
                     progress=on_progress,
                 )
                 store.save(summary)

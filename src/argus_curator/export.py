@@ -196,6 +196,7 @@ def write_report(
         "scene_conf",
         "scene_environment",
         "scene_environment_conf",
+        "garments",
         "width",
         "height",
         "abs_path",
@@ -242,6 +243,10 @@ def write_report(
                     "scene_conf": r.scene.categories[0].conf if r.scene and r.scene.categories else "",
                     "scene_environment": r.scene.environment if r.scene else "",
                     "scene_environment_conf": r.scene.environment_conf if r.scene else "",
+                    # "label:conf:#color" per detection; "*" marks one cut off at the frame edge.
+                    "garments": ";".join(
+                        f"{g.label}:{g.conf:.2f}:{g.color}{'*' if g.touches_edge else ''}" for g in r.garments or []
+                    ),
                     "width": r.width,
                     "height": r.height,
                     "abs_path": r.abs_path,

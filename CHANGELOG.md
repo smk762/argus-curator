@@ -38,7 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Export filters `scenes`, `scene_environments` and `min_scene_conf` (CLI
   `--scene`, `--environment`, `--min-scene-conf`), and `diversify_scenes`
   (`--diversify-scenes`) to spread a `max_keep` selection across backdrops.
-- `GET /detectors` reports `fairface`, `mivolo` and `places365`.
+- Fashionpedia garment detection (`ScanRequest.garments` / `GarmentConfig`,
+  CLI `--garments`): each passing image gets its garments (27 classes) with
+  probability, box, a frame-edge "cut off" flag and a dominant colour
+  (`ImageResult.garments`, plus a CSV column), as a new `garments` progress
+  phase. Converted once with `argus-curator garments-convert`
+  (`[garments-convert]` extra; `valentinafevu/yolos-fashionpedia` pinned by
+  commit and sha256); the model path is `ARGUS_CURATOR_GARMENTS_MODEL` /
+  `--garments-model`.
+- Export filters `garments`, `exclude_garments`, `min_garment_conf` and
+  `garments_uncropped` (CLI `--garment`, `--exclude-garment`,
+  `--min-garment-conf`, `--uncropped`), and `diversify_outfits`
+  (`--diversify-outfits`) to spread a `max_keep` selection across outfits.
+- `GET /detectors` reports `fairface`, `mivolo`, `places365` and `garments`.
 
 ### Security
 

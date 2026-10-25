@@ -18,10 +18,59 @@
           "title": "Dest",
           "type": "string"
         },
+        "diversify_outfits": {
+          "default": false,
+          "title": "Diversify Outfits",
+          "type": "boolean"
+        },
         "diversify_scenes": {
           "default": false,
           "title": "Diversify Scenes",
           "type": "boolean"
+        },
+        "exclude_garments": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "shirt_blouse",
+                  "top_tshirt_sweatshirt",
+                  "sweater",
+                  "cardigan",
+                  "jacket",
+                  "vest",
+                  "pants",
+                  "shorts",
+                  "skirt",
+                  "coat",
+                  "dress",
+                  "jumpsuit",
+                  "cape",
+                  "glasses",
+                  "hat",
+                  "headband_hair_accessory",
+                  "tie",
+                  "glove",
+                  "watch",
+                  "belt",
+                  "leg_warmer",
+                  "tights_stockings",
+                  "sock",
+                  "shoe",
+                  "bag_wallet",
+                  "scarf",
+                  "umbrella"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Garments"
         },
         "face_ages": {
           "anyOf": [
@@ -127,6 +176,55 @@
           "default": null,
           "title": "Face Races"
         },
+        "garments": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "shirt_blouse",
+                  "top_tshirt_sweatshirt",
+                  "sweater",
+                  "cardigan",
+                  "jacket",
+                  "vest",
+                  "pants",
+                  "shorts",
+                  "skirt",
+                  "coat",
+                  "dress",
+                  "jumpsuit",
+                  "cape",
+                  "glasses",
+                  "hat",
+                  "headband_hair_accessory",
+                  "tie",
+                  "glove",
+                  "watch",
+                  "belt",
+                  "leg_warmer",
+                  "tights_stockings",
+                  "sock",
+                  "shoe",
+                  "bag_wallet",
+                  "scarf",
+                  "umbrella"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Garments"
+        },
+        "garments_uncropped": {
+          "default": false,
+          "title": "Garments Uncropped",
+          "type": "boolean"
+        },
         "include_rejected": {
           "default": false,
           "title": "Include Rejected",
@@ -180,6 +278,13 @@
           "maximum": 1.0,
           "minimum": 0.0,
           "title": "Min Attribute Conf",
+          "type": "number"
+        },
+        "min_garment_conf": {
+          "default": 0.5,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Garment Conf",
           "type": "number"
         },
         "min_scene_conf": {
@@ -696,6 +801,99 @@
       "title": "FaceDetection",
       "type": "object"
     },
+    "GarmentConfig": {
+      "description": "Fashionpedia garment detection on whole images (see garments.py).\n\nThe model file is process configuration (ARGUS_CURATOR_GARMENTS_MODEL),\ndeliberately not a field here.",
+      "properties": {
+        "device": {
+          "default": "auto",
+          "title": "Device",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "min_conf": {
+          "default": 0.3,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Conf",
+          "type": "number"
+        }
+      },
+      "title": "GarmentConfig",
+      "type": "object"
+    },
+    "GarmentDetection": {
+      "description": "One detected garment.",
+      "properties": {
+        "bbox": {
+          "description": "[x, y, w, h]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Bbox",
+          "type": "array"
+        },
+        "color": {
+          "title": "Color",
+          "type": "string"
+        },
+        "conf": {
+          "title": "Conf",
+          "type": "number"
+        },
+        "label": {
+          "enum": [
+            "shirt_blouse",
+            "top_tshirt_sweatshirt",
+            "sweater",
+            "cardigan",
+            "jacket",
+            "vest",
+            "pants",
+            "shorts",
+            "skirt",
+            "coat",
+            "dress",
+            "jumpsuit",
+            "cape",
+            "glasses",
+            "hat",
+            "headband_hair_accessory",
+            "tie",
+            "glove",
+            "watch",
+            "belt",
+            "leg_warmer",
+            "tights_stockings",
+            "sock",
+            "shoe",
+            "bag_wallet",
+            "scarf",
+            "umbrella"
+          ],
+          "title": "Label",
+          "type": "string"
+        },
+        "touches_edge": {
+          "default": false,
+          "title": "Touches Edge",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "label",
+        "conf",
+        "bbox",
+        "color"
+      ],
+      "title": "GarmentDetection",
+      "type": "object"
+    },
     "ImageResult": {
       "description": "Per-image curation record \u2014 superset of imogen's scanner output.\n\n``rel_path`` is the path relative to the scanned root and is the stable key\neverywhere (it stays unique across sub-folders, unlike a bare basename).",
       "properties": {
@@ -731,6 +929,21 @@
           },
           "title": "Faces",
           "type": "array"
+        },
+        "garments": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/GarmentDetection"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Garments"
         },
         "group_size": {
           "default": 1,
@@ -1037,6 +1250,9 @@
           "title": "Folder",
           "type": "string"
         },
+        "garments": {
+          "$ref": "#/$defs/GarmentConfig"
+        },
         "scenes": {
           "$ref": "#/$defs/SceneConfig"
         },
@@ -1073,6 +1289,9 @@
         "folder": {
           "title": "Folder",
           "type": "string"
+        },
+        "garments_config": {
+          "$ref": "#/$defs/GarmentConfig"
         },
         "limit": {
           "anyOf": [

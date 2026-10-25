@@ -33,6 +33,40 @@ AttributeSource = Literal["fairface", "mivolo"]
 # Places365 indoor/outdoor call for a whole image.
 SceneEnvironment = Literal["indoor", "outdoor"]
 
+# Fashionpedia's 27 garment classes, in model output order (ids 0-26), as
+# comma-free slugs so they survive comma-separated CLI lists. Parts (sleeve,
+# pocket, ...; ids 27-45) are not recorded — see garments.py.
+GarmentLabel = Literal[
+    "shirt_blouse",  # shirt, blouse
+    "top_tshirt_sweatshirt",  # top, t-shirt, sweatshirt
+    "sweater",
+    "cardigan",
+    "jacket",
+    "vest",
+    "pants",
+    "shorts",
+    "skirt",
+    "coat",
+    "dress",
+    "jumpsuit",
+    "cape",
+    "glasses",
+    "hat",
+    "headband_hair_accessory",  # headband, head covering, hair accessory
+    "tie",
+    "glove",
+    "watch",
+    "belt",
+    "leg_warmer",
+    "tights_stockings",  # tights, stockings
+    "sock",
+    "shoe",
+    "bag_wallet",  # bag, wallet
+    "scarf",
+    "umbrella",
+]
+GARMENT_LABELS: tuple[GarmentLabel, ...] = GarmentLabel.__args__
+
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 # Version of the JSONL handoff manifest argus-lens consumes. Bump on any
@@ -149,6 +183,21 @@ class SceneConfig(BaseModel):
     device: str = "auto"
 
 
+class GarmentConfig(BaseModel):
+    """Fashionpedia garment detection on whole images (see garments.py).
+
+    The model file is process configuration (ARGUS_CURATOR_GARMENTS_MODEL),
+    deliberately not a field here.
+    """
+
+    enabled: bool = False
+    # Detections below this probability are not recorded at all. Lower than
+    # the export filter's default (0.5) so reviewers still see the doubtful ones.
+    min_conf: float = Field(0.3, ge=0.0, le=1.0)
+    # Compute device hint for onnxruntime: "auto" | "cpu" | "cuda".
+    device: str = "auto"
+
+
 # ---------------------------------------------------------------------------
 # Per-image result
 # ---------------------------------------------------------------------------
@@ -208,6 +257,18 @@ class SceneTags(BaseModel):
     environment_conf: float
 
 
+class GarmentDetection(BaseModel):
+    """One detected garment."""
+
+    label: GarmentLabel
+    conf: float
+    bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
+    # The box reaches the frame edge, so the garment is likely cut off.
+    touches_edge: bool = False
+    # Mean colour of the box's central half, "#rrggbb".
+    color: str
+
+
 class ImageResult(BaseModel):
     """Per-image curation record — superset of imogen's scanner output.
 
@@ -249,6 +310,8 @@ class ImageResult(BaseModel):
 
     # Places365 scene tags (when SceneConfig.enabled ran).
     scene: SceneTags | None = None
+    # Fashionpedia garments, most confident first (None = detection not run).
+    garments: list[GarmentDetection] | None = None
 
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
@@ -277,6 +340,7 @@ class ScanSummary(BaseModel):
     faces_config: FaceConfig
     # Defaulted so scans cached before scene tagging existed still load.
     scenes_config: SceneConfig = Field(default_factory=SceneConfig)
+    garments_config: GarmentConfig = Field(default_factory=GarmentConfig)
 
     total: int
     passed: int
@@ -307,6 +371,7 @@ class ScanRequest(BaseModel):
     config: ScanConfig = Field(default_factory=ScanConfig)
     faces: FaceConfig = Field(default_factory=FaceConfig)
     scenes: SceneConfig = Field(default_factory=SceneConfig)
+    garments: GarmentConfig = Field(default_factory=GarmentConfig)
 
 
 class ExportRequest(BaseModel):
@@ -353,6 +418,17 @@ class ExportRequest(BaseModel):
     min_scene_conf: float = Field(0.1, ge=0.0, le=1.0)
     # With max_keep: also spread the selection across scenes, not just pHash.
     diversify_scenes: bool = False
+
+    # Optional: export only images wearing at least one of these garments, and
+    # none of the excluded ones, counting detections >= min_garment_conf.
+    garments: list[GarmentLabel] | None = None
+    exclude_garments: list[GarmentLabel] | None = None
+    min_garment_conf: float = Field(0.5, ge=0.0, le=1.0)
+    # With `garments`: the matching garment must not touch the frame edge.
+    garments_uncropped: bool = False
+    # With max_keep: also spread the selection across outfits (garment types
+    # and their colours), so an identity set is not one outfit throughout.
+    diversify_outfits: bool = False
 
     write_manifest: bool = True
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).
