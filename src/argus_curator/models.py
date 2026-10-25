@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 TargetStyle = Literal["photo", "anime"]
 TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
@@ -19,6 +19,16 @@ TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
 # Head-pose bucket of the primary face, derived from InsightFace yaw. Lets the UI
 # pick a balanced subset by orientation (head-on / three-quarter / side profile).
 FacePose = Literal["frontal", "three_quarter", "profile"]
+
+# FairFace attribute labels, in the model's output order (see attributes.py).
+# These are a model's prediction from appearance, not ground truth about anyone.
+FaceRace = Literal["white", "black", "latino_hispanic", "east_asian", "southeast_asian", "indian", "middle_eastern"]
+FaceGender = Literal["male", "female"]
+FaceAge = Literal["0-2", "3-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70+"]
+FACE_RACES: tuple[FaceRace, ...] = FaceRace.__args__
+FACE_GENDERS: tuple[FaceGender, ...] = FaceGender.__args__
+FACE_AGES: tuple[FaceAge, ...] = FaceAge.__args__
+AttributeSource = Literal["fairface", "mivolo"]
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -107,10 +117,45 @@ class FaceConfig(BaseModel):
     frontal_max_yaw: float = 15.0
     profile_min_yaw: float = 45.0
 
+    # Face-attribute models (see attributes.py). Model files are process
+    # configuration (ARGUS_CURATOR_FAIRFACE_MODEL / ARGUS_CURATOR_MIVOLO_MODEL),
+    # deliberately not fields here. Either one implies face detection.
+    fairface: bool = False  # race, gender, age bracket
+    mivolo: bool = False  # age in years, gender (supersedes FairFace's)
+
+    @model_validator(mode="after")
+    def _attributes_need_faces(self) -> FaceConfig:
+        # Attributes are read off detected faces; asking for them without
+        # detection would otherwise silently yield nothing.
+        if self.fairface or self.mivolo:
+            self.enabled = True
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Per-image result
 # ---------------------------------------------------------------------------
+
+
+class FaceAttributes(BaseModel):
+    """Predicted attributes of one face (or a cluster's pooled prediction).
+
+    Each ``*_conf`` is the softmax probability of the chosen label, so a low
+    value means the model was torn between labels. ``race`` comes only from
+    FairFace. Gender and age come from MiVOLO when it ran, else FairFace (see
+    ``*_source``); a MiVOLO age is a regression, so ``age_years`` is set,
+    ``age`` is its derived bracket, and ``age_conf`` is ``None``.
+    """
+
+    race: FaceRace | None = None
+    race_conf: float | None = None
+    gender: FaceGender | None = None
+    gender_conf: float | None = None
+    gender_source: AttributeSource | None = None
+    age: FaceAge | None = None
+    age_conf: float | None = None
+    age_years: float | None = None
+    age_source: AttributeSource | None = None
 
 
 class FaceDetection(BaseModel):
@@ -125,6 +170,7 @@ class FaceDetection(BaseModel):
     yaw: float | None = None
     pitch: float | None = None
     pose: FacePose | None = None
+    attributes: FaceAttributes | None = None
 
 
 class ImageResult(BaseModel):
@@ -163,6 +209,8 @@ class ImageResult(BaseModel):
     # Orientation of the primary face (for pose-balanced subset selection).
     primary_face_pose: FacePose | None = None
     primary_face_yaw: float | None = None
+    # Attributes of the primary face (when FaceConfig.fairface / .mivolo ran).
+    primary_face_attributes: FaceAttributes | None = None
 
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
@@ -176,6 +224,9 @@ class FaceCluster(BaseModel):
     size: int
     representative_rel_path: str
     representative_bbox: list[float] | None = None
+    # Pooled over every member face: per-head probabilities are averaged before
+    # taking the top label, so one odd frame cannot flip an identity's label.
+    attributes: FaceAttributes | None = None
 
 
 class ScanSummary(BaseModel):
@@ -240,6 +291,17 @@ class ExportRequest(BaseModel):
     face_clusters: list[str] | None = None
     # Optional: export only images whose primary-face pose is in these buckets.
     face_poses: list[FacePose] | None = None
+    # Optional: export only images whose primary face's predicted attributes
+    # are in these labels. An image without them is excluded once any is set.
+    face_races: list[FaceRace] | None = None
+    face_genders: list[FaceGender] | None = None
+    face_ages: list[FaceAge] | None = None
+    # Optional inclusive age range in years (needs MiVOLO's age_years).
+    min_age_years: float | None = Field(None, ge=0.0)
+    max_age_years: float | None = Field(None, ge=0.0)
+    # Minimum confidence a filtered attribute must reach to count as a match.
+    # Applies only where a confidence exists: MiVOLO ages are regressions.
+    min_attribute_conf: float = Field(0.0, ge=0.0, le=1.0)
 
     write_manifest: bool = True
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).

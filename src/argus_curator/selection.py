@@ -60,6 +60,42 @@ def select_diverse(candidates: list[ImageResult], n: int, diversity_weight: floa
     return [candidates[i] for i in selected_idx]
 
 
+def _attribute_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
+    """Keep-reason when *r* fails the face-attribute filters, else ``None``.
+
+    A filtered attribute matches only when its label is allowed *and* its
+    confidence reaches ``min_attribute_conf``; the two failures get distinct
+    reasons so a reviewer can tell "different" from "the model wasn't sure".
+    A confidence of ``None`` (a MiVOLO regression age) is not held to the floor.
+    """
+    filters = (("race", req.face_races), ("gender", req.face_genders), ("age", req.face_ages))
+    active = [(name, set(allowed)) for name, allowed in filters if allowed]
+    age_range = req.min_age_years is not None or req.max_age_years is not None
+    if not active and not age_range:
+        return None
+    attrs = r.primary_face_attributes
+    if attrs is None:
+        return "face-attributes-missing"
+    for name, allowed in active:
+        value = getattr(attrs, name)
+        if value is None:
+            return f"face-{name}-missing"
+        if value not in allowed:
+            return f"face-{name}-excluded"
+        conf = getattr(attrs, f"{name}_conf")
+        if conf is not None and conf < req.min_attribute_conf:
+            return f"face-{name}-low-confidence"
+    if age_range:
+        years = attrs.age_years
+        if years is None:
+            return "face-age-years-missing"
+        if (req.min_age_years is not None and years < req.min_age_years) or (
+            req.max_age_years is not None and years > req.max_age_years
+        ):
+            return "face-age-out-of-range"
+    return None
+
+
 def decide_selection(
     results: list[ImageResult],
     req: ExportRequest,
@@ -68,7 +104,8 @@ def decide_selection(
     """Return ``(selected_results, keep_reason_by_rel)`` for an export request.
 
     Mirrors PR #14's ``_decide_keep``: applies score threshold, rejected/duplicate
-    gates, optional face-cluster filter, then an optional diversity cap.
+    gates, optional face-cluster / pose / attribute filters, then an optional
+    diversity cap.
     """
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
@@ -86,6 +123,8 @@ def decide_selection(
             keep_reason[r.rel_path] = "face-cluster-excluded"
         elif pose_filter is not None and r.primary_face_pose not in pose_filter:
             keep_reason[r.rel_path] = "face-pose-excluded"
+        elif (attr_reason := _attribute_exclusion(r, req)) is not None:
+            keep_reason[r.rel_path] = attr_reason
         else:
             eligible.append(r)
 

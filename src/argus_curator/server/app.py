@@ -3,7 +3,7 @@
 Routes (section 4 of the brief):
 
     GET  /health
-    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime }
+    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo }
     POST /scan/folder      -> ScanSummary
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
@@ -37,6 +37,7 @@ except ImportError as exc:  # pragma: no cover
 from PIL import Image
 
 from argus_curator import __version__, export, scanner
+from argus_curator.attributes import fairface_available, mivolo_available
 from argus_curator.faces import faces_available
 from argus_curator.models import (
     MANIFEST_VERSION,
@@ -72,6 +73,8 @@ def _detectors() -> dict[str, bool]:
         "clip": find_spec("clip") is not None or find_spec("open_clip") is not None,
         "insightface": faces_available(),
         "onnxruntime": find_spec("onnxruntime") is not None or find_spec("onnxruntime_gpu") is not None,
+        "fairface": fairface_available(),
+        "mivolo": mivolo_available(),
     }
 
 
@@ -298,8 +301,27 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"not a directory under the scan root: {requested}")
         return folder
 
+    def _require_models(req: ScanRequest) -> None:
+        """Refuse up front when an optional model is requested but not configured.
+
+        Without this the scan would score every image first and only then fail.
+        The detail names the env var, not the server's filesystem layout.
+        """
+        wanted = (
+            (req.faces.fairface, fairface_available, "FairFace", "ARGUS_CURATOR_FAIRFACE_MODEL", "fairface-convert"),
+            (req.faces.mivolo, mivolo_available, "MiVOLO", "ARGUS_CURATOR_MIVOLO_MODEL", "mivolo-convert"),
+        )
+        for requested, available, name, env, command in wanted:
+            if requested and not available():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{name} requested but this server has no {name} model "
+                    f"(set {env}; see `argus-curator {command}`)",
+                )
+
     @app.post("/scan/folder", response_model=ScanSummary)
     async def scan_folder(req: ScanRequest) -> ScanSummary:
+        _require_models(req)
         folder = _resolve_scan_folder(req.folder)
         try:
             summary = await asyncio.to_thread(
@@ -322,6 +344,7 @@ def create_app(
         then a single ``event: complete`` frame carrying the full ScanSummary (the
         identical payload the non-streaming endpoint returns), or ``event: error``.
         """
+        _require_models(req)
         folder = _resolve_scan_folder(req.folder)
 
         # The scan is blocking CPU work, so it runs in a worker thread and hands

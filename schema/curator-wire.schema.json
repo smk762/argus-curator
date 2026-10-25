@@ -18,6 +18,32 @@
           "title": "Dest",
           "type": "string"
         },
+        "face_ages": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "0-2",
+                  "3-9",
+                  "10-19",
+                  "20-29",
+                  "30-39",
+                  "40-49",
+                  "50-59",
+                  "60-69",
+                  "70+"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Ages"
+        },
         "face_clusters": {
           "anyOf": [
             {
@@ -32,6 +58,25 @@
           ],
           "default": null,
           "title": "Face Clusters"
+        },
+        "face_genders": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "male",
+                  "female"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Genders"
         },
         "face_poses": {
           "anyOf": [
@@ -53,6 +98,30 @@
           "default": null,
           "title": "Face Poses"
         },
+        "face_races": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "white",
+                  "black",
+                  "latino_hispanic",
+                  "east_asian",
+                  "southeast_asian",
+                  "indian",
+                  "middle_eastern"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Races"
+        },
         "include_rejected": {
           "default": false,
           "title": "Include Rejected",
@@ -62,6 +131,19 @@
           "default": false,
           "title": "Keep Similar",
           "type": "boolean"
+        },
+        "max_age_years": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Age Years"
         },
         "max_keep": {
           "anyOf": [
@@ -74,6 +156,26 @@
           ],
           "default": null,
           "title": "Max Keep"
+        },
+        "min_age_years": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Age Years"
+        },
+        "min_attribute_conf": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Attribute Conf",
+          "type": "number"
         },
         "min_score": {
           "default": 0.6,
@@ -205,9 +307,167 @@
       "title": "ExportResult",
       "type": "object"
     },
+    "FaceAttributes": {
+      "description": "Predicted attributes of one face (or a cluster's pooled prediction).\n\nEach ``*_conf`` is the softmax probability of the chosen label, so a low\nvalue means the model was torn between labels. ``race`` comes only from\nFairFace. Gender and age come from MiVOLO when it ran, else FairFace (see\n``*_source``); a MiVOLO age is a regression, so ``age_years`` is set,\n``age`` is its derived bracket, and ``age_conf`` is ``None``.",
+      "properties": {
+        "age": {
+          "anyOf": [
+            {
+              "enum": [
+                "0-2",
+                "3-9",
+                "10-19",
+                "20-29",
+                "30-39",
+                "40-49",
+                "50-59",
+                "60-69",
+                "70+"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age"
+        },
+        "age_conf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Conf"
+        },
+        "age_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "fairface",
+                "mivolo"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Source"
+        },
+        "age_years": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Years"
+        },
+        "gender": {
+          "anyOf": [
+            {
+              "enum": [
+                "male",
+                "female"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gender"
+        },
+        "gender_conf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gender Conf"
+        },
+        "gender_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "fairface",
+                "mivolo"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gender Source"
+        },
+        "race": {
+          "anyOf": [
+            {
+              "enum": [
+                "white",
+                "black",
+                "latino_hispanic",
+                "east_asian",
+                "southeast_asian",
+                "indian",
+                "middle_eastern"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Race"
+        },
+        "race_conf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Race Conf"
+        }
+      },
+      "title": "FaceAttributes",
+      "type": "object"
+    },
     "FaceCluster": {
       "description": "A clustered identity across the scanned dataset.",
       "properties": {
+        "attributes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceAttributes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "cluster_id": {
           "title": "Cluster Id",
           "type": "string"
@@ -262,6 +522,11 @@
           "title": "Enabled",
           "type": "boolean"
         },
+        "fairface": {
+          "default": false,
+          "title": "Fairface",
+          "type": "boolean"
+        },
         "frontal_max_yaw": {
           "default": 15.0,
           "title": "Frontal Max Yaw",
@@ -271,6 +536,11 @@
           "default": 0.5,
           "title": "Min Det Score",
           "type": "number"
+        },
+        "mivolo": {
+          "default": false,
+          "title": "Mivolo",
+          "type": "boolean"
         },
         "model": {
           "default": "buffalo_l",
@@ -289,6 +559,17 @@
     "FaceDetection": {
       "description": "One detected face within an image.",
       "properties": {
+        "attributes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceAttributes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "bbox": {
           "description": "[x, y, w, h]",
           "items": {
@@ -439,6 +720,17 @@
           "default": "",
           "title": "Phash",
           "type": "string"
+        },
+        "primary_face_attributes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceAttributes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "primary_face_cluster": {
           "anyOf": [

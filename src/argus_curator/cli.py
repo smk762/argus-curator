@@ -19,6 +19,10 @@ app = typer.Typer(
 )
 
 
+def _csv_list(value: str | None) -> list[str] | None:
+    return [v.strip() for v in value.split(",") if v.strip()] if value else None
+
+
 @app.command()
 def scan(
     source: Path = Argument(..., help="Root folder to scan (recurses into sub-folders)"),
@@ -47,9 +51,38 @@ def scan(
     min_det_score: float = Option(0.5, "--min-det-score", help="Minimum face detection score"),
     cluster_eps: float = Option(0.5, "--cluster-eps", help="Cosine-distance threshold for face clustering"),
     device: str = Option("auto", "--device", help="auto|cpu|cuda for face detection"),
+    fairface: bool = Option(
+        False, "--fairface", help="Predict race/gender/age bracket per face with FairFace (implies --faces)"
+    ),
+    mivolo: bool = Option(
+        False, "--mivolo", help="Predict age in years + gender per face with MiVOLO (implies --faces)"
+    ),
+    fairface_model: Path | None = Option(
+        None, "--fairface-model", help="Converted FairFace ONNX model (ARGUS_CURATOR_FAIRFACE_MODEL)"
+    ),
+    mivolo_model: Path | None = Option(
+        None, "--mivolo-model", help="Converted MiVOLO ONNX model (ARGUS_CURATOR_MIVOLO_MODEL)"
+    ),
     face_clusters: str | None = Option(None, "--face-clusters", help="Comma-separated cluster ids to export"),
     face_poses: str | None = Option(
         None, "--pose", help="Export only these primary-face poses (comma-separated: frontal,three_quarter,profile)"
+    ),
+    face_races: str | None = Option(
+        None,
+        "--race",
+        help="Export only these primary-face races (comma-separated: white,black,latino_hispanic,"
+        "east_asian,southeast_asian,indian,middle_eastern)",
+    ),
+    face_genders: str | None = Option(None, "--gender", help="Export only these primary-face genders (male,female)"),
+    face_ages: str | None = Option(
+        None, "--age", help="Export only these primary-face age brackets (comma-separated, e.g. 20-29,30-39)"
+    ),
+    min_age_years: float | None = Option(
+        None, "--min-age", help="Export only primary faces at least this old (MiVOLO)"
+    ),
+    max_age_years: float | None = Option(None, "--max-age", help="Export only primary faces at most this old (MiVOLO)"),
+    min_attribute_conf: float = Option(
+        0.0, "--min-attr-conf", help="Minimum confidence for a filtered attribute to count as a match (0..1)"
     ),
     csv_out: Path | None = Option(None, "--csv", help="Write the per-image CSV report here"),
     json_out: Path | None = Option(None, "--json", help="Write the full ScanSummary JSON here"),
@@ -64,6 +97,17 @@ def scan(
     if not source.is_dir():
         typer.echo(f"Error: not a directory: {source}", err=True)
         raise typer.Exit(1)
+    import os
+
+    from argus_curator import fairface as fairface_mod
+    from argus_curator import mivolo as mivolo_mod
+
+    for model_file, env in (
+        (fairface_model, fairface_mod.MODEL_ENV),
+        (mivolo_model, mivolo_mod.MODEL_ENV),
+    ):
+        if model_file is not None:
+            os.environ[env] = str(model_file)
 
     profile = TargetProfile(
         target_style=style,
@@ -85,6 +129,8 @@ def scan(
         min_det_score=min_det_score,
         cluster_eps=cluster_eps,
         device=device,
+        fairface=fairface,
+        mivolo=mivolo,
     )
 
     typer.echo(f"Scanning {source} (recursive) ...")
@@ -103,6 +149,15 @@ def scan(
     if pose_counts:
         dist = "  ".join(f"{p}={n}" for p, n in sorted(pose_counts.items()))
         typer.echo(f"  Primary-face pose:     {dist}")
+    for name in ("race", "gender", "age"):
+        counts: dict[str, int] = {}
+        for r in summary.results:
+            label = getattr(r.primary_face_attributes, name, None)
+            if label:
+                counts[label] = counts.get(label, 0) + 1
+        if counts:
+            dist = "  ".join(f"{k}={n}" for k, n in sorted(counts.items()))
+            typer.echo(f"  Primary-face {name + ':':<9}{dist}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
@@ -115,7 +170,11 @@ def scan(
             tag = f"g{r.similar_group}" + ("*" if r.is_representative and r.group_size > 1 else "")
             if r.primary_face_cluster:
                 pose = f" {r.primary_face_pose}" if r.primary_face_pose else ""
-                face = f" [{r.primary_face_cluster}{pose}]"
+                a = r.primary_face_attributes
+                age = f"{a.age_years:.0f}y" if a and a.age_years is not None else (a.age if a else None)
+                attrs = " ".join(str(v) for v in (a.race, a.gender, age) if v) if a else ""
+                attrs = f" {attrs}" if attrs else ""
+                face = f" [{r.primary_face_cluster}{pose}{attrs}]"
             else:
                 face = ""
             typer.echo(f"  {r.score:.3f} {tag:>5}  {r.rel_path}{face}")
@@ -139,7 +198,13 @@ def scan(
             keep_similar=keep_similar,
             max_keep=max_keep,
             face_clusters=[c.strip() for c in face_clusters.split(",")] if face_clusters else None,
-            face_poses=[p.strip() for p in face_poses.split(",")] if face_poses else None,
+            face_poses=_csv_list(face_poses),
+            face_races=_csv_list(face_races),
+            face_genders=_csv_list(face_genders),
+            face_ages=_csv_list(face_ages),
+            min_age_years=min_age_years,
+            max_age_years=max_age_years,
+            min_attribute_conf=min_attribute_conf,
             write_manifest=dest is not None,
         )
         # With no --copy-to/--move-to/--symlink-to there is nowhere to transfer
@@ -215,6 +280,54 @@ def detectors() -> None:
     for name, ok in _detectors().items():
         marker = "+" if ok else "-"
         typer.echo(f"  [{marker}] {name}")
+
+
+@app.command("fairface-convert")
+def fairface_convert(
+    weights: Path = Argument(..., help="Official FairFace 7-race weights (fairface_alldata_20191111.pt)"),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+) -> None:
+    """Convert the FairFace PyTorch weights to the ONNX model --fairface runs.
+
+    Download the weights from the FairFace repo (github.com/dchen236/FairFace,
+    CC BY 4.0). Needs: pip install argus-curator[fairface-convert]
+    """
+    from argus_curator.attributes import AttributesUnavailable
+    from argus_curator.fairface import export_onnx, model_path
+
+    if not weights.is_file():
+        typer.echo(f"Error: not a file: {weights}", err=True)
+        raise typer.Exit(1)
+    try:
+        written = export_onnx(weights, output or model_path())
+    except AttributesUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote FairFace ONNX model -> {written}")
+
+
+@app.command("mivolo-convert")
+def mivolo_convert(
+    weights: Path | None = Option(
+        None, "--weights", help="Local model.safetensors (default: download the pinned iitolstykh/mivolo_v2)"
+    ),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+) -> None:
+    """Fetch, verify and convert MiVOLO v2 to the ONNX model --mivolo runs.
+
+    Weights: huggingface.co/iitolstykh/mivolo_v2 (Apache-2.0), pinned by commit
+    and sha256. Needs: pip install argus-curator[mivolo-convert]
+    """
+    from argus_curator.attributes import AttributesUnavailable
+    from argus_curator.mivolo import export_onnx, fetch_weights, model_path
+
+    try:
+        source = weights or fetch_weights()
+        written = export_onnx(source, output or model_path())
+    except AttributesUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote MiVOLO ONNX model -> {written}")
 
 
 DEFAULT_SCHEMA_PATH = Path("schema/curator-wire.schema.json")

@@ -147,6 +147,10 @@ def write_manifest(
             f.write(row.model_dump_json() + "\n")
 
 
+def _blank(value: object) -> object:
+    return "" if value is None else value
+
+
 def write_report(
     results: list[ImageResult],
     keep_reason: dict[str, str],
@@ -179,10 +183,30 @@ def write_report(
         "primary_face_cluster",
         "primary_face_pose",
         "primary_face_yaw",
+        "primary_face_race",
+        "primary_face_race_conf",
+        "primary_face_gender",
+        "primary_face_gender_conf",
+        "primary_face_age",
+        "primary_face_age_conf",
+        "primary_face_age_years",
+        "primary_face_gender_source",
+        "primary_face_age_source",
         "width",
         "height",
         "abs_path",
     ]
+    attr_fields = (
+        "race",
+        "race_conf",
+        "gender",
+        "gender_conf",
+        "age",
+        "age_conf",
+        "age_years",
+        "gender_source",
+        "age_source",
+    )
     ordered = sorted(results, key=lambda r: (r.similar_group, -r.score))
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -209,6 +233,7 @@ def write_report(
                     "primary_face_cluster": r.primary_face_cluster or "",
                     "primary_face_pose": r.primary_face_pose or "",
                     "primary_face_yaw": "" if r.primary_face_yaw is None else round(r.primary_face_yaw, 1),
+                    **{f"primary_face_{k}": _blank(getattr(r.primary_face_attributes, k, None)) for k in attr_fields},
                     "width": r.width,
                     "height": r.height,
                     "abs_path": r.abs_path,

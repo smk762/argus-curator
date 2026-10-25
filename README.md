@@ -105,9 +105,74 @@ argus-curator scan /data/images --faces \
 argus-curator scan /data/images --faces \
     --pose frontal,three_quarter --copy-to /data/curated
 
+# Predict attributes per face (FairFace: race/gender/age bracket; MiVOLO: age in years/gender),
+# then keep adults up to 35 with a confident race prediction
+argus-curator scan /data/images --fairface --mivolo \
+    --race east_asian --min-attr-conf 0.6 --min-age 18 --max-age 35 --copy-to /data/curated
+
 # Which detectors are available?
 argus-curator detectors
 ```
+
+### Face attributes (FairFace + MiVOLO)
+
+Two optional models read each detected face; either switch implies `--faces`.
+
+| | [FairFace](https://github.com/dchen236/FairFace) (`--fairface`) | [MiVOLO v2](https://huggingface.co/iitolstykh/mivolo_v2) (`--mivolo`) |
+|---|---|---|
+| Predicts | race (7), gender, age bracket | age in **years**, gender |
+| Confidence | softmax probability per label | gender probability; age is a regression (none) |
+| Input | 224 px chip aligned on the 5 face keypoints | 384 px face box, letterboxed; face-only |
+| Weights | CC BY 4.0, Google Drive | Apache-2.0, Hugging Face |
+
+Race labels: white, black, latino_hispanic, east_asian, southeast_asian,
+indian, middle_eastern. Age brackets: 0-2, 3-9, 10-19, …, 60-69, 70+.
+
+With both on, MiVOLO wins gender and age (it is far stronger at both) and
+FairFace alone supplies race; the bracket is then derived from MiVOLO's years,
+so `--age` filters work with either model. `gender_source` / `age_source` say
+which model produced each value. Results land per face (`faces[].attributes`),
+on the primary face (`primary_face_attributes`, also in the CSV report), and
+pooled per identity cluster (`face_clusters[].attributes`): probabilities are
+averaged and ages take the median over every member face, so one odd frame
+cannot flip or drag an identity's label.
+
+MiVOLO is built to read a face *and* a person crop; there is no person
+detector here, so it runs face-only (a supported mode, slightly less accurate
+than MiVOLO's published face+body numbers).
+
+These are a model's guess from appearance, not facts about anyone; expect
+errors on ambiguous faces, mixed heritage, heavy makeup or poor lighting, and
+check `*_conf` before relying on a label.
+
+**Filters** (all on the primary face): `--race`, `--gender`, `--age`
+(brackets), `--min-age` / `--max-age` (years, MiVOLO). `--min-attr-conf` /
+`min_attribute_conf` additionally requires a filtered label's confidence to
+reach the floor (a MiVOLO age has none, so it is not held to it). Excluded
+images say why in `keep_reason`: `face-<attr>-excluded`,
+`face-<attr>-low-confidence`, `face-<attr>-missing`,
+`face-age-out-of-range`, `face-age-years-missing`, or
+`face-attributes-missing`.
+
+**Models** are not on PyPI; each is converted to ONNX once, after which
+inference runs on the `[faces]` onnxruntime stack with no torch:
+
+```bash
+# MiVOLO: downloads the pinned checkpoint (commit + sha256 checked)
+pip install "argus-curator[mivolo-convert]"
+argus-curator mivolo-convert          # -> ~/.cache/argus_curator/models/mivolo_v2_d1_384.onnx
+
+# FairFace: download fairface_alldata_20191111.pt from the FairFace repo first
+pip install "argus-curator[fairface-convert]"
+argus-curator fairface-convert fairface_alldata_20191111.pt
+                                      # -> ~/.cache/argus_curator/models/fairface_res34_race7.onnx
+```
+
+Point elsewhere with `--fairface-model` / `--mivolo-model` or
+`ARGUS_CURATOR_FAIRFACE_MODEL` / `ARGUS_CURATOR_MIVOLO_MODEL`. Model paths are
+server configuration, never part of a request; a server without a requested
+model refuses the scan with 400 before scoring anything, and `GET /detectors`
+reports `fairface` / `mivolo`.
 
 ### HTTP server (:8101, peer to argus-lens)
 
@@ -142,7 +207,7 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 | Route | Description |
 |---|---|
 | `GET  /health` | Liveness |
-| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime }` |
+| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
@@ -179,6 +244,10 @@ payload the non-streaming endpoint returns (or `event: error`).
   "min_score": 0.6, "include_rejected": false, "keep_similar": false,
   "face_clusters": ["face_2"],      // optional: export only these identities
   "face_poses": ["frontal", "three_quarter"],  // optional: export only these head poses
+  "face_races": null, "face_genders": null,    // optional: attribute filters on the primary face
+  "face_ages": null,                // FairFace brackets ("20-29", ...)
+  "min_age_years": 18, "max_age_years": 35,     // optional: MiVOLO age range
+  "min_attribute_conf": 0.6,        // filtered attributes must be at least this confident
   "write_manifest": true,
   "caption_url": null               // optional: POST manifest to argus-lens
 }
@@ -191,7 +260,9 @@ docker compose up --build
 ```
 
 Bind-mounts a dataset into `/data/images`, an output dir into `/data/out`, and
-persists the scan cache + InsightFace model downloads across rebuilds.
+persists the scan cache + InsightFace model downloads across rebuilds. A
+converted FairFace / MiVOLO model under `~/.cache/argus_curator/models/` is
+picked up through the same cache mount.
 
 ## Handoff to argus-lens
 

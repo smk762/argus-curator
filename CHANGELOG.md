@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Face attributes from two optional models (`FaceConfig.fairface` /
+  `FaceConfig.mivolo`, CLI `--fairface` / `--mivolo`; either implies face
+  detection). FairFace gives race (7 classes), gender and age bracket, each
+  with its softmax confidence; MiVOLO v2 gives age in years and gender, and
+  supersedes FairFace for both when the two run together (`gender_source` /
+  `age_source` record which). Recorded per face, on the primary face
+  (`ImageResult.primary_face_attributes`, plus CSV report columns), and pooled
+  per identity (`FaceCluster.attributes`: averaged probabilities, median age).
+- Both run on onnxruntime. `argus-curator fairface-convert <weights.pt>` and
+  `argus-curator mivolo-convert` (downloads `iitolstykh/mivolo_v2` pinned by
+  commit and sha256) export the ONNX models once, behind the
+  `[fairface-convert]` / `[mivolo-convert]` extras. Model paths come from
+  `ARGUS_CURATOR_FAIRFACE_MODEL` / `ARGUS_CURATOR_MIVOLO_MODEL` (or
+  `--fairface-model` / `--mivolo-model`), never from a request; the server
+  refuses a scan asking for a model it lacks with 400 before scoring.
+- Export filters on those attributes: `face_races`, `face_genders`,
+  `face_ages`, `min_age_years` / `max_age_years` and `min_attribute_conf`
+  (CLI `--race`, `--gender`, `--age`, `--min-age`, `--max-age`,
+  `--min-attr-conf`), each exclusion with its own `keep_reason`.
+- `GET /detectors` reports `fairface` and `mivolo`.
+
 ### Security
 
 - Server scan/export endpoints now enforce path containment (issue #3):
