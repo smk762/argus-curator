@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-25
+
 ### Added
 
 - Face attributes from two optional models (`FaceConfig.fairface` /
@@ -51,6 +53,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--min-garment-conf`, `--uncropped`), and `diversify_outfits`
   (`--diversify-outfits`) to spread a `max_keep` selection across outfits.
 - `GET /detectors` reports `fairface`, `mivolo`, `places365` and `garments`.
+
+### Security
+
+- Distrust the emSign ECC Root CA - G3 root
+  ([discuss.python.org/t/109576](https://discuss.python.org/t/109576)). The
+  Docker image disables it and the Comodo AAA cross-sign root in the system
+  trust store, and upgrades to pip 26.2.2 from a sha256-pinned wheel, since
+  older pip also trusts its own bundled roots. `certifi>=2026.10.19`, which
+  drops the root, is required by the `[server]` extra (httpx verifies against
+  it), `[dev]`, and the image.
+
+## [0.2.1] - 2026-07-22
+
+This section also covers 0.2.0 (2026-07-17): both were tagged without moving
+their entries out of `[Unreleased]`, and 0.2.1 amended bullets 0.2.0 added,
+so the two cannot be separated cleanly after the fact.
 
 ### Security
 
@@ -220,4 +238,7 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/smk762/argus-curator/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/smk762/argus-curator/compare/v0.1.0...v0.2.1
 [0.1.0]: https://github.com/smk762/argus-curator/releases/tag/v0.1.0
