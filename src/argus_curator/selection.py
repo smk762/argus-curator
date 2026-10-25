@@ -16,9 +16,13 @@ _MAX_DIST = 64.0  # maximum 64-bit pHash Hamming distance
 
 
 def _scene_overlap(a: ImageResult, b: ImageResult) -> float:
-    """Histogram intersection of two images' recorded scene probabilities (0..1)."""
+    """Histogram intersection of two images' recorded scene probabilities (0..1).
+
+    Two untagged images count as the same (unknown) scene, one untagged
+    against a tagged one as different.
+    """
     if a.scene is None or b.scene is None:
-        return 0.0
+        return 1.0 if a.scene is None and b.scene is None else 0.0
     pb = {c.label: c.conf for c in b.scene.categories}
     return sum(min(c.conf, pb.get(c.label, 0.0)) for c in a.scene.categories)
 
@@ -43,8 +47,13 @@ def select_diverse(
     scene overlap / outfit similarity (garment types and colours, detections
     >= ``outfit_conf``) with anything selected — and the diversity term becomes
     the mean of pHash spread and the enabled novelties, so near-identical
-    backdrops or outfits are spread out even when the pixels differ. An image
-    the term cannot judge (no tags, nothing worn) simply contributes no term.
+    backdrops or outfits are spread out even when the pixels differ.
+
+    A term, once in play, scores every candidate: an untagged image or one
+    with nothing detected is itself a "scene" / "outfit" that repeats, rather
+    than skipping the term and being judged on pHash alone (which would
+    systematically favour exactly the images the term knows least about). A
+    term is in play only if some candidate carries the data at all.
     """
     if n >= len(candidates) or diversity_weight <= 0.0:
         return sorted(candidates, key=lambda r: -r.score)[:n]
@@ -59,9 +68,9 @@ def select_diverse(
 
     selected_idx: list[int] = []
     selected_hashes: list[imagehash.ImageHash] = []
-    selected_scenes: list[ImageResult] = []
-    sigs = [outfit(r.garments, outfit_conf) if outfits else {} for r in candidates]
-    selected_outfits: list[dict] = []
+    sigs = [outfit(r.garments, outfit_conf) for r in candidates] if outfits else []
+    use_scenes = scenes and any(r.scene is not None for r in candidates)
+    use_outfits = outfits and any(sigs)
     remaining = list(range(len(candidates)))
 
     for _ in range(n):
@@ -75,10 +84,10 @@ def select_diverse(
             else:
                 div_norm = min(hashes[i] - sh for sh in selected_hashes) / _MAX_DIST
             terms = [div_norm]
-            if scenes and candidates[i].scene is not None and selected_scenes:
-                terms.append(1.0 - max(_scene_overlap(candidates[i], o) for o in selected_scenes))
-            if sigs[i] and selected_outfits:
-                terms.append(1.0 - max(outfit_similarity(sigs[i], o) for o in selected_outfits))
+            if use_scenes and selected_idx:
+                terms.append(1.0 - max(_scene_overlap(candidates[i], candidates[j]) for j in selected_idx))
+            if use_outfits and selected_idx:
+                terms.append(1.0 - max(outfit_similarity(sigs[i], sigs[j]) for j in selected_idx))
             div_norm = sum(terms) / len(terms)
             val = score_norm * (1.0 - diversity_weight) + div_norm * diversity_weight
             if val > best_val:
@@ -88,10 +97,6 @@ def select_diverse(
         selected_idx.append(best_idx)
         if hashes[best_idx] is not None:
             selected_hashes.append(hashes[best_idx])
-        if candidates[best_idx].scene is not None:
-            selected_scenes.append(candidates[best_idx])
-        if sigs[best_idx]:
-            selected_outfits.append(sigs[best_idx])
         remaining.remove(best_idx)
 
     return [candidates[i] for i in selected_idx]
@@ -174,6 +179,21 @@ def _garment_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
             return "garment-low-confidence" if doubtful else "garment-not-found"
         if req.garments_uncropped and all(g.touches_edge for g in hits):
             return "garment-cropped"
+    return None
+
+
+def garment_floor_problem(req: ExportRequest, recorded_from: float) -> str | None:
+    """Why *req*'s garment floor cannot be honoured by a scan, else ``None``.
+
+    A scan stores only detections >= its ``GarmentConfig.min_conf``; a lower
+    export floor would silently behave as that one.
+    """
+    uses_garments = bool(req.garments or req.exclude_garments or req.diversify_outfits)
+    if uses_garments and req.min_garment_conf < recorded_from:
+        return (
+            f"min_garment_conf {req.min_garment_conf} is below {recorded_from}, the probability this scan "
+            "recorded garments from; rescan with a lower garments.min_conf"
+        )
     return None
 
 

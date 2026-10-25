@@ -712,3 +712,13 @@ def test_scan_refuses_models_it_does_not_have(contained: tuple[TestClient, Path]
             detail = resp.json()["detail"]
             assert name in detail and env in detail
             assert "/" not in detail.split("(")[0]
+
+
+def test_export_refuses_garment_floor_below_what_the_scan_recorded(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    body = {"scan_id": scan["scan_id"], "dest": "out", "garments": ["dress"], "min_garment_conf": 0.2}
+    for endpoint in ("/export", "/export/stream"):
+        resp = client.post(endpoint, json=body)
+        assert resp.status_code == 400, endpoint
+        assert "rescan" in resp.json()["detail"]

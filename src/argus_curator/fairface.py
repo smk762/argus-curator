@@ -22,15 +22,20 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from argus_curator.runtime import ModelUnavailable, configured_path, load_session
+from argus_curator.runtime import (
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    ModelUnavailable,
+    configured_path,
+    load_session,
+    softmax,
+)
 
 MODEL_ENV = "ARGUS_CURATOR_FAIRFACE_MODEL"
 DEFAULT_MODEL_NAME = "fairface_res34_race7.onnx"
 
 INPUT_SIZE = 224
 _PADDING = 0.25
-_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 # dlib's normalised mean face (face_utilities.h), reduced to InsightFace's five
 # keypoints in image order: left eye, right eye, nose tip, mouth left/right.
@@ -95,19 +100,14 @@ def align_face(image: Image.Image, kps: np.ndarray) -> Image.Image:
 def preprocess(chips: list[Image.Image]) -> np.ndarray:
     """Stack RGB chips into an ImageNet-normalised NCHW float32 batch."""
     arr = np.stack([np.asarray(c.convert("RGB"), dtype=np.float32) / 255.0 for c in chips])
-    arr = (arr - _MEAN) / _STD
+    arr = (arr - IMAGENET_MEAN) / IMAGENET_STD
     return arr.transpose(0, 3, 1, 2).astype(np.float32)
-
-
-def _softmax(x: np.ndarray) -> np.ndarray:
-    e = np.exp(x - x.max(axis=-1, keepdims=True))
-    return e / e.sum(axis=-1, keepdims=True)
 
 
 def split_probs(logits: np.ndarray) -> np.ndarray:
     """Softmax each FairFace head of an ``(N, 18)`` logit batch independently."""
     logits = np.asarray(logits, dtype=np.float64)
-    return np.concatenate([_softmax(logits[:, :7]), _softmax(logits[:, 7:9]), _softmax(logits[:, 9:18])], axis=1)
+    return np.concatenate([softmax(logits[:, :7]), softmax(logits[:, 7:9]), softmax(logits[:, 9:18])], axis=1)
 
 
 def predict(session, image: Image.Image, kps_list: list[np.ndarray]) -> np.ndarray:

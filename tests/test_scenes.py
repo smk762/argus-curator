@@ -66,7 +66,7 @@ def test_to_tags_top_k_and_environment_mass() -> None:
 
 
 def test_softmax_rows_sum_to_one() -> None:
-    p = scenes.softmax(np.random.default_rng(0).standard_normal((3, 365)) * 5)
+    p = runtime.softmax(np.random.default_rng(0).standard_normal((3, 365)) * 5)
     np.testing.assert_allclose(p.sum(axis=1), 1.0)
 
 
@@ -257,3 +257,34 @@ def test_report_includes_scene_columns(tmp_path: Path) -> None:
     assert rows["a.jpg"]["scene"] == "beach" and rows["a.jpg"]["scene_conf"] == "0.61"
     assert rows["a.jpg"]["scene_environment"] == "outdoor"
     assert rows["b.jpg"]["scene"] == "" and rows["b.jpg"]["scene_environment_conf"] == ""
+
+
+def test_truncated_image_does_not_cost_its_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Image.open is lazy: a truncated file must fail alone, not in predict()."""
+    session = _Session()
+    monkeypatch.setattr(scenes, "get_session", lambda provs: session)
+    buf = io.BytesIO()
+    Image.fromarray(np.random.default_rng(0).integers(0, 255, (64, 64, 3), dtype=np.uint8)).save(buf, "JPEG")
+    truncated = buf.getvalue()[: len(buf.getvalue()) // 2]
+    items = [("ok.png", "/d/ok", _png(250)), ("cut.jpg", "/d/cut", truncated), ("ok2.png", "/d/ok2", _png(5))]
+    results = [ImageResult(rel_path=rel, abs_path=a, passed=True) for rel, a, _ in items]
+    scenes.tag_images(results, items, SceneConfig(enabled=True))
+    by = {r.rel_path: r for r in results}
+    assert by["cut.jpg"].scene is None
+    assert by["ok.png"].scene is not None and by["ok2.png"].scene is not None
+    assert session.batches == [2]
+
+
+def test_untagged_images_are_not_favoured_by_scene_diversity() -> None:
+    """Without a scene, an image must still face the scene term, or it wins on pHash alone."""
+    bedroom = _tags("indoor", 0.9, ("bedroom", 0.9))
+    beach = _tags("outdoor", 0.9, ("beach", 0.9))
+    pool = [
+        _img("bed.jpg", bedroom, "ffffffffffffffff", 0.95),
+        _img("untagged1.jpg", None, "0000000000000000", 0.94),
+        _img("untagged2.jpg", None, "0000000000000001", 0.93),
+        _img("beach.jpg", beach, "0000000000000003", 0.92),
+    ]
+    picked = [r.rel_path for r in select_diverse(pool, 3, 0.6, scenes=True)]
+    # One unknown-scene image is novel; a second one repeats it, so the beach wins.
+    assert picked == ["bed.jpg", "untagged1.jpg", "beach.jpg"]

@@ -27,12 +27,15 @@ from PIL import Image
 
 from argus_curator.models import GARMENT_LABELS, GarmentConfig, GarmentDetection, ImageResult
 from argus_curator.runtime import (
+    IMAGENET_MEAN,
+    IMAGENET_STD,
     ModelUnavailable,
     configured_path,
     load_session,
     onnxruntime_available,
     providers,
     sha256,
+    softmax,
 )
 
 logger = structlog.get_logger()
@@ -48,8 +51,8 @@ WEIGHTS_SHA256 = "1b5f4cc272f8f32b2f25b129f9ce7df4756cb030d5fbd234c790b6a9eef962
 # YolosImageProcessor settings from the checkpoint's preprocessor_config.json.
 SHORT_EDGE = 512
 MAX_EDGE = 1333
-_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+# Two 16-px patches: the smallest input the exported model accepts.
+MIN_EDGE = 32
 # Touching the frame within this fraction of the image size counts as cut off.
 _EDGE_MARGIN = 0.01
 
@@ -73,7 +76,11 @@ def get_session(provs: list[str]):
 
 
 def resize_size(width: int, height: int) -> tuple[int, int]:
-    """YOLOS's target size: short edge 512, long edge <= 1333, both floored to /16."""
+    """YOLOS's target size: short edge 512, long edge <= 1333, both floored to /16.
+
+    Each edge is held to at least :data:`MIN_EDGE`: the processor itself would
+    give 0 for a sliver-thin panorama, which no model can take.
+    """
     short, long_ = min(width, height), max(width, height)
     size = SHORT_EDGE
     if long_ / short * size > MAX_EDGE:
@@ -82,14 +89,14 @@ def resize_size(width: int, height: int) -> tuple[int, int]:
         new_w, new_h = size, int(size * height / width)
     else:
         new_w, new_h = int(size * width / height), size
-    return new_w - new_w % 16, new_h - new_h % 16
+    return max(MIN_EDGE, new_w - new_w % 16), max(MIN_EDGE, new_h - new_h % 16)
 
 
 def preprocess(image: Image.Image) -> np.ndarray:
     """``(1, 3, H, W)`` ImageNet-normalised input at YOLOS's resize."""
     rgb = image.convert("RGB")
     rgb = rgb.resize(resize_size(*rgb.size), Image.Resampling.BILINEAR)
-    arr = (np.asarray(rgb, dtype=np.float32) / 255.0 - _MEAN) / _STD
+    arr = (np.asarray(rgb, dtype=np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
     return arr.transpose(2, 0, 1)[None].astype(np.float32)
 
 
@@ -100,9 +107,7 @@ def postprocess(logits: np.ndarray, boxes: np.ndarray, width: int, height: int, 
     dropped (as ``post_process_object_detection`` does); boxes come out as
     normalised centre/size and are scaled to the original image.
     """
-    logits = np.asarray(logits, dtype=np.float64)
-    e = np.exp(logits - logits.max(axis=-1, keepdims=True))
-    probs = (e / e.sum(axis=-1, keepdims=True))[:, :-1]
+    probs = softmax(logits)[:, :-1]
     labels, scores = probs.argmax(axis=-1), probs.max(axis=-1)
     out = []
     for lbl, conf, (cx, cy, bw, bh) in zip(labels, scores, boxes, strict=True):
@@ -213,11 +218,12 @@ def outfit_similarity(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> flo
     """0..1: shared garment types, each weighted by how close their colours are.
 
     A shared type counts fully at identical colour and fades to nothing at a
-    CIE76 distance of 50 (roughly "clearly a different colour").
+    CIE76 distance of 50 (roughly "clearly a different colour"). Two images
+    with nothing detected are alike: neither shows an outfit.
     """
     union = a.keys() | b.keys()
     if not union:
-        return 0.0
+        return 1.0
     shared = a.keys() & b.keys()
     return sum(max(0.0, 1.0 - float(np.linalg.norm(a[k] - b[k])) / 50.0) for k in shared) / len(union)
 
@@ -284,7 +290,12 @@ def export_onnx(checkpoint_dir: Path, output: Path) -> Path:
         output_names=["logits", "boxes"],
         # YOLOS interpolates its position embeddings to the input, so height
         # and width stay dynamic (in 16-px patches) rather than fixing a canvas.
-        dynamic_shapes=({2: 16 * patches("hp", min=8, max=84), 3: 16 * patches("wp", min=8, max=84)},),
+        dynamic_shapes=(
+            {
+                2: 16 * patches("hp", min=MIN_EDGE // 16, max=84),
+                3: 16 * patches("wp", min=MIN_EDGE // 16, max=84),
+            },
+        ),
         opset_version=18,
         dynamo=True,
         external_data=False,

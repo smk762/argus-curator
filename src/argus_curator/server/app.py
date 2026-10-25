@@ -49,6 +49,7 @@ from argus_curator.models import (
     ScanSummary,
 )
 from argus_curator.scenes import scenes_available
+from argus_curator.selection import garment_floor_problem
 from argus_curator.store import ScanStore
 
 THUMB_MAX = 384  # longest-edge px for /thumb webp output
@@ -503,6 +504,8 @@ def create_app(
                 status_code=400,
                 detail="inline selection export requires a scan_id for the manifest target_profile",
             )
+        if (problem := garment_floor_problem(req, summary.garments_config.min_conf)) is not None:
+            raise HTTPException(status_code=400, detail=problem)
         # The scan's images are read straight from `abs_path`, so a scan rooted
         # outside the source root would export files the root should fence off.
         _scan_root_or_400(summary)

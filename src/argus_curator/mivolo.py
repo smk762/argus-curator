@@ -22,7 +22,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from argus_curator.runtime import ModelUnavailable, configured_path, load_session, sha256
+from argus_curator.runtime import (
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    ModelUnavailable,
+    configured_path,
+    load_session,
+    sha256,
+    softmax,
+)
 
 MODEL_ENV = "ARGUS_CURATOR_MIVOLO_MODEL"
 DEFAULT_MODEL_NAME = "mivolo_v2_d1_384.onnx"
@@ -37,10 +45,10 @@ WEIGHTS_SHA256 = "96efb47051c038ebeec74b73b4253c5fd000433e5afcab7deee0bd8f3fa7bf
 INPUT_SIZE = 384
 # config.json of the checkpoint: min_age 0, max_age 122, avg_age 61.
 _MIN_AGE, _MAX_AGE, _AVG_AGE = 0.0, 122.0, 61.0
-_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 # Upstream's stand-in for a missing person crop: a black image, normalised.
-_ABSENT = np.broadcast_to(((0.0 - _MEAN) / _STD)[:, None, None], (3, INPUT_SIZE, INPUT_SIZE)).astype(np.float32)
+_ABSENT = np.broadcast_to(((0.0 - IMAGENET_MEAN) / IMAGENET_STD)[:, None, None], (3, INPUT_SIZE, INPUT_SIZE)).astype(
+    np.float32
+)
 
 
 def model_path() -> Path:
@@ -86,7 +94,7 @@ def face_crop(image: Image.Image, bbox_xywh: list[float]) -> Image.Image | None:
 def preprocess(crops: list[Image.Image]) -> np.ndarray:
     """``(N, 6, 384, 384)``: normalised face channels + absent-person channels."""
     faces = np.stack([np.asarray(letterbox(c), dtype=np.float32) / 255.0 for c in crops])
-    faces = ((faces - _MEAN) / _STD).transpose(0, 3, 1, 2)
+    faces = ((faces - IMAGENET_MEAN) / IMAGENET_STD).transpose(0, 3, 1, 2)
     persons = np.broadcast_to(_ABSENT, faces.shape)
     return np.concatenate([faces, persons], axis=1).astype(np.float32)
 
@@ -94,9 +102,7 @@ def preprocess(crops: list[Image.Image]) -> np.ndarray:
 def decode(output: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """``(gender_probs (N, 2) [male, female], age_years (N,))`` from raw output."""
     output = np.asarray(output, dtype=np.float64)
-    logits = output[:, :2]
-    e = np.exp(logits - logits.max(axis=1, keepdims=True))
-    gender = e / e.sum(axis=1, keepdims=True)
+    gender = softmax(output[:, :2])
     age = output[:, 2] * (_MAX_AGE - _MIN_AGE) + _AVG_AGE
     return gender, np.clip(age, _MIN_AGE, _MAX_AGE)
 

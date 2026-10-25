@@ -108,7 +108,8 @@ def test_outfit_similarity() -> None:
     assert garments.outfit_similarity(red_dress, red_dress_2) > 0.9
     assert 0.4 < garments.outfit_similarity(red_dress, black_dress) < 0.6  # shoes match, dress colour does not
     assert garments.outfit_similarity(red_dress, jeans) == pytest.approx(1 / 3, abs=0.01)  # shoes only, of 3 types
-    assert garments.outfit_similarity({}, {}) == 0.0
+    assert garments.outfit_similarity({}, {}) == 1.0  # neither shows an outfit
+    assert garments.outfit_similarity(red_dress, {}) == 0.0
     # Detections under the floor are not part of the outfit.
     assert garments.outfit([det("hat", "#ffffff", conf=0.3)], 0.5) == {}
 
@@ -246,3 +247,35 @@ def test_report_includes_garments_column(tmp_path: Path) -> None:
     rows = {r["rel_path"]: r for r in csv.DictReader(report.open())}
     assert rows["a.jpg"]["garments"] == "dress:0.91:#c01010;shoe:0.50:#101010*"
     assert rows["b.jpg"]["garments"] == ""
+
+
+def test_resize_never_goes_below_two_patches() -> None:
+    assert garments.resize_size(6000, 500) == (1328, 96)  # what YOLOS itself does
+    assert garments.resize_size(20000, 20) == (992, 32)  # the processor would give a 0-px edge
+    assert min(garments.resize_size(20, 20000)) == 32
+
+
+def test_garment_floor_below_recorded_floor_is_refused() -> None:
+    from argus_curator.selection import garment_floor_problem
+
+    low = ExportRequest(dest="/o", garments=["dress"], min_garment_conf=0.2)
+    assert "rescan" in garment_floor_problem(low, recorded_from=0.3)
+    assert garment_floor_problem(low, recorded_from=0.2) is None
+    # Without any garment filter the floor is unused, so nothing to refuse.
+    assert garment_floor_problem(ExportRequest(dest="/o", min_garment_conf=0.2), recorded_from=0.3) is None
+
+
+def test_garmentless_images_are_not_favoured_by_outfit_diversity() -> None:
+    red = [_g("dress", color="#c01010")]
+    pool = [
+        _img("red.jpg", red, 0.95),
+        _img("none1.jpg", [], 0.94),
+        _img("none2.jpg", [], 0.93),
+        _img("jeans.jpg", [_g("pants", color="#2040a0")], 0.92),
+    ]
+    for r, h in zip(
+        pool, ("ffffffffffffffff", "0000000000000000", "0000000000000001", "0000000000000003"), strict=True
+    ):
+        r.phash = h
+    picked = [r.rel_path for r in select_diverse(pool, 3, 0.6, outfits=True)]
+    assert picked == ["red.jpg", "none1.jpg", "jeans.jpg"]  # a second "nothing detected" repeats

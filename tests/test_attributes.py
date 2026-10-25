@@ -417,3 +417,11 @@ def test_report_includes_attribute_columns(tmp_path: Path) -> None:
     assert rows["c.jpg"]["primary_face_race"] == ""
     assert rows["c.jpg"]["primary_face_age_years"] == "63.2"
     assert rows["c.jpg"]["primary_face_gender_source"] == "mivolo"
+
+
+def test_inverted_age_range_is_rejected() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="above max_age_years"):
+        ExportRequest(dest="/out", min_age_years=40, max_age_years=25)
+    assert ExportRequest(dest="/out", min_age_years=25, max_age_years=25).min_age_years == 25

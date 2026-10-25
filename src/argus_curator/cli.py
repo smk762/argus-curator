@@ -127,6 +127,8 @@ def scan(
     verbose: bool = Option(False, "--verbose", "-v", help="Print per-image details"),
 ) -> None:
     """Scan a folder, rank for training suitability, and optionally export keepers."""
+    from pydantic import ValidationError
+
     from argus_curator.export import export_selection
     from argus_curator.models import ExportRequest, FaceConfig, GarmentConfig, ScanConfig, SceneConfig, TargetProfile
     from argus_curator.scanner import scan_folder as _scan
@@ -176,7 +178,62 @@ def scan(
     )
 
     scene_cfg = SceneConfig(enabled=scenes, top_k=scene_top_k, device=device)
-    garment_cfg = GarmentConfig(enabled=garments, device=device)
+    # Record garments at least as low as the export floor asks for: a scan
+    # keeps nothing below GarmentConfig.min_conf, so a lower floor would match
+    # nothing extra.
+    garment_cfg = GarmentConfig(
+        enabled=garments, device=device, min_conf=min(GarmentConfig().min_conf, min_garment_conf)
+    )
+
+    # Everything that can be wrong with the request fails here, before the
+    # scan rather than after it: unknown labels, inverted ranges, missing models.
+    dest = move_to or copy_to or symlink_to
+    mode = "move" if move_to else ("symlink" if symlink_to else "copy")
+    try:
+        export_req = ExportRequest(
+            dest=str(dest) if dest else str(source),
+            mode=mode,
+            min_score=min_score,
+            include_rejected=include_rejected,
+            keep_similar=keep_similar,
+            max_keep=max_keep,
+            face_clusters=[c.strip() for c in face_clusters.split(",")] if face_clusters else None,
+            face_poses=_csv_list(face_poses),
+            face_races=_csv_list(face_races),
+            face_genders=_csv_list(face_genders),
+            face_ages=_csv_list(face_ages),
+            min_age_years=min_age_years,
+            max_age_years=max_age_years,
+            min_attribute_conf=min_attribute_conf,
+            scenes=_csv_list(scene_filter),
+            scene_environments=_csv_list(environment),
+            min_scene_conf=min_scene_conf,
+            diversify_scenes=diversify_scenes,
+            garments=_csv_list(garment_filter),
+            exclude_garments=_csv_list(exclude_garments),
+            min_garment_conf=min_garment_conf,
+            garments_uncropped=garments_uncropped,
+            diversify_outfits=diversify_outfits,
+            write_manifest=dest is not None,
+        )
+    except ValidationError as exc:
+        for err in exc.errors():
+            field = ".".join(str(x) for x in err["loc"]) or "request"
+            typer.echo(f"Error: {field}: {err['msg']}", err=True)
+        raise typer.Exit(2) from exc
+
+    from argus_curator.attributes import fairface_available, mivolo_available
+
+    needed = (
+        (fairface, fairface_available, "FairFace", fairface_mod.MODEL_ENV, "fairface-convert <weights.pt>"),
+        (mivolo, mivolo_available, "MiVOLO", mivolo_mod.MODEL_ENV, "mivolo-convert"),
+        (scenes, scenes_mod.scenes_available, "Places365", scenes_mod.MODEL_ENV, "places365-convert"),
+        (garments, garments_mod.garments_available, "garment-detector", garments_mod.MODEL_ENV, "garments-convert"),
+    )
+    for wanted, available, name, env, command in needed:
+        if wanted and not available():
+            typer.echo(f"Error: no {name} model (run `argus-curator {command}` or set {env})", err=True)
+            raise typer.Exit(1)
 
     typer.echo(f"Scanning {source} (recursive) ...")
     summary = _scan(source, profile, cfg, faces_cfg, scene_cfg=scene_cfg, garment_cfg=garment_cfg)
@@ -256,36 +313,8 @@ def scan(
         json_out.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
         typer.echo(f"\nJSON summary written -> {json_out}")
 
-    dest = move_to or copy_to or symlink_to
     if dest is not None or csv_out is not None:
-        mode = "move" if move_to else ("symlink" if symlink_to else "copy")
-        req = ExportRequest(
-            scan_id=summary.scan_id,
-            dest=str(dest) if dest else str(source),
-            mode=mode,
-            min_score=min_score,
-            include_rejected=include_rejected,
-            keep_similar=keep_similar,
-            max_keep=max_keep,
-            face_clusters=[c.strip() for c in face_clusters.split(",")] if face_clusters else None,
-            face_poses=_csv_list(face_poses),
-            face_races=_csv_list(face_races),
-            face_genders=_csv_list(face_genders),
-            face_ages=_csv_list(face_ages),
-            min_age_years=min_age_years,
-            max_age_years=max_age_years,
-            min_attribute_conf=min_attribute_conf,
-            scenes=_csv_list(scene_filter),
-            scene_environments=_csv_list(environment),
-            min_scene_conf=min_scene_conf,
-            diversify_scenes=diversify_scenes,
-            garments=_csv_list(garment_filter),
-            exclude_garments=_csv_list(exclude_garments),
-            min_garment_conf=min_garment_conf,
-            garments_uncropped=garments_uncropped,
-            diversify_outfits=diversify_outfits,
-            write_manifest=dest is not None,
-        )
+        req = export_req.model_copy(update={"scan_id": summary.scan_id})
         # With no --copy-to/--move-to/--symlink-to there is nowhere to transfer
         # to: exporting would copy every file onto itself (SameFileError per
         # image) for a report-only run, so skip it and report no exported paths.

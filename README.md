@@ -238,7 +238,9 @@ Measured on 300 Fashionpedia validation images (CPU, ~0.3 s/image):
 Fashionpedia's 19 garment *parts* (sleeve, pocket, zipper, …) scored AP50
 0.105 and are not recorded; neither are its 294 fine-grained attributes, which
 no published checkpoint predicts. Detections are recorded from 0.3 so reviewers
-see the doubtful ones; filters count them from `--min-garment-conf` (0.5).
+see the doubtful ones; filters count them from `--min-garment-conf` (0.5). A
+floor below what the scan recorded cannot be honoured, so the server refuses it
+with 400; the CLI instead records from the lower floor in the first place.
 
 - `--garment dress,skirt` / `garments`: wearing at least one of these.
 - `--exclude-garment bag_wallet,umbrella` / `exclude_garments`: none of these.

@@ -28,6 +28,8 @@ from PIL import Image
 from argus_curator._places365_labels import CATEGORIES, OUTDOOR
 from argus_curator.models import ImageResult, SceneConfig, SceneLabel, SceneTags
 from argus_curator.runtime import (
+    IMAGENET_MEAN,
+    IMAGENET_STD,
     MODEL_DIR,
     ModelUnavailable,
     configured_path,
@@ -35,6 +37,7 @@ from argus_curator.runtime import (
     onnxruntime_available,
     providers,
     sha256,
+    softmax,
 )
 
 logger = structlog.get_logger()
@@ -59,8 +62,6 @@ WEIGHTS = {
 RESIZE = 256
 INPUT_SIZE = 224
 BATCH = 16
-_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 _OUTDOOR = np.array(OUTDOOR, dtype=np.float64)
 
 
@@ -98,13 +99,7 @@ def preprocess(images: list[Image.Image]) -> np.ndarray:
             for im in images
         ]
     )
-    return ((arr - _MEAN) / _STD).transpose(0, 3, 1, 2).astype(np.float32)
-
-
-def softmax(logits: np.ndarray) -> np.ndarray:
-    logits = np.asarray(logits, dtype=np.float64)
-    e = np.exp(logits - logits.max(axis=1, keepdims=True))
-    return e / e.sum(axis=1, keepdims=True)
+    return ((arr - IMAGENET_MEAN) / IMAGENET_STD).transpose(0, 3, 1, 2).astype(np.float32)
 
 
 def to_tags(probs: np.ndarray, top_k: int) -> SceneTags:
@@ -145,7 +140,9 @@ def tag_images(
         batch: list[tuple[ImageResult, Image.Image]] = []
         for r in pending[start : start + BATCH]:
             try:
-                batch.append((r, Image.open(io.BytesIO(data_by_rel[r.rel_path]))))
+                # convert() forces the decode: Image.open is lazy, and a truncated
+                # file failing later in predict() would cost the whole batch.
+                batch.append((r, Image.open(io.BytesIO(data_by_rel[r.rel_path])).convert("RGB")))
             except Exception as exc:
                 logger.warning("scene_decode_failed", rel_path=r.rel_path, error=str(exc))
         if batch:

@@ -434,6 +434,16 @@ class ExportRequest(BaseModel):
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).
     caption_url: str | None = None
 
+    @model_validator(mode="after")
+    def _age_range_in_order(self) -> ExportRequest:
+        if (
+            self.min_age_years is not None
+            and self.max_age_years is not None
+            and self.min_age_years > self.max_age_years
+        ):
+            raise ValueError(f"min_age_years ({self.min_age_years}) is above max_age_years ({self.max_age_years})")
+        return self
+
     @field_validator("scenes")
     @classmethod
     def _known_scenes(cls, value: list[str] | None) -> list[str] | None:

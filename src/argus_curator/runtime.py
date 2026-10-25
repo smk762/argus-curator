@@ -11,9 +11,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import numpy as np
+
 MODEL_DIR = Path.home() / ".cache" / "argus_curator" / "models"
 
 _SESSION_CACHE: dict[str, object] = {}
+
+# Every model here was trained on ImageNet-normalised RGB in [0, 1].
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 class ModelUnavailable(RuntimeError):
@@ -67,6 +73,13 @@ def load_session(path: Path, providers: list[str], *, missing_hint: str, extra: 
     session = ort.InferenceSession(str(path), providers=providers)
     _SESSION_CACHE[key] = session
     return session
+
+
+def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
+    """Numerically stable softmax in float64."""
+    x = np.asarray(x, dtype=np.float64)
+    e = np.exp(x - x.max(axis=axis, keepdims=True))
+    return e / e.sum(axis=axis, keepdims=True)
 
 
 def sha256(path: Path) -> str:
