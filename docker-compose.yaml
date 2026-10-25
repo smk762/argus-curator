@@ -13,6 +13,8 @@ services:
       # Face-attribute ONNX models (see `argus-curator fairface-convert` / `mivolo-convert`).
       - ARGUS_CURATOR_FAIRFACE_MODEL=/root/.cache/argus_curator/models/fairface_res34_race7.onnx
       - ARGUS_CURATOR_MIVOLO_MODEL=/root/.cache/argus_curator/models/mivolo_v2_d1_384.onnx
+      # Places365 scene tags (see `argus-curator places365-convert`).
+      - ARGUS_CURATOR_PLACES365_MODEL=/root/.cache/argus_curator/models/places365_resnet18.onnx
       # Uncomment to permit destructive mode="move" exports.
       # - CURATOR_ALLOW_MOVE=1
     volumes:

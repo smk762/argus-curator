@@ -3,7 +3,7 @@
 Routes (section 4 of the brief):
 
     GET  /health
-    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo }
+    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365 }
     POST /scan/folder      -> ScanSummary
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
@@ -47,6 +47,7 @@ from argus_curator.models import (
     ScanRequest,
     ScanSummary,
 )
+from argus_curator.scenes import scenes_available
 from argus_curator.store import ScanStore
 
 THUMB_MAX = 384  # longest-edge px for /thumb webp output
@@ -75,6 +76,7 @@ def _detectors() -> dict[str, bool]:
         "onnxruntime": find_spec("onnxruntime") is not None or find_spec("onnxruntime_gpu") is not None,
         "fairface": fairface_available(),
         "mivolo": mivolo_available(),
+        "places365": scenes_available(),
     }
 
 
@@ -310,6 +312,7 @@ def create_app(
         wanted = (
             (req.faces.fairface, fairface_available, "FairFace", "ARGUS_CURATOR_FAIRFACE_MODEL", "fairface-convert"),
             (req.faces.mivolo, mivolo_available, "MiVOLO", "ARGUS_CURATOR_MIVOLO_MODEL", "mivolo-convert"),
+            (req.scenes.enabled, scenes_available, "Places365", "ARGUS_CURATOR_PLACES365_MODEL", "places365-convert"),
         )
         for requested, available, name, env, command in wanted:
             if requested and not available():
@@ -330,6 +333,7 @@ def create_app(
                 req.target_profile,
                 req.config,
                 req.faces,
+                scene_cfg=req.scenes,
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
@@ -362,6 +366,7 @@ def create_app(
                     req.target_profile,
                     req.config,
                     req.faces,
+                    scene_cfg=req.scenes,
                     progress=on_progress,
                 )
                 store.save(summary)

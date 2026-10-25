@@ -18,6 +18,11 @@
           "title": "Dest",
           "type": "string"
         },
+        "diversify_scenes": {
+          "default": false,
+          "title": "Diversify Scenes",
+          "type": "boolean"
+        },
         "face_ages": {
           "anyOf": [
             {
@@ -177,6 +182,13 @@
           "title": "Min Attribute Conf",
           "type": "number"
         },
+        "min_scene_conf": {
+          "default": 0.1,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Scene Conf",
+          "type": "number"
+        },
         "min_score": {
           "default": 0.6,
           "title": "Min Score",
@@ -208,6 +220,40 @@
           ],
           "default": null,
           "title": "Scan Id"
+        },
+        "scene_environments": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "indoor",
+                  "outdoor"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Environments"
+        },
+        "scenes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenes"
         },
         "selection": {
           "anyOf": [
@@ -789,6 +835,17 @@
           "title": "Rel Path",
           "type": "string"
         },
+        "scene": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SceneTags"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "score": {
           "default": 0.0,
           "title": "Score",
@@ -980,6 +1037,9 @@
           "title": "Folder",
           "type": "string"
         },
+        "scenes": {
+          "$ref": "#/$defs/SceneConfig"
+        },
         "target_profile": {
           "$ref": "#/$defs/TargetProfile"
         }
@@ -1062,6 +1122,9 @@
           "title": "Scan Id",
           "type": "string"
         },
+        "scenes_config": {
+          "$ref": "#/$defs/SceneConfig"
+        },
         "similar_clusters": {
           "title": "Similar Clusters",
           "type": "integer"
@@ -1087,6 +1150,78 @@
         "similar_clusters"
       ],
       "title": "ScanSummary",
+      "type": "object"
+    },
+    "SceneConfig": {
+      "description": "Places365 scene tagging of whole images (see scenes.py).\n\nThe model file is process configuration (ARGUS_CURATOR_PLACES365_MODEL),\ndeliberately not a field here.",
+      "properties": {
+        "device": {
+          "default": "auto",
+          "title": "Device",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "top_k": {
+          "default": 5,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "title": "SceneConfig",
+      "type": "object"
+    },
+    "SceneLabel": {
+      "properties": {
+        "conf": {
+          "title": "Conf",
+          "type": "number"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "conf"
+      ],
+      "title": "SceneLabel",
+      "type": "object"
+    },
+    "SceneTags": {
+      "description": "Places365 prediction for one image.\n\n``categories`` are the top-k scene labels, most probable first, each with\nits softmax probability. ``environment_conf`` is the probability mass on\ncategories of the chosen environment, so it is always at least 0.5.",
+      "properties": {
+        "categories": {
+          "items": {
+            "$ref": "#/$defs/SceneLabel"
+          },
+          "title": "Categories",
+          "type": "array"
+        },
+        "environment": {
+          "enum": [
+            "indoor",
+            "outdoor"
+          ],
+          "title": "Environment",
+          "type": "string"
+        },
+        "environment_conf": {
+          "title": "Environment Conf",
+          "type": "number"
+        }
+      },
+      "required": [
+        "environment",
+        "environment_conf"
+      ],
+      "title": "SceneTags",
       "type": "object"
     },
     "TargetProfile": {

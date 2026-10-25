@@ -77,6 +77,9 @@ mivolo-convert = [
     "onnx>=1.16",
     "onnxscript>=0.2",
 ]
+# Places365 scene tags run on onnxruntime alone (already part of [faces]).
+scenes = ["onnxruntime>=1.16"]
+places365-convert = ["torch>=2.5", "torchvision>=0.20", "onnx>=1.16"]
 # Composed from the extras above rather than hand-duplicating them, so a new
 # member of `server`/`cli`/`faces` cannot silently go missing from `all`.
 all = ["argus-curator[server,cli,faces]"]

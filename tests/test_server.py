@@ -90,6 +90,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "onnxruntime",
         "fairface",
         "mivolo",
+        "places365",
     }
 
 
@@ -700,6 +701,7 @@ def test_scan_refuses_models_it_does_not_have(contained: tuple[TestClient, Path]
     cases = (
         ("faces", "fairface", "FairFace", "ARGUS_CURATOR_FAIRFACE_MODEL"),
         ("faces", "mivolo", "MiVOLO", "ARGUS_CURATOR_MIVOLO_MODEL"),
+        ("scenes", "enabled", "Places365", "ARGUS_CURATOR_PLACES365_MODEL"),
     )
     for section, flag, name, env in cases:
         for endpoint in ("/scan/folder", "/scan/folder/stream"):

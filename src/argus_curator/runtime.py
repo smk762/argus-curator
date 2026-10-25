@@ -1,6 +1,7 @@
 """Shared onnxruntime plumbing for the optional classifier models.
 
-Face attributes (FairFace, MiVOLO) run as ONNX models converted once from their published weights. Each model's location is
+Face attributes (FairFace, MiVOLO) and image tags (Places365) all run as ONNX
+models converted once from their published weights. Each model's location is
 process configuration — an env var with a default under :data:`MODEL_DIR` —
 never a request field: a model path is a file the server would load.
 """

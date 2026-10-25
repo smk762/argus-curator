@@ -28,7 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `face_ages`, `min_age_years` / `max_age_years` and `min_attribute_conf`
   (CLI `--race`, `--gender`, `--age`, `--min-age`, `--max-age`,
   `--min-attr-conf`), each exclusion with its own `keep_reason`.
-- `GET /detectors` reports `fairface` and `mivolo`.
+- Places365 scene tags (`ScanRequest.scenes` / `SceneConfig`, CLI
+  `--scenes`): each passing image gets its top-k scene categories with
+  softmax probabilities and an indoor/outdoor call (`ImageResult.scene`, plus
+  CSV columns), as a new `scenes` progress phase. Converted once with
+  `argus-curator places365-convert` (`[places365-convert]` extra; ResNet-18 or
+  ResNet-50, sha256-pinned since upstream serves plain HTTP); the model path is
+  `ARGUS_CURATOR_PLACES365_MODEL` / `--places365-model`.
+- Export filters `scenes`, `scene_environments` and `min_scene_conf` (CLI
+  `--scene`, `--environment`, `--min-scene-conf`), and `diversify_scenes`
+  (`--diversify-scenes`) to spread a `max_keep` selection across backdrops.
+- `GET /detectors` reports `fairface`, `mivolo` and `places365`.
 
 ### Security
 

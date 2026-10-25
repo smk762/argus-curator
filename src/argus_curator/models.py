@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 TargetStyle = Literal["photo", "anime"]
 TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
@@ -29,6 +29,9 @@ FACE_RACES: tuple[FaceRace, ...] = FaceRace.__args__
 FACE_GENDERS: tuple[FaceGender, ...] = FaceGender.__args__
 FACE_AGES: tuple[FaceAge, ...] = FaceAge.__args__
 AttributeSource = Literal["fairface", "mivolo"]
+
+# Places365 indoor/outdoor call for a whole image.
+SceneEnvironment = Literal["indoor", "outdoor"]
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -132,6 +135,20 @@ class FaceConfig(BaseModel):
         return self
 
 
+class SceneConfig(BaseModel):
+    """Places365 scene tagging of whole images (see scenes.py).
+
+    The model file is process configuration (ARGUS_CURATOR_PLACES365_MODEL),
+    deliberately not a field here.
+    """
+
+    enabled: bool = False
+    # How many top categories to record per image (and match filters against).
+    top_k: int = Field(5, ge=1, le=20)
+    # Compute device hint for onnxruntime: "auto" | "cpu" | "cuda".
+    device: str = "auto"
+
+
 # ---------------------------------------------------------------------------
 # Per-image result
 # ---------------------------------------------------------------------------
@@ -173,6 +190,24 @@ class FaceDetection(BaseModel):
     attributes: FaceAttributes | None = None
 
 
+class SceneLabel(BaseModel):
+    label: str
+    conf: float
+
+
+class SceneTags(BaseModel):
+    """Places365 prediction for one image.
+
+    ``categories`` are the top-k scene labels, most probable first, each with
+    its softmax probability. ``environment_conf`` is the probability mass on
+    categories of the chosen environment, so it is always at least 0.5.
+    """
+
+    categories: list[SceneLabel] = Field(default_factory=list)
+    environment: SceneEnvironment
+    environment_conf: float
+
+
 class ImageResult(BaseModel):
     """Per-image curation record — superset of imogen's scanner output.
 
@@ -212,6 +247,9 @@ class ImageResult(BaseModel):
     # Attributes of the primary face (when FaceConfig.fairface / .mivolo ran).
     primary_face_attributes: FaceAttributes | None = None
 
+    # Places365 scene tags (when SceneConfig.enabled ran).
+    scene: SceneTags | None = None
+
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
     score_breakdown: dict[str, float] = Field(default_factory=dict)
@@ -237,6 +275,8 @@ class ScanSummary(BaseModel):
     target_profile: TargetProfile
     config: ScanConfig
     faces_config: FaceConfig
+    # Defaulted so scans cached before scene tagging existed still load.
+    scenes_config: SceneConfig = Field(default_factory=SceneConfig)
 
     total: int
     passed: int
@@ -266,6 +306,7 @@ class ScanRequest(BaseModel):
     target_profile: TargetProfile = Field(default_factory=TargetProfile)
     config: ScanConfig = Field(default_factory=ScanConfig)
     faces: FaceConfig = Field(default_factory=FaceConfig)
+    scenes: SceneConfig = Field(default_factory=SceneConfig)
 
 
 class ExportRequest(BaseModel):
@@ -303,9 +344,32 @@ class ExportRequest(BaseModel):
     # Applies only where a confidence exists: MiVOLO ages are regressions.
     min_attribute_conf: float = Field(0.0, ge=0.0, le=1.0)
 
+    # Optional: export only images with one of these Places365 scenes among
+    # their recorded top-k at >= min_scene_conf (e.g. ["beach", "coast"]).
+    scenes: list[str] | None = None
+    scene_environments: list[SceneEnvironment] | None = None
+    # Floor for a scene label (or the indoor/outdoor call) to count as a match.
+    # Non-zero by default: the top-k tail is often a few percent, not a claim.
+    min_scene_conf: float = Field(0.1, ge=0.0, le=1.0)
+    # With max_keep: also spread the selection across scenes, not just pHash.
+    diversify_scenes: bool = False
+
     write_manifest: bool = True
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).
     caption_url: str | None = None
+
+    @field_validator("scenes")
+    @classmethod
+    def _known_scenes(cls, value: list[str] | None) -> list[str] | None:
+        # A typo ("beech") would otherwise silently match nothing.
+        if value is None:
+            return None
+        from argus_curator._places365_labels import CATEGORIES
+
+        unknown = sorted(set(value) - set(CATEGORIES))
+        if unknown:
+            raise ValueError(f"unknown Places365 scene(s): {', '.join(unknown)}")
+        return value
 
 
 class ManifestRow(BaseModel):

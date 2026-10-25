@@ -39,6 +39,7 @@ from argus_curator.models import (
     ImageResult,
     ScanConfig,
     ScanSummary,
+    SceneConfig,
     TargetCategory,
     TargetProfile,
 )
@@ -351,6 +352,7 @@ def scan_items(
     cfg: ScanConfig,
     faces_cfg: FaceConfig,
     *,
+    scene_cfg: SceneConfig | None = None,
     folder: str = "",
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
@@ -358,8 +360,8 @@ def scan_items(
     """Score, (optionally) face-cluster, and de-duplicate a batch of images.
 
     When *progress* is supplied it is called with ``{phase, done, total}`` dicts
-    as the scan advances through its ``scoring`` -> ``faces`` -> ``clustering``
-    phases, so a caller can drive a live progress UI (see the SSE endpoint).
+    as the scan advances through its ``scoring`` -> ``faces`` -> ``scenes`` ->
+    ``clustering`` phases, so a caller can drive a live progress UI (see the SSE endpoint).
     """
     scan_id = scan_id or uuid.uuid4().hex
     total = len(items)
@@ -396,6 +398,18 @@ def scan_items(
         for r in results:
             finalize_score(r, profile, cfg, faces_known=True)
 
+    # Places365 scene tags (optional): whole-image, independent of faces.
+    scene_cfg = scene_cfg or SceneConfig()
+    if scene_cfg.enabled:
+        from argus_curator import scenes as scenes_mod
+
+        scenes_mod.tag_images(
+            results,
+            items,
+            scene_cfg,
+            progress=(lambda done, total: _emit(progress, "scenes", done, total)) if progress else None,
+        )
+
     _emit(progress, "clustering", 0, total)
     _mark_duplicates(results, cfg)
     multi = _assign_clusters(results)
@@ -411,6 +425,7 @@ def scan_items(
         target_profile=profile,
         config=cfg,
         faces_config=faces_cfg,
+        scenes_config=scene_cfg,
         total=len(results),
         passed=len(passed),
         rejected=len(rejected),
@@ -429,6 +444,7 @@ def scan_folder(
     cfg: ScanConfig | None = None,
     faces_cfg: FaceConfig | None = None,
     *,
+    scene_cfg: SceneConfig | None = None,
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
 ) -> ScanSummary:
@@ -452,4 +468,13 @@ def scan_folder(
         logger.warning("scan_folder_empty", folder=str(root))
     _emit(progress, "collecting", len(items), len(items))
 
-    return scan_items(items, profile, cfg, faces_cfg, folder=str(root.resolve()), scan_id=scan_id, progress=progress)
+    return scan_items(
+        items,
+        profile,
+        cfg,
+        faces_cfg,
+        scene_cfg=scene_cfg,
+        folder=str(root.resolve()),
+        scan_id=scan_id,
+        progress=progress,
+    )

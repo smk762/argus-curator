@@ -63,6 +63,11 @@ def scan(
     mivolo_model: Path | None = Option(
         None, "--mivolo-model", help="Converted MiVOLO ONNX model (ARGUS_CURATOR_MIVOLO_MODEL)"
     ),
+    scenes: bool = Option(False, "--scenes", help="Tag each image's scene + indoor/outdoor with Places365"),
+    scene_top_k: int = Option(5, "--scene-top-k", help="Scene categories recorded per image"),
+    places365_model: Path | None = Option(
+        None, "--places365-model", help="Converted Places365 ONNX model (ARGUS_CURATOR_PLACES365_MODEL)"
+    ),
     face_clusters: str | None = Option(None, "--face-clusters", help="Comma-separated cluster ids to export"),
     face_poses: str | None = Option(
         None, "--pose", help="Export only these primary-face poses (comma-separated: frontal,three_quarter,profile)"
@@ -84,13 +89,27 @@ def scan(
     min_attribute_conf: float = Option(
         0.0, "--min-attr-conf", help="Minimum confidence for a filtered attribute to count as a match (0..1)"
     ),
+    scene_filter: str | None = Option(
+        None,
+        "--scene",
+        help="Export only images showing one of these Places365 scenes (comma-separated, e.g. beach,coast)",
+    ),
+    environment: str | None = Option(
+        None, "--environment", help="Export only indoor or outdoor images (indoor,outdoor)"
+    ),
+    min_scene_conf: float = Option(
+        0.1, "--min-scene-conf", help="Minimum probability for a scene / environment to count as a match"
+    ),
+    diversify_scenes: bool = Option(
+        False, "--diversify-scenes", help="With --max-keep, also spread the selection across scenes"
+    ),
     csv_out: Path | None = Option(None, "--csv", help="Write the per-image CSV report here"),
     json_out: Path | None = Option(None, "--json", help="Write the full ScanSummary JSON here"),
     verbose: bool = Option(False, "--verbose", "-v", help="Print per-image details"),
 ) -> None:
     """Scan a folder, rank for training suitability, and optionally export keepers."""
     from argus_curator.export import export_selection
-    from argus_curator.models import ExportRequest, FaceConfig, ScanConfig, TargetProfile
+    from argus_curator.models import ExportRequest, FaceConfig, ScanConfig, SceneConfig, TargetProfile
     from argus_curator.scanner import scan_folder as _scan
     from argus_curator.store import ScanStore
 
@@ -101,10 +120,12 @@ def scan(
 
     from argus_curator import fairface as fairface_mod
     from argus_curator import mivolo as mivolo_mod
+    from argus_curator import scenes as scenes_mod
 
     for model_file, env in (
         (fairface_model, fairface_mod.MODEL_ENV),
         (mivolo_model, mivolo_mod.MODEL_ENV),
+        (places365_model, scenes_mod.MODEL_ENV),
     ):
         if model_file is not None:
             os.environ[env] = str(model_file)
@@ -133,8 +154,10 @@ def scan(
         mivolo=mivolo,
     )
 
+    scene_cfg = SceneConfig(enabled=scenes, top_k=scene_top_k, device=device)
+
     typer.echo(f"Scanning {source} (recursive) ...")
-    summary = _scan(source, profile, cfg, faces_cfg)
+    summary = _scan(source, profile, cfg, faces_cfg, scene_cfg=scene_cfg)
 
     typer.echo("=" * 56)
     typer.echo(f"  Scanned:               {summary.total}")
@@ -158,6 +181,18 @@ def scan(
         if counts:
             dist = "  ".join(f"{k}={n}" for k, n in sorted(counts.items()))
             typer.echo(f"  Primary-face {name + ':':<9}{dist}")
+    env_counts: dict[str, int] = {}
+    scene_counts: dict[str, int] = {}
+    for r in summary.results:
+        if r.scene:
+            env_counts[r.scene.environment] = env_counts.get(r.scene.environment, 0) + 1
+            if r.scene.categories:
+                top = r.scene.categories[0].label
+                scene_counts[top] = scene_counts.get(top, 0) + 1
+    if env_counts:
+        typer.echo(f"  Environment:           {'  '.join(f'{k}={n}' for k, n in sorted(env_counts.items()))}")
+        common = sorted(scene_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+        typer.echo(f"  Top scenes:            {'  '.join(f'{k}={n}' for k, n in common)}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
@@ -177,7 +212,10 @@ def scan(
                 face = f" [{r.primary_face_cluster}{pose}{attrs}]"
             else:
                 face = ""
-            typer.echo(f"  {r.score:.3f} {tag:>5}  {r.rel_path}{face}")
+            scene = ""
+            if r.scene and r.scene.categories:
+                scene = f" <{r.scene.categories[0].label}, {r.scene.environment}>"
+            typer.echo(f"  {r.score:.3f} {tag:>5}  {r.rel_path}{face}{scene}")
 
     # Persist so the result is reusable by the server / export-by-id.
     ScanStore().save(summary)
@@ -205,6 +243,10 @@ def scan(
             min_age_years=min_age_years,
             max_age_years=max_age_years,
             min_attribute_conf=min_attribute_conf,
+            scenes=_csv_list(scene_filter),
+            scene_environments=_csv_list(environment),
+            min_scene_conf=min_scene_conf,
+            diversify_scenes=diversify_scenes,
             write_manifest=dest is not None,
         )
         # With no --copy-to/--move-to/--symlink-to there is nowhere to transfer
@@ -328,6 +370,34 @@ def mivolo_convert(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"Wrote MiVOLO ONNX model -> {written}")
+
+
+@app.command("places365-convert")
+def places365_convert(
+    arch: str = Option("resnet18", "--arch", help="resnet18 (default, 45 MB) or resnet50 (97 MB, ~1 pt better top-1)"),
+    weights: Path | None = Option(
+        None, "--weights", help="Local <arch>_places365.pth.tar (default: download it; sha256-checked)"
+    ),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+) -> None:
+    """Fetch, verify and convert a Places365-CNN to the ONNX model --scenes runs.
+
+    Weights: places2.csail.mit.edu (CC BY), pinned by sha256 since upstream
+    serves them over plain HTTP. Needs: pip install argus-curator[places365-convert]
+    """
+    from argus_curator.runtime import ModelUnavailable
+    from argus_curator.scenes import WEIGHTS, export_onnx, fetch_weights, model_path
+
+    if arch not in WEIGHTS:
+        typer.echo(f"Error: --arch must be one of {', '.join(WEIGHTS)}", err=True)
+        raise typer.Exit(1)
+    try:
+        source = weights or fetch_weights(arch)
+        written = export_onnx(source, arch, output or model_path())
+    except ModelUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote Places365 ({arch}) ONNX model -> {written}")
 
 
 DEFAULT_SCHEMA_PATH = Path("schema/curator-wire.schema.json")
