@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "argus-curator"
 dynamic = ["version"]
-description = "LoRA-native dataset curation: training-suitability scoring, near-duplicate dedup, and identity-aware face clustering"
+description = "Image curation and moderation: quality scoring, near-duplicate dedup, face clustering, and apparent-age, scene and garment tagging with auditable filters; standalone or as LoRA data prep"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

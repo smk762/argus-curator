@@ -5,7 +5,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/smk762/argus-curator/actions/workflows/ci.yml/badge.svg)](https://github.com/smk762/argus-curator/actions/workflows/ci.yml)
 
-The LoRA data-prep front-end — curate by quality and by face, then caption with [argus-lens](https://github.com/smk762/argus-lens).
+Image curation and moderation: score, de-duplicate, and tag images by face, apparent age, scene and garment, then filter on those tags with a reason recorded for every exclusion. Use it on its own to audit or moderate an image collection, or as the LoRA data-prep front-end of the Argus suite, captioned downstream by [argus-lens](https://github.com/smk762/argus-lens).
+
+Two ways to use it:
+
+- **Standalone moderation and dataset auditing.** Scan a folder or call the
+  HTTP API, review the per-image report, and keep, drop or quarantine images
+  on criteria you choose. Nothing has to be trained or captioned. See
+  [Standalone: moderation and dataset auditing](#standalone-moderation-and-dataset-auditing).
+- **The curation stage of the Argus suite**, described below.
 
 `argus-curator` is the **curation stage** of the Argus suite. Upstream,
 [argus-quarry](https://github.com/smk762/argus-quarry) acquires provenance-clean
@@ -22,6 +30,67 @@ downstream with no remapping.
                               ─ export ───────►          wardrobe/…)
 ```
 
+## Standalone: moderation and dataset auditing
+
+Everything curator records about an image is usable without the rest of the
+suite. A scan never modifies the source folder; it produces a per-image record
+(`--json`, `--csv`, or `GET /scan/{scan_id}`), and an export applies filters
+to it, giving every excluded image a `keep_reason`. That record doubles as an
+audit trail: you can show which images were removed and on what grounds.
+
+| Check | What is recorded | Filter on it |
+|---|---|---|
+| Technical quality | sharpness, resolution, aspect ratio, compression artifacts | `--min-score`, hard-filter `reject_reason` |
+| Near-duplicates | pHash groups, best representative kept | `--keep-similar` to keep the rest |
+| People | face count, identity clusters, head pose | `--face-clusters`, `--pose` |
+| Apparent age | MiVOLO age in years and FairFace age bracket, per face | `--min-age` / `--max-age`, `--age` |
+| Demographics | FairFace race and gender with confidences, pooled per identity | `--race`, `--gender`, `--min-attr-conf` |
+| Setting | Places365 scene top-k, indoor/outdoor | `--scene`, `--environment` |
+| Clothing | Fashionpedia garments: type, colour, cut off at the frame edge | `--garment`, `--exclude-garment`, `--uncropped` |
+
+A typical moderation pass is scan, review, act:
+
+```bash
+# 1. Scan and report only: nothing is copied, moved or deleted.
+argus-curator scan /data/inbox --mivolo --scenes --garments --csv report.csv --json scan.json
+
+# 2. Review report.csv: one row per image with every tag and its confidence.
+
+# 3. Keep only images whose primary face reads as clearly adult. --min-score 0,
+#    --include-rejected and --keep-similar stop quality and duplicates from
+#    removing anything, so age is the only criterion. Images where no age could
+#    be estimated (no face found, or too blurry to pass the hard filters that
+#    face detection runs behind) are excluded as `face-attributes-missing`: the
+#    filter fails closed rather than letting unknowns through.
+argus-curator scan /data/inbox --mivolo --min-age 25 \
+    --min-score 0 --include-rejected --keep-similar \
+    --copy-to /data/approved --csv decisions.csv
+```
+
+`decisions.csv` then lists every image with `keep` and its `keep_reason`
+(`face-age-out-of-range`, `face-attributes-missing`, `garment-excluded`, …),
+which is the list to send for human review or to quarantine. The same scans and
+filters are available over HTTP (`POST /scan/folder`, `GET /scan/{scan_id}`,
+`POST /export`), so curator can sit in front of an upload or moderation queue.
+
+**Limits — read before relying on it for moderation:**
+
+- **There is no NSFW, nudity, violence or text-in-image detection.** Curator
+  tags quality, people, setting and clothing; it does not judge whether
+  content is explicit or harmful.
+- **Age and demographics are model estimates from appearance**, not facts
+  about anyone. Age estimates are typically off by a few years, more so from
+  the face alone (MiVOLO runs face-only here), so filter with a margin above
+  any legal threshold (`--min-age 25` rather than 18) and send borderline
+  images to a person.
+- Only the **primary** face of each image is filtered on; other faces are
+  recorded per face (`faces[].attributes`) but do not exclude the image.
+- Scene and garment models make mistakes too; see the measured accuracy in
+  [Scene tags](#scene-tags-places365) and [Garments](#garments-fashionpedia).
+
+Curator is a filter and an audit trail to put in front of human review, not a
+replacement for it.
+
 ## Why not FiftyOne / fastdup / Immich?
 
 | | Generic CV curation (FiftyOne, fastdup) | Consumer galleries (Immich, PhotoPrism) | **Argus Curator** |
@@ -31,6 +100,7 @@ downstream with no remapping.
 | Faces | Plugin | Clustering for browsing | Clustering **for dataset filtering** (export by identity) |
 | Dataset export | Manual | None | Structure-preserving copy/symlink/move + **manifest** |
 | Captioner handoff | None | None | One shared `TargetProfile` → argus-lens |
+| Moderation / audit | Manual queries | None | Apparent-age, scene and garment filters, with a `keep_reason` for every exclusion |
 
 It's LoRA-native, identity-aware, and caption-integrated — the reason the suite exists.
 
