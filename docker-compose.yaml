@@ -17,6 +17,10 @@ services:
       - ARGUS_CURATOR_PLACES365_MODEL=/root/.cache/argus_curator/models/places365_resnet18.onnx
       # Fashionpedia garment detector (see `argus-curator garments-convert`).
       - ARGUS_CURATOR_GARMENTS_MODEL=/root/.cache/argus_curator/models/yolos_fashionpedia.onnx
+      # NudeNet nudity check, on by default (opt-out). Unset: the nudenet service
+      # below. Point it elsewhere in .env (e.g. a LAN host running the same
+      # image), or set it empty (ARGUS_CURATOR_NUDENET_URL=) to switch it off.
+      - ARGUS_CURATOR_NUDENET_URL=${ARGUS_CURATOR_NUDENET_URL-http://nudenet:8080}
       # Uncomment to permit destructive mode="move" exports.
       # - CURATOR_ALLOW_MOVE=1
     volumes:
@@ -35,4 +39,16 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    restart: unless-stopped
+
+  # NudeNet detector server (AGPL-3.0, notAI-tech/NudeNet). Curator only talks to
+  # it over HTTP. Pinned by digest because upstream publishes only `latest`.
+  # Reachable from curator as http://nudenet:8080; no port is published.
+  nudenet:
+    image: ghcr.io/notai-tech/nudenet@sha256:5d8fb3a20980680b73b7776745ee5b1983851c201a706cbdf3dd827c143783e9
+    # The image's start command runs `ulimit -n 1000000 && <worker> & <api>`.
+    # Where Docker's default limit is lower that ulimit fails, the inference
+    # worker never starts and the API waits for warmup forever.
+    ulimits:
+      nofile: 1000000
     restart: unless-stopped

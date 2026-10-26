@@ -23,6 +23,22 @@ def _csv_list(value: str | None) -> list[str] | None:
     return [v.strip() for v in value.split(",") if v.strip()] if value else None
 
 
+def _label_thresholds(value: str | None) -> dict[str, float] | None:
+    """Parse ``LABEL=score,LABEL=score``; the labels are validated by ExportRequest."""
+    if not value:
+        return None
+    out: dict[str, float] = {}
+    for pair in _csv_list(value) or []:
+        label, sep, score = pair.partition("=")
+        if not sep or not label.strip():
+            raise ValueError(f"expected LABEL=score, got {pair!r}")
+        try:
+            out[label.strip()] = float(score)
+        except ValueError:
+            raise ValueError(f"{pair!r}: {score!r} is not a number") from None
+    return out
+
+
 @app.command()
 def scan(
     source: Path = Argument(..., help="Root folder to scan (recurses into sub-folders)"),
@@ -122,6 +138,25 @@ def scan(
     diversify_outfits: bool = Option(
         False, "--diversify-outfits", help="With --max-keep, also spread the selection across outfits"
     ),
+    nsfw: bool | None = Option(
+        None,
+        "--nsfw/--no-nsfw",
+        help="NudeNet nudity check (default: on when a NudeNet URL is configured; --no-nsfw opts out)",
+    ),
+    nudenet_url: str | None = Option(
+        None, "--nudenet-url", help="NudeNet server origin, e.g. http://nudenet:8080 (ARGUS_CURATOR_NUDENET_URL)"
+    ),
+    nsfw_threshold: float | None = Option(
+        None, "--nsfw-threshold", help="Drop images whose exposed-nudity score is at or above this (0.2..1)"
+    ),
+    nsfw_label_thresholds: str | None = Option(
+        None,
+        "--nsfw-label",
+        help="Per-class thresholds, comma-separated LABEL=score (e.g. FEMALE_BREAST_EXPOSED=0.5,BELLY_EXPOSED=0.8)",
+    ),
+    nsfw_exposed_labels: str | None = Option(
+        None, "--nsfw-exposed-labels", help="NudeNet classes --nsfw-threshold is taken over (default: the 5 exposed)"
+    ),
     csv_out: Path | None = Option(None, "--csv", help="Write the per-image CSV report here"),
     json_out: Path | None = Option(None, "--json", help="Write the full ScanSummary JSON here"),
     verbose: bool = Option(False, "--verbose", "-v", help="Print per-image details"),
@@ -130,7 +165,15 @@ def scan(
     from pydantic import ValidationError
 
     from argus_curator.export import export_selection
-    from argus_curator.models import ExportRequest, FaceConfig, GarmentConfig, ScanConfig, SceneConfig, TargetProfile
+    from argus_curator.models import (
+        ExportRequest,
+        FaceConfig,
+        GarmentConfig,
+        NsfwConfig,
+        ScanConfig,
+        SceneConfig,
+        TargetProfile,
+    )
     from argus_curator.scanner import scan_folder as _scan
     from argus_curator.store import ScanStore
 
@@ -142,6 +185,7 @@ def scan(
     from argus_curator import fairface as fairface_mod
     from argus_curator import garments as garments_mod
     from argus_curator import mivolo as mivolo_mod
+    from argus_curator import nsfw as nsfw_mod
     from argus_curator import scenes as scenes_mod
 
     for model_file, env in (
@@ -149,6 +193,7 @@ def scan(
         (mivolo_model, mivolo_mod.MODEL_ENV),
         (places365_model, scenes_mod.MODEL_ENV),
         (garments_model, garments_mod.MODEL_ENV),
+        (nudenet_url, nsfw_mod.URL_ENV),
     ):
         if model_file is not None:
             os.environ[env] = str(model_file)
@@ -190,6 +235,11 @@ def scan(
     dest = move_to or copy_to or symlink_to
     mode = "move" if move_to else ("symlink" if symlink_to else "copy")
     try:
+        label_thresholds = _label_thresholds(nsfw_label_thresholds)
+    except ValueError as exc:
+        typer.echo(f"Error: --nsfw-label: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    try:
         export_req = ExportRequest(
             dest=str(dest) if dest else str(source),
             mode=mode,
@@ -214,6 +264,9 @@ def scan(
             min_garment_conf=min_garment_conf,
             garments_uncropped=garments_uncropped,
             diversify_outfits=diversify_outfits,
+            nsfw_threshold=nsfw_threshold,
+            nsfw_label_thresholds=label_thresholds,
+            **({"nsfw_exposed_labels": _csv_list(nsfw_exposed_labels)} if nsfw_exposed_labels else {}),
             write_manifest=dest is not None,
         )
     except ValidationError as exc:
@@ -235,8 +288,24 @@ def scan(
             typer.echo(f"Error: no {name} model (run `argus-curator {command}` or set {env})", err=True)
             raise typer.Exit(1)
 
+    nsfw_cfg = NsfwConfig(enabled=nsfw)
+    nsfw_on = nsfw_mod.resolve_enabled(nsfw_cfg)
+    if nsfw_on:
+        try:
+            nudenet_endpoint = nsfw_mod.endpoint()
+        except Exception as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        if nudenet_endpoint is None:
+            typer.echo(f"Error: --nsfw needs a NudeNet server (--nudenet-url or {nsfw_mod.URL_ENV})", err=True)
+            raise typer.Exit(1)
+    elif nsfw_threshold is not None or label_thresholds:
+        why = "--no-nsfw was given" if nsfw is False else f"no NudeNet server is configured ({nsfw_mod.URL_ENV})"
+        typer.echo(f"Error: NSFW thresholds need the NudeNet check, but {why}", err=True)
+        raise typer.Exit(1)
+
     typer.echo(f"Scanning {source} (recursive) ...")
-    summary = _scan(source, profile, cfg, faces_cfg, scene_cfg=scene_cfg, garment_cfg=garment_cfg)
+    summary = _scan(source, profile, cfg, faces_cfg, scene_cfg=scene_cfg, garment_cfg=garment_cfg, nsfw_cfg=nsfw_cfg)
 
     typer.echo("=" * 56)
     typer.echo(f"  Scanned:               {summary.total}")
@@ -279,6 +348,14 @@ def scan(
     if garment_counts:
         common = sorted(garment_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
         typer.echo(f"  Garments (images):     {'  '.join(f'{k}={n}' for k, n in common)}")
+    if summary.nsfw_config.enabled:
+        checked = [r for r in summary.results if r.nsfw is not None]
+        # Count against the threshold the export will apply, over its classes.
+        at = export_req.nsfw_threshold if export_req.nsfw_threshold is not None else 0.5
+        exposed = sum(1 for r in checked if nsfw_mod.exposed_score(r.nsfw.labels, export_req.nsfw_exposed_labels) >= at)
+        unchecked = summary.total - len(checked)
+        tail = f"  ({unchecked} could not be checked)" if unchecked else ""
+        typer.echo(f"  NudeNet:               {len(checked)} checked, {exposed} with exposed score >= {at:g}{tail}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
@@ -304,6 +381,8 @@ def scan(
             worn = sorted({g.label for g in r.garments or [] if g.conf >= min_garment_conf})
             if worn:
                 scene += f" {{{', '.join(worn)}}}"
+            if r.nsfw is not None and r.nsfw.exposed_score > 0:
+                scene += f" nsfw={r.nsfw.exposed_score:.2f}"
             typer.echo(f"  {r.score:.3f} {tag:>5}  {r.rel_path}{face}{scene}")
 
     # Persist so the result is reusable by the server / export-by-id.

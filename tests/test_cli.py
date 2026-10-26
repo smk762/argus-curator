@@ -51,3 +51,32 @@ def test_missing_model_fails_before_scanning(dataset: Path, tmp_path: Path, flag
     assert result.exit_code == 1, result.output
     assert command in result.output
     assert "Scanning" not in result.output
+
+
+def test_nsfw_thresholds_without_nudenet_fail_before_scanning(dataset: Path) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), "--nsfw-threshold", "0.5"])
+    assert result.exit_code == 1, result.output
+    assert "NudeNet" in result.output and "Scanning" not in result.output
+
+
+def test_nsfw_required_without_url_fails_before_scanning(dataset: Path) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), "--nsfw"])
+    assert result.exit_code == 1, result.output
+    assert "--nudenet-url" in result.output and "Scanning" not in result.output
+
+
+def test_opting_out_while_filtering_on_nsfw_is_an_error(dataset: Path) -> None:
+    result = runner.invoke(
+        app, ["scan", str(dataset), "--no-nsfw", "--nsfw-threshold", "0.5", "--nudenet-url", "http://n:1"]
+    )
+    assert result.exit_code == 1, result.output
+    assert "--no-nsfw" in result.output
+
+
+@pytest.mark.parametrize(
+    "value", ["FEMALE_BREAST_EXPOSED", "FEMALE_BREAST_EXPOSED=lots", "=0.5", "NOT_A_CLASS=0.5", "BELLY_EXPOSED=0.1"]
+)
+def test_bad_nsfw_label_thresholds_fail_before_scanning(dataset: Path, value: str) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), "--nsfw-label", value, "--nudenet-url", "http://n:1"])
+    assert result.exit_code == 2, result.output
+    assert "Scanning" not in result.output

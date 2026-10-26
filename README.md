@@ -47,6 +47,7 @@ audit trail: you can show which images were removed and on what grounds.
 | Demographics | FairFace race and gender with confidences, pooled per identity | `--race`, `--gender`, `--min-attr-conf` |
 | Setting | Places365 scene top-k, indoor/outdoor | `--scene`, `--environment` |
 | Clothing | Fashionpedia garments: type, colour, cut off at the frame edge | `--garment`, `--exclude-garment`, `--uncropped` |
+| Nudity | NudeNet detections per body-part class, exposed score (needs a [NudeNet server](#nudity-detection-nudenet)) | `--nsfw-threshold`, `--nsfw-label` |
 
 A typical moderation pass is scan, review, act:
 
@@ -75,9 +76,10 @@ filters are available over HTTP (`POST /scan/folder`, `GET /scan/{scan_id}`,
 
 **Limits — read before relying on it for moderation:**
 
-- **There is no NSFW, nudity, violence or text-in-image detection.** Curator
-  tags quality, people, setting and clothing; it does not judge whether
-  content is explicit or harmful.
+- **Nudity is the only content check, and only with a NudeNet server.**
+  NudeNet detects exposed body parts; it does not judge violence, gore, hate
+  or text in the image, and it misses things (stylised, partial or unusual
+  poses). Set NSFW thresholds conservatively and review what is near them.
 - **Age and demographics are model estimates from appearance**, not facts
   about anyone. Age estimates are typically off by a few years, more so from
   the face alone (MiVOLO runs face-only here), so filter with a margin above
@@ -332,6 +334,62 @@ argus-curator garments-convert                  # pinned commit + sha256
 
 Point elsewhere with `--garments-model` / `ARGUS_CURATOR_GARMENTS_MODEL`.
 
+### Nudity detection (NudeNet)
+
+Curator can check every scanned image with [NudeNet](https://github.com/notAI-tech/NudeNet),
+a detector for 18 body-part classes (`FEMALE_BREAST_EXPOSED`, `BUTTOCKS_COVERED`,
+`FACE_FEMALE`, …). It talks to a **NudeNet server over HTTP**; curator never
+imports NudeNet, so it gains no dependency and stays MIT. NudeNet itself is
+AGPL-3.0, so running its server is a choice for whoever deploys it.
+
+Configure the server in the environment (or `.env`), never per request:
+
+```bash
+ARGUS_CURATOR_NUDENET_URL=http://192.168.1.50:8080   # its origin; /infer is appended
+ARGUS_CURATOR_NUDENET_TIMEOUT=30                     # seconds per image (default 30)
+ARGUS_CURATOR_NUDENET_WORKERS=4                      # concurrent requests (default 4)
+```
+
+Any host running `ghcr.io/notai-tech/nudenet` works, including one elsewhere on
+your LAN. `docker compose up` starts one alongside curator (pinned by digest)
+and uses it unless `.env` says otherwise.
+
+**It is opt-out.** When a URL is configured, every scan checks its images,
+including ones that failed the quality filters, unless the scan opts out
+(`--no-nsfw`, or `"nsfw": {"enabled": false}`). `--nsfw` / `"enabled": true`
+makes the check mandatory: the scan is refused if no server is configured. Set
+the URL empty to switch the check off for a deployment. The scan summary
+records whether it ran (`nsfw_config.enabled`). Images are sent to that server,
+so keep it on infrastructure you control.
+
+Each image records every detection, the highest score per class
+(`nsfw.labels`), and an **exposed score**: the highest score among the five
+exposed-nudity classes (`BUTTOCKS_EXPOSED`, `FEMALE_BREAST_EXPOSED`,
+`FEMALE_GENITALIA_EXPOSED`, `MALE_GENITALIA_EXPOSED`, `ANUS_EXPOSED`). Faces and
+covered body parts are detected too but never count towards it. The CSV
+report has `nsfw_exposed_score` and `nsfw_labels`.
+
+Filters drop an image when a score is **at or above** its threshold:
+
+```bash
+# Total: drop anything whose exposed score is 0.5 or more
+argus-curator scan /data/inbox --nsfw-threshold 0.5 --copy-to /data/clean
+
+# Per class, alongside or instead of the total
+argus-curator scan /data/inbox \
+    --nsfw-label FEMALE_BREAST_EXPOSED=0.4,MALE_GENITALIA_EXPOSED=0.3,BELLY_EXPOSED=0.8 \
+    --copy-to /data/clean
+```
+
+Over HTTP these are `nsfw_threshold`, `nsfw_label_thresholds` (`{"CLASS": score}`)
+and `nsfw_exposed_labels` (which classes the total is taken over). The server
+reports nothing under 0.2, so thresholds must be 0.2–1. An image that was never
+checked, or whose check failed, is **excluded** whenever an NSFW filter is set
+(`nsfw-unchecked`): the filter fails closed. Other reasons are `nsfw-exposed`
+and `nsfw-<class>` (e.g. `nsfw-belly-exposed`). Exporting with NSFW thresholds
+from a scan that did not run NudeNet is refused (400) rather than excluding
+everything. `GET /detectors` reports `nudenet` when a URL is configured.
+
 ### HTTP server (:8101, peer to argus-lens)
 
 ```bash
@@ -365,7 +423,7 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 | Route | Description |
 |---|---|
 | `GET  /health` | Liveness |
-| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments }` |
+| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |

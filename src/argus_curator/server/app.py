@@ -3,7 +3,7 @@
 Routes (section 4 of the brief):
 
     GET  /health
-    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments }
+    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet }
     POST /scan/folder      -> ScanSummary
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
@@ -37,6 +37,7 @@ except ImportError as exc:  # pragma: no cover
 from PIL import Image
 
 from argus_curator import __version__, export, scanner
+from argus_curator import nsfw as nsfw_mod
 from argus_curator.attributes import fairface_available, mivolo_available
 from argus_curator.faces import faces_available
 from argus_curator.garments import garments_available
@@ -48,8 +49,9 @@ from argus_curator.models import (
     ScanRequest,
     ScanSummary,
 )
+from argus_curator.runtime import ModelUnavailable
 from argus_curator.scenes import scenes_available
-from argus_curator.selection import garment_floor_problem
+from argus_curator.selection import garment_floor_problem, nsfw_filter_problem
 from argus_curator.store import ScanStore
 
 THUMB_MAX = 384  # longest-edge px for /thumb webp output
@@ -80,6 +82,8 @@ def _detectors() -> dict[str, bool]:
         "mivolo": mivolo_available(),
         "places365": scenes_available(),
         "garments": garments_available(),
+        # A NudeNet server URL is configured; reachability is not probed here.
+        "nudenet": nsfw_mod.configured(),
     }
 
 
@@ -331,6 +335,20 @@ def create_app(
                     detail=f"{name} requested but this server has no {name} model "
                     f"(set {env}; see `argus-curator {command}`)",
                 )
+        if nsfw_mod.resolve_enabled(req.nsfw):
+            try:
+                url = nsfw_mod.endpoint()
+            except ModelUnavailable:
+                url = None
+            if url is None:
+                # Explicitly requested without a URL, or a malformed URL: say
+                # which, without echoing the configured value (it may hold a
+                # credential).
+                state = "is not a valid http(s) URL" if nsfw_mod.configured() else "is not set"
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"NudeNet check requested but {nsfw_mod.URL_ENV} {state}",
+                )
 
     @app.post("/scan/folder", response_model=ScanSummary)
     async def scan_folder(req: ScanRequest) -> ScanSummary:
@@ -345,6 +363,7 @@ def create_app(
                 req.faces,
                 scene_cfg=req.scenes,
                 garment_cfg=req.garments,
+                nsfw_cfg=req.nsfw,
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
@@ -379,6 +398,7 @@ def create_app(
                     req.faces,
                     scene_cfg=req.scenes,
                     garment_cfg=req.garments,
+                    nsfw_cfg=req.nsfw,
                     progress=on_progress,
                 )
                 store.save(summary)
@@ -504,8 +524,12 @@ def create_app(
                 status_code=400,
                 detail="inline selection export requires a scan_id for the manifest target_profile",
             )
-        if (problem := garment_floor_problem(req, summary.garments_config.min_conf)) is not None:
-            raise HTTPException(status_code=400, detail=problem)
+        for problem in (
+            garment_floor_problem(req, summary.garments_config.min_conf),
+            nsfw_filter_problem(req, summary),
+        ):
+            if problem is not None:
+                raise HTTPException(status_code=400, detail=problem)
         # The scan's images are read straight from `abs_path`, so a scan rooted
         # outside the source root would export files the root should fence off.
         _scan_root_or_400(summary)

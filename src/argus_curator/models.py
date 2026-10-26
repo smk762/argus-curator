@@ -67,6 +67,39 @@ GarmentLabel = Literal[
 ]
 GARMENT_LABELS: tuple[GarmentLabel, ...] = GarmentLabel.__args__
 
+# NudeNet's 18 detector classes, verbatim (they are its API vocabulary). Only
+# the *_EXPOSED nudity classes measure nudity; faces and covered body parts
+# are detected too and must not count towards an NSFW score.
+NudeNetLabel = Literal[
+    "FEMALE_GENITALIA_COVERED",
+    "FACE_FEMALE",
+    "BUTTOCKS_EXPOSED",
+    "FEMALE_BREAST_EXPOSED",
+    "FEMALE_GENITALIA_EXPOSED",
+    "MALE_BREAST_EXPOSED",
+    "ANUS_EXPOSED",
+    "FEET_EXPOSED",
+    "BELLY_COVERED",
+    "FEET_COVERED",
+    "ARMPITS_COVERED",
+    "ARMPITS_EXPOSED",
+    "FACE_MALE",
+    "BELLY_EXPOSED",
+    "MALE_GENITALIA_EXPOSED",
+    "ANUS_COVERED",
+    "FEMALE_BREAST_COVERED",
+    "BUTTOCKS_COVERED",
+]
+NUDENET_LABELS: tuple[NudeNetLabel, ...] = NudeNetLabel.__args__
+# The classes an image's exposed score (the "total" NSFW score) is taken over.
+DEFAULT_EXPOSED_LABELS: tuple[NudeNetLabel, ...] = (
+    "BUTTOCKS_EXPOSED",
+    "FEMALE_BREAST_EXPOSED",
+    "FEMALE_GENITALIA_EXPOSED",
+    "MALE_GENITALIA_EXPOSED",
+    "ANUS_EXPOSED",
+)
+
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 # Version of the JSONL handoff manifest argus-lens consumes. Bump on any
@@ -198,6 +231,20 @@ class GarmentConfig(BaseModel):
     device: str = "auto"
 
 
+class NsfwConfig(BaseModel):
+    """NudeNet nudity detection via a remote NudeNet server (see nsfw.py).
+
+    The server URL is process configuration (ARGUS_CURATOR_NUDENET_URL),
+    deliberately not a field here: a request-supplied URL would let any API
+    caller make this server send images to an address of their choosing.
+    """
+
+    # None (default) = on whenever a NudeNet URL is configured, i.e. opt-out;
+    # True = required (a scan fails if no URL is configured); False = opted out.
+    # A finished scan records what actually happened as True or False.
+    enabled: bool | None = None
+
+
 # ---------------------------------------------------------------------------
 # Per-image result
 # ---------------------------------------------------------------------------
@@ -269,6 +316,28 @@ class GarmentDetection(BaseModel):
     color: str
 
 
+class NsfwDetection(BaseModel):
+    """One NudeNet detection."""
+
+    label: NudeNetLabel
+    score: float
+    bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
+
+
+class NsfwResult(BaseModel):
+    """NudeNet's view of one image.
+
+    The server reports only detections scoring >= 0.2, so a class missing from
+    ``labels`` scored below that. ``exposed_score`` is the highest score among
+    :data:`DEFAULT_EXPOSED_LABELS`; filters can recompute it over another set.
+    """
+
+    detections: list[NsfwDetection] = Field(default_factory=list)
+    # Highest score per class, highest first.
+    labels: dict[NudeNetLabel, float] = Field(default_factory=dict)
+    exposed_score: float = 0.0
+
+
 class ImageResult(BaseModel):
     """Per-image curation record — superset of imogen's scanner output.
 
@@ -312,6 +381,8 @@ class ImageResult(BaseModel):
     scene: SceneTags | None = None
     # Fashionpedia garments, most confident first (None = detection not run).
     garments: list[GarmentDetection] | None = None
+    # NudeNet nudity detection (None = not checked, or the check failed).
+    nsfw: NsfwResult | None = None
 
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
@@ -341,6 +412,7 @@ class ScanSummary(BaseModel):
     # Defaulted so scans cached before scene tagging existed still load.
     scenes_config: SceneConfig = Field(default_factory=SceneConfig)
     garments_config: GarmentConfig = Field(default_factory=GarmentConfig)
+    nsfw_config: NsfwConfig = Field(default_factory=NsfwConfig)
 
     total: int
     passed: int
@@ -372,6 +444,7 @@ class ScanRequest(BaseModel):
     faces: FaceConfig = Field(default_factory=FaceConfig)
     scenes: SceneConfig = Field(default_factory=SceneConfig)
     garments: GarmentConfig = Field(default_factory=GarmentConfig)
+    nsfw: NsfwConfig = Field(default_factory=NsfwConfig)
 
 
 class ExportRequest(BaseModel):
@@ -430,9 +503,29 @@ class ExportRequest(BaseModel):
     # and their colours), so an identity set is not one outfit throughout.
     diversify_outfits: bool = False
 
+    # Optional: drop images whose NudeNet exposed score (the highest score
+    # among nsfw_exposed_labels) is at or above this. Scores under 0.2 are
+    # never reported, so 0.2 is the strictest threshold that means anything.
+    nsfw_threshold: float | None = Field(None, ge=0.2, le=1.0)
+    # Optional: per-class thresholds; drop images where that class scores at
+    # or above its threshold, e.g. {"FEMALE_BREAST_EXPOSED": 0.5}.
+    nsfw_label_thresholds: dict[NudeNetLabel, float] | None = None
+    # The classes nsfw_threshold is taken over.
+    # Never empty: an empty set scores every image 0.0, so nsfw_threshold
+    # would silently pass everything.
+    nsfw_exposed_labels: list[NudeNetLabel] = Field(default_factory=lambda: list(DEFAULT_EXPOSED_LABELS), min_length=1)
+
     write_manifest: bool = True
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).
     caption_url: str | None = None
+
+    @field_validator("nsfw_label_thresholds")
+    @classmethod
+    def _thresholds_in_range(cls, value: dict[str, float] | None) -> dict[str, float] | None:
+        for label, threshold in (value or {}).items():
+            if not 0.2 <= threshold <= 1.0:
+                raise ValueError(f"{label}: threshold {threshold} must be within 0.2..1 (NudeNet reports from 0.2)")
+        return value
 
     @model_validator(mode="after")
     def _age_range_in_order(self) -> ExportRequest:
