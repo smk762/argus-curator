@@ -605,6 +605,7 @@ def test_cross_site_guard_covers_scan_and_export(contained: tuple[TestClient, Pa
         ("/scan/folder/stream", {"folder": "", "faces": {"enabled": False}}),
         ("/export", {"scan_id": "x", "dest": "out"}),
         ("/export/stream", {"scan_id": "x", "dest": "out"}),
+        ("/scan/x/select", {}),
     ):
         assert client.post(endpoint, json=body, headers=evil).status_code == 403, endpoint
 
@@ -714,6 +715,115 @@ def test_scan_refuses_models_it_does_not_have(contained: tuple[TestClient, Path]
             detail = resp.json()["detail"]
             assert name in detail and env in detail
             assert "/" not in detail.split("(")[0]
+
+
+def test_select_filters_without_writing_the_export_root(contained: tuple[TestClient, Path]) -> None:
+    """A filter changes kept and keep_reason, and never touches the export root."""
+    client, exports = contained
+    before = sorted(p.name for p in exports.iterdir())
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    scan_id = scan["scan_id"]
+
+    loose = client.post(
+        f"/scan/{scan_id}/select",
+        json={"min_score": 0.0, "include_rejected": True, "keep_similar": True},
+    )
+    assert loose.status_code == 200
+    loose_body = loose.json()
+    assert loose_body["total"] == scan["total"]
+    assert loose_body["kept"] == loose_body["total"]
+    assert all(row["keep_reason"] == "" for row in loose_body["rows"])
+    assert {row["rel_path"] for row in loose_body["rows"]} == {r["rel_path"] for r in scan["results"]}
+
+    tight = client.post(f"/scan/{scan_id}/select", json={"min_score": 0.99})
+    assert tight.status_code == 200
+    tight_body = tight.json()
+    assert tight_body["kept"] < loose_body["kept"]
+    assert any(row["keep_reason"] == "below-score" for row in tight_body["rows"])
+    assert all(row["abs_path"] for row in tight_body["rows"])
+
+    assert sorted(p.name for p in exports.iterdir()) == before
+    assert client.post("/scan/missing/select", json={}).status_code == 404
+
+
+def test_select_refuses_scan_outside_source_root(outside_scan: tuple[TestClient, str, Path]) -> None:
+    client, scan_id, _outside = outside_scan
+    resp = client.post(f"/scan/{scan_id}/select", json={"min_score": 0.0})
+    assert resp.status_code == 400
+    assert "outside the source root" in resp.json()["detail"]
+
+
+def test_select_refuses_garment_floor_below_what_the_scan_recorded(contained: tuple[TestClient, Path]) -> None:
+    client, exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    resp = client.post(
+        f"/scan/{scan['scan_id']}/select",
+        json={"garments": ["dress"], "min_garment_conf": 0.2},
+    )
+    assert resp.status_code == 400
+    assert "rescan" in resp.json()["detail"]
+    assert list(exports.iterdir()) == []
+
+
+def test_select_refuses_moderation_filters_on_unchecked_scan(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    for body, needs in (
+        ({"nsfw_threshold": 0.5}, "NudeNet"),
+        ({"nsfw_label_thresholds": {"FEMALE_BREAST_EXPOSED": 0.5}}, "NudeNet"),
+        ({"guard_unsafe": True}, "SingGuard"),
+        ({"guard_rules": ["A"]}, "SingGuard"),
+    ):
+        resp = client.post(f"/scan/{scan['scan_id']}/select", json=body)
+        assert resp.status_code == 400, body
+        assert needs in resp.json()["detail"]
+
+
+def test_select_validates_like_export(contained: tuple[TestClient, Path]) -> None:
+    """ExportRequest's validators reject a bad select body as 422, not a 500."""
+    client, _exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    for body in (
+        {"min_age_years": 40, "max_age_years": 20},
+        {"scenes": ["beech"]},
+        {"nsfw_label_thresholds": {"FEMALE_BREAST_EXPOSED": 0.1}},
+        {"guard_rules": [" "]},
+        {"nsfw_exposed_labels": []},
+    ):
+        assert client.post(f"/scan/{scan['scan_id']}/select", json=body).status_code == 422, body
+
+
+def test_select_request_has_every_export_filter() -> None:
+    """A new ExportRequest filter must be added to SelectRequest too."""
+    from argus_curator.models import ExportRequest, SelectRequest
+
+    not_filters = {"scan_id", "selection", "dest", "mode", "preserve_structure", "write_manifest", "caption_url"}
+    trims = {"max_keep", "diversify_scenes", "diversify_outfits"}
+    assert set(SelectRequest.model_fields) == set(ExportRequest.model_fields) - not_filters - trims
+
+
+def test_image_serves_original_bytes(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    summary = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    rel = summary["results"][0]["rel_path"]
+    resp = client.get("/image", params={"path": rel, "scan_id": summary["scan_id"]})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content == Path(summary["results"][0]["abs_path"]).read_bytes()
+
+
+def test_image_path_traversal_blocked(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    summary = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    resp = client.get("/image", params={"path": "../../etc/passwd", "scan_id": summary["scan_id"]})
+    assert resp.status_code == 400
+
+
+def test_image_rejects_scan_outside_source_root(outside_scan: tuple[TestClient, str, Path]) -> None:
+    client, scan_id, _outside = outside_scan
+    resp = client.get("/image", params={"path": "private.png", "scan_id": scan_id})
+    assert resp.status_code == 400
+    assert "outside the source root" in resp.json()["detail"]
 
 
 def test_export_refuses_garment_floor_below_what_the_scan_recorded(contained: tuple[TestClient, Path]) -> None:

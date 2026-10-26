@@ -7,6 +7,8 @@ Routes (section 4 of the brief):
     POST /scan/folder      -> ScanSummary
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
+    GET  /image?path=<rel> -> original bytes (same containment as /thumb)
+    POST /scan/{id}/select -> SelectResult  (decide_selection, writes nothing)
     POST /upload           -> save images into a folder under the source root
     POST /export           -> ExportResult
 """
@@ -30,7 +32,7 @@ try:
     # the user never installed directly.
     from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
     from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-    from fastapi.responses import Response, StreamingResponse
+    from fastapi.responses import FileResponse, Response, StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
@@ -49,13 +51,27 @@ from argus_curator.models import (
     ExportResult,
     ScanRequest,
     ScanSummary,
+    SelectRequest,
+    SelectResult,
+    SelectRow,
 )
 from argus_curator.runtime import ModelUnavailable
 from argus_curator.scenes import scenes_available
-from argus_curator.selection import garment_floor_problem, guard_filter_problem, nsfw_filter_problem
+from argus_curator.selection import (
+    decide_selection,
+    garment_floor_problem,
+    guard_filter_problem,
+    nsfw_filter_problem,
+)
 from argus_curator.store import ScanStore
 
 THUMB_MAX = 384  # longest-edge px for /thumb webp output
+_IMAGE_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing snappy)
 
 # Default CORS origins for `--cors`: the argus-studio dev frontend. Anything
@@ -455,22 +471,62 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
         return summary
 
+    def _media_root(scan_id: str | None) -> Path:
+        """Source root for /thumb and /image, re-checked when a scan id is given."""
+        if scan_id:
+            summary = store.load(scan_id)
+            if summary is None:
+                raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
+            return _scan_root_or_400(summary)
+        return _root_or_400(default_source, "source", "CURATOR_SOURCE_PATH")
+
+    def _image_file(path: str, scan_id: str | None) -> Path:
+        target = _resolve_within(_media_root(scan_id), path)
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail=f"not found: {path}")
+        if target.suffix.lower() not in _IMAGE_TYPES:
+            raise HTTPException(status_code=400, detail="unsupported image type")
+        return target
+
+    @app.post("/scan/{scan_id}/select", response_model=SelectResult)
+    async def select_scan(scan_id: str, req: SelectRequest) -> SelectResult:
+        """Apply the export filter to a cached scan and return keep reasons.
+
+        Nothing is copied, symlinked, or moved, and the export root is not
+        created. ``keep_reason`` is empty for images the filter keeps.
+        """
+        summary = store.load(scan_id)
+        if summary is None:
+            raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
+        _scan_root_or_400(summary)
+        export_req = req.as_export_request()
+        for problem in (
+            garment_floor_problem(export_req, summary.garments_config.min_conf),
+            nsfw_filter_problem(export_req, summary),
+            guard_filter_problem(export_req, summary),
+        ):
+            if problem is not None:
+                raise HTTPException(status_code=400, detail=problem)
+        _selected, reasons = await asyncio.to_thread(
+            decide_selection, summary.results, export_req, summary.config.diversity_weight
+        )
+        rows = [
+            SelectRow(rel_path=r.rel_path, abs_path=r.abs_path, keep_reason=reasons.get(r.rel_path, ""))
+            for r in summary.results
+        ]
+        return SelectResult(
+            scan_id=scan_id,
+            total=len(rows),
+            kept=sum(1 for row in rows if row.keep_reason == ""),
+            rows=rows,
+        )
+
     @app.get("/thumb")
     async def thumb(
         path: str = Query(..., description="image path relative to the scan/mount root"),
         scan_id: str | None = Query(None, description="resolve relative to this scan's folder"),
     ) -> Response:
-        if scan_id:
-            summary = store.load(scan_id)
-            if summary is None:
-                raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
-            root = _scan_root_or_400(summary)
-        else:
-            root = _root_or_400(default_source, "source", "CURATOR_SOURCE_PATH")
-
-        target = _resolve_within(root, path)
-        if not target.is_file():
-            raise HTTPException(status_code=404, detail=f"not found: {path}")
+        target = _image_file(path, scan_id)
 
         def _render() -> bytes:
             with Image.open(target) as img:
@@ -485,6 +541,15 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"cannot render thumb: {exc}") from exc
         return Response(content=data, media_type="image/webp")
+
+    @app.get("/image")
+    async def image(
+        path: str = Query(..., description="image path relative to the scan/mount root"),
+        scan_id: str | None = Query(None, description="resolve relative to this scan's folder"),
+    ) -> FileResponse:
+        """Serve the original file. Same containment rules as ``/thumb``."""
+        target = _image_file(path, scan_id)
+        return FileResponse(target, media_type=_IMAGE_TYPES[target.suffix.lower()])
 
     @app.post("/upload")
     async def upload(

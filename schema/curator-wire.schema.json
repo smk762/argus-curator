@@ -1762,6 +1762,460 @@
       "title": "SceneTags",
       "type": "object"
     },
+    "SelectRequest": {
+      "description": "Filter body for ``POST /scan/{id}/select``.\n\nThe filter fields of :class:`ExportRequest`, and none of the transfer\nfields (``dest``, ``mode``, ``selection``). ``max_keep`` and the diversify\nflags are absent on purpose: this route never diversity-trims.",
+      "properties": {
+        "exclude_garments": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "shirt_blouse",
+                  "top_tshirt_sweatshirt",
+                  "sweater",
+                  "cardigan",
+                  "jacket",
+                  "vest",
+                  "pants",
+                  "shorts",
+                  "skirt",
+                  "coat",
+                  "dress",
+                  "jumpsuit",
+                  "cape",
+                  "glasses",
+                  "hat",
+                  "headband_hair_accessory",
+                  "tie",
+                  "glove",
+                  "watch",
+                  "belt",
+                  "leg_warmer",
+                  "tights_stockings",
+                  "sock",
+                  "shoe",
+                  "bag_wallet",
+                  "scarf",
+                  "umbrella"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclude Garments"
+        },
+        "face_ages": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "0-2",
+                  "3-9",
+                  "10-19",
+                  "20-29",
+                  "30-39",
+                  "40-49",
+                  "50-59",
+                  "60-69",
+                  "70+"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Ages"
+        },
+        "face_clusters": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Clusters"
+        },
+        "face_genders": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "male",
+                  "female"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Genders"
+        },
+        "face_poses": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "frontal",
+                  "three_quarter",
+                  "profile"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Poses"
+        },
+        "face_races": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "white",
+                  "black",
+                  "latino_hispanic",
+                  "east_asian",
+                  "southeast_asian",
+                  "indian",
+                  "middle_eastern"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Races"
+        },
+        "garments": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "shirt_blouse",
+                  "top_tshirt_sweatshirt",
+                  "sweater",
+                  "cardigan",
+                  "jacket",
+                  "vest",
+                  "pants",
+                  "shorts",
+                  "skirt",
+                  "coat",
+                  "dress",
+                  "jumpsuit",
+                  "cape",
+                  "glasses",
+                  "hat",
+                  "headband_hair_accessory",
+                  "tie",
+                  "glove",
+                  "watch",
+                  "belt",
+                  "leg_warmer",
+                  "tights_stockings",
+                  "sock",
+                  "shoe",
+                  "bag_wallet",
+                  "scarf",
+                  "umbrella"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Garments"
+        },
+        "garments_uncropped": {
+          "default": false,
+          "title": "Garments Uncropped",
+          "type": "boolean"
+        },
+        "guard_rules": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard Rules"
+        },
+        "guard_unsafe": {
+          "default": false,
+          "title": "Guard Unsafe",
+          "type": "boolean"
+        },
+        "include_rejected": {
+          "default": false,
+          "title": "Include Rejected",
+          "type": "boolean"
+        },
+        "keep_similar": {
+          "default": false,
+          "title": "Keep Similar",
+          "type": "boolean"
+        },
+        "max_age_years": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Age Years"
+        },
+        "min_age_years": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Age Years"
+        },
+        "min_attribute_conf": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Attribute Conf",
+          "type": "number"
+        },
+        "min_garment_conf": {
+          "default": 0.5,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Garment Conf",
+          "type": "number"
+        },
+        "min_scene_conf": {
+          "default": 0.1,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Scene Conf",
+          "type": "number"
+        },
+        "min_score": {
+          "default": 0.6,
+          "title": "Min Score",
+          "type": "number"
+        },
+        "nsfw_exposed_labels": {
+          "items": {
+            "enum": [
+              "FEMALE_GENITALIA_COVERED",
+              "FACE_FEMALE",
+              "BUTTOCKS_EXPOSED",
+              "FEMALE_BREAST_EXPOSED",
+              "FEMALE_GENITALIA_EXPOSED",
+              "MALE_BREAST_EXPOSED",
+              "ANUS_EXPOSED",
+              "FEET_EXPOSED",
+              "BELLY_COVERED",
+              "FEET_COVERED",
+              "ARMPITS_COVERED",
+              "ARMPITS_EXPOSED",
+              "FACE_MALE",
+              "BELLY_EXPOSED",
+              "MALE_GENITALIA_EXPOSED",
+              "ANUS_COVERED",
+              "FEMALE_BREAST_COVERED",
+              "BUTTOCKS_COVERED"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Nsfw Exposed Labels",
+          "type": "array"
+        },
+        "nsfw_label_thresholds": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "propertyNames": {
+                "enum": [
+                  "FEMALE_GENITALIA_COVERED",
+                  "FACE_FEMALE",
+                  "BUTTOCKS_EXPOSED",
+                  "FEMALE_BREAST_EXPOSED",
+                  "FEMALE_GENITALIA_EXPOSED",
+                  "MALE_BREAST_EXPOSED",
+                  "ANUS_EXPOSED",
+                  "FEET_EXPOSED",
+                  "BELLY_COVERED",
+                  "FEET_COVERED",
+                  "ARMPITS_COVERED",
+                  "ARMPITS_EXPOSED",
+                  "FACE_MALE",
+                  "BELLY_EXPOSED",
+                  "MALE_GENITALIA_EXPOSED",
+                  "ANUS_COVERED",
+                  "FEMALE_BREAST_COVERED",
+                  "BUTTOCKS_COVERED"
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nsfw Label Thresholds"
+        },
+        "nsfw_threshold": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.2,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nsfw Threshold"
+        },
+        "scene_environments": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "indoor",
+                  "outdoor"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Environments"
+        },
+        "scenes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenes"
+        }
+      },
+      "title": "SelectRequest",
+      "type": "object"
+    },
+    "SelectResult": {
+      "description": "What the current filter would keep, without writing the export root.",
+      "properties": {
+        "kept": {
+          "title": "Kept",
+          "type": "integer"
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/SelectRow"
+          },
+          "title": "Rows",
+          "type": "array"
+        },
+        "scan_id": {
+          "title": "Scan Id",
+          "type": "string"
+        },
+        "total": {
+          "title": "Total",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scan_id",
+        "total",
+        "kept"
+      ],
+      "title": "SelectResult",
+      "type": "object"
+    },
+    "SelectRow": {
+      "description": "One image under a dry-run selection.\n\n``keep_reason`` is empty when the image is in the selection. A non-empty\nvalue is why ``decide_selection`` left it out \u2014 the same strings an export\nreport would write, without copying anything.",
+      "properties": {
+        "abs_path": {
+          "title": "Abs Path",
+          "type": "string"
+        },
+        "keep_reason": {
+          "default": "",
+          "title": "Keep Reason",
+          "type": "string"
+        },
+        "rel_path": {
+          "title": "Rel Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rel_path",
+        "abs_path"
+      ],
+      "title": "SelectRow",
+      "type": "object"
+    },
     "TargetProfile": {
       "description": "What we are curating *for* \u2014 shared verbatim with argus-lens.\n\nThe curator uses it to weight scoring and label exports; the captioner\ninherits it to pick caption variants. This is the reason generic CV tools\n(FiftyOne / fastdup) structurally cannot replace the suite.",
       "properties": {

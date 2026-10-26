@@ -591,6 +591,81 @@ class ExportResult(BaseModel):
     captioned: bool = False
 
 
+class SelectRow(BaseModel):
+    """One image under a dry-run selection.
+
+    ``keep_reason`` is empty when the image is in the selection. A non-empty
+    value is why ``decide_selection`` left it out — the same strings an export
+    report would write, without copying anything.
+    """
+
+    rel_path: str
+    abs_path: str
+    keep_reason: str = ""
+
+
+class SelectRequest(BaseModel):
+    """Filter body for ``POST /scan/{id}/select``.
+
+    The filter fields of :class:`ExportRequest`, and none of the transfer
+    fields (``dest``, ``mode``, ``selection``). ``max_keep`` and the diversify
+    flags are absent on purpose: this route never diversity-trims.
+    """
+
+    min_score: float = 0.6
+    include_rejected: bool = False
+    keep_similar: bool = False
+
+    face_clusters: list[str] | None = None
+    face_poses: list[FacePose] | None = None
+    face_races: list[FaceRace] | None = None
+    face_genders: list[FaceGender] | None = None
+    face_ages: list[FaceAge] | None = None
+    min_age_years: float | None = Field(None, ge=0.0)
+    max_age_years: float | None = Field(None, ge=0.0)
+    min_attribute_conf: float = Field(0.0, ge=0.0, le=1.0)
+
+    scenes: list[str] | None = None
+    scene_environments: list[SceneEnvironment] | None = None
+    min_scene_conf: float = Field(0.1, ge=0.0, le=1.0)
+
+    garments: list[GarmentLabel] | None = None
+    exclude_garments: list[GarmentLabel] | None = None
+    min_garment_conf: float = Field(0.5, ge=0.0, le=1.0)
+    garments_uncropped: bool = False
+
+    nsfw_threshold: float | None = Field(None, ge=0.2, le=1.0)
+    nsfw_label_thresholds: dict[NudeNetLabel, float] | None = None
+    nsfw_exposed_labels: list[NudeNetLabel] = Field(default_factory=lambda: list(DEFAULT_EXPOSED_LABELS), min_length=1)
+
+    guard_unsafe: bool = False
+    guard_rules: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _valid_as_export(self) -> SelectRequest:
+        # ExportRequest owns the cross-field rules (age order, known scenes,
+        # NSFW threshold range, rule names); run them here rather than copy them.
+        self.as_export_request()
+        return self
+
+    def as_export_request(self) -> ExportRequest:
+        """A transfer-free request so ``decide_selection`` can run unchanged.
+
+        ``dest`` is a placeholder. Callers must not pass this object to
+        ``export_selection``.
+        """
+        return ExportRequest.model_validate({**self.model_dump(), "dest": "."})
+
+
+class SelectResult(BaseModel):
+    """What the current filter would keep, without writing the export root."""
+
+    scan_id: str
+    total: int
+    kept: int
+    rows: list[SelectRow] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Wire contract (published as JSON Schema for consumers to codegen against)
 # ---------------------------------------------------------------------------
@@ -598,7 +673,15 @@ class ExportResult(BaseModel):
 # The models that make up the public HTTP/manifest contract. Everything a
 # consumer (argus-lens, the frontend) needs to speak to the curator is reachable
 # from these via their nested $defs — including the manifest row itself.
-WIRE_MODELS: tuple[type[BaseModel], ...] = (ScanRequest, ScanSummary, ExportRequest, ExportResult, ManifestRow)
+WIRE_MODELS: tuple[type[BaseModel], ...] = (
+    ScanRequest,
+    ScanSummary,
+    ExportRequest,
+    ExportResult,
+    ManifestRow,
+    SelectRequest,
+    SelectResult,
+)
 
 
 def wire_schema() -> dict:
