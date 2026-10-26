@@ -482,6 +482,8 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
 | `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount |
+| `GET  /image?path=<rel>&scan_id=<id>` | Original image bytes, same containment as `/thumb` |
+| `POST /scan/{scan_id}/select` | Dry-run of the export filter → `{total, kept, rows: [{rel_path, abs_path, keep_reason}]}`. Writes nothing |
 | `POST /upload` | Multipart image upload (`files` + `folder`) into a folder under the source root |
 | `POST /export` | Structure-preserving transfer + manifest → `ExportResult` |
 | `POST /scan/folder/stream` | Same as `/scan/folder`, streaming live progress over SSE |

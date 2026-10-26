@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `POST /scan/{scan_id}/select` runs the export filter (`decide_selection`) and
+  returns `{rel_path, abs_path, keep_reason}` for every image without copying,
+  symlinking, or moving. `GET /image` serves the original file under the same
+  containment rules as `GET /thumb`.
 - NudeNet nudity detection through a NudeNet server over HTTP
   (`ARGUS_CURATOR_NUDENET_URL`, plus `_TIMEOUT` / `_WORKERS`); curator never
   imports NudeNet (AGPL-3.0). Each image records its detections, the highest
