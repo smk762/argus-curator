@@ -55,6 +55,15 @@ def test_scores_bounded_and_breakdown_present(dataset: Path) -> None:
             assert "target_bonus" in r.score_breakdown
 
 
+def test_pending_checks_hold_until_each_phase_finishes() -> None:
+    from argus_curator.scanner import pending_checks
+
+    assert pending_checks("scoring", ["nsfw", "guard"]) == ["nsfw", "guard"]
+    assert pending_checks("nsfw", ["nsfw", "guard"], phase_done=True) == ["guard"]
+    assert pending_checks("guard", ["nsfw", "guard"], phase_done=True) == []
+    assert pending_checks("clustering", ["guard"]) == []
+
+
 def test_target_profile_roundtrips_into_summary(dataset: Path) -> None:
     profile = TargetProfile(target_style="anime", target_category="wardrobe", target_backend="flux-dev-1")
     summary = scan_folder(dataset, profile=profile, faces_cfg=FaceConfig(enabled=False))

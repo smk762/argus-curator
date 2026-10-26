@@ -285,6 +285,36 @@ def test_exposed_set_is_configurable() -> None:
     assert [r.rel_path for r in selected] == ["b.jpg"] and why["a.jpg"] == "nsfw-exposed"
 
 
+def test_under_18_with_a_reported_exposed_score_is_never_kept() -> None:
+    from argus_curator.models import FaceAttributes, FaceDetection
+
+    def aged(rel: str, labels: dict[str, float] | None, years: list[float | None]) -> ImageResult:
+        image = _img(rel, labels)
+        image.faces = [
+            FaceDetection(
+                bbox=[0, 0, 10, 10],
+                det_score=0.9,
+                primary=index == 0,
+                attributes=None if age is None else FaceAttributes(age_years=age, age_source="mivolo"),
+            )
+            for index, age in enumerate(years)
+        ]
+        image.primary_face_attributes = image.faces[0].attributes
+        return image
+
+    results = [
+        aged("minor.jpg", {"BUTTOCKS_EXPOSED": 0.2}, [17.9]),
+        aged("adult.jpg", {"BUTTOCKS_EXPOSED": 0.9}, [18.0]),
+        aged("covered.jpg", {"FEMALE_BREAST_COVERED": 0.95}, [12.0]),
+        aged("group.jpg", {"ANUS_EXPOSED": 0.21}, [30.0, 16.2]),
+        aged("unknown.jpg", {"FEMALE_BREAST_EXPOSED": 0.8}, [None]),
+    ]
+    selected, why = decide_selection(results, ExportRequest(dest="/o", min_score=0.0), 0.0)
+    assert {r.rel_path for r in selected} == {"adult.jpg", "covered.jpg", "unknown.jpg"}
+    assert why["minor.jpg"] == "minor-exposed"
+    assert why["group.jpg"] == "minor-exposed"
+
+
 def test_no_nsfw_filter_keeps_unchecked_images() -> None:
     selected, _ = decide_selection([_img("a.jpg", None)], ExportRequest(dest="/o", min_score=0.0), 0.0)
     assert [r.rel_path for r in selected] == ["a.jpg"]

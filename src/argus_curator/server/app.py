@@ -9,6 +9,7 @@ Routes (section 4 of the brief):
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
     GET  /image?path=<rel> -> original bytes (same containment as /thumb)
     POST /scan/{id}/select -> SelectResult  (decide_selection, writes nothing)
+    POST /scan/{id}/delete -> remove one under-18 exposed file from the source folder
     POST /upload           -> save images into a folder under the source root
     POST /export           -> ExportResult
 """
@@ -21,6 +22,7 @@ import json
 import os
 import queue
 import threading
+import uuid
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
@@ -37,6 +39,7 @@ except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
 from PIL import Image
+from pydantic import BaseModel, Field
 
 from argus_curator import __version__, export, scanner
 from argus_curator import guard as guard_mod
@@ -61,6 +64,7 @@ from argus_curator.selection import (
     decide_selection,
     garment_floor_problem,
     guard_filter_problem,
+    minor_exposed,
     nsfw_filter_problem,
 )
 from argus_curator.store import ScanStore
@@ -73,6 +77,63 @@ _IMAGE_TYPES = {
     ".webp": "image/webp",
 }
 _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing snappy)
+
+
+class DeleteRequest(BaseModel):
+    """One image, or a batch. Every path has to be an under-18 exposed detection."""
+
+    rel_path: str | None = None
+    rel_paths: list[str] = Field(default_factory=list, max_length=200)
+
+    def targets(self) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for path in ([self.rel_path] if self.rel_path else []) + self.rel_paths:
+            if path and path not in seen:
+                seen.add(path)
+                ordered.append(path)
+        return ordered
+
+
+class ScanGate:
+    """The one scan this process is allowed to run at a time."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.active: dict[str, Any] | None = None
+
+    def start(self, scan_id: str, folder: str, pending: list[str]) -> dict[str, Any] | None:
+        """Register *scan_id*. Return the scan already running, if there is one."""
+        with self._lock:
+            if self.active is not None:
+                return dict(self.active)
+            self.active = {
+                "scan_id": scan_id,
+                "folder": folder,
+                "phase": "starting",
+                "done": 0,
+                "total": 0,
+                "pending_checks": list(pending),
+            }
+            return None
+
+    def update(self, scan_id: str, **fields: Any) -> None:
+        with self._lock:
+            if self.active and self.active["scan_id"] == scan_id:
+                self.active.update(fields)
+
+    def finish(self, scan_id: str) -> None:
+        with self._lock:
+            if self.active and self.active["scan_id"] == scan_id:
+                self.active = None
+
+    def snapshot(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self.active) if self.active else None
+
+
+def _busy_detail(active: dict[str, Any]) -> str:
+    return f"A scan is already running ({active['phase']} {active['done']}/{active['total']})."
 
 # Default CORS origins for `--cors`: the argus-studio dev frontend. Anything
 # else must be allow-listed explicitly (or use the credential-less wildcard).
@@ -252,6 +313,8 @@ def create_app(
         )
 
     store = ScanStore(cache_dir)
+    gate = ScanGate()
+    app.state.scan_gate = gate
     # Containment roots. Scans/thumbs/uploads resolve under the source root;
     # export destinations under the export root. The ARGUS_* names are the
     # deployment-facing ones (argus-halo); CURATOR_* are kept for compose.
@@ -384,10 +447,44 @@ def create_app(
             except ModelUnavailable as exc:  # these name no URL or path
                 raise HTTPException(status_code=400, detail=f"SingGuard check requested but {exc}") from exc
 
+    def _requested_checks(req: ScanRequest) -> list[str]:
+        pending: list[str] = []
+        if nsfw_mod.resolve_enabled(req.nsfw):
+            pending.append("nsfw")
+        if guard_mod.resolve_enabled(req.guard):
+            pending.append("guard")
+        return pending
+
+    def _claim_scan(folder: Path, req: ScanRequest) -> str:
+        scan_id = uuid.uuid4().hex
+        busy = gate.start(scan_id, str(folder.resolve()), _requested_checks(req))
+        if busy is not None:
+            raise HTTPException(status_code=409, detail=_busy_detail(busy))
+        return scan_id
+
+    def _note_progress(scan_id: str, requested: list[str], payload: dict[str, Any]) -> None:
+        done = int(payload.get("done") or 0)
+        total = int(payload.get("total") or 0)
+        phase = str(payload.get("phase") or "")
+        gate.update(
+            scan_id,
+            phase=phase,
+            done=done,
+            total=total,
+            pending_checks=scanner.pending_checks(phase, requested, phase_done=total > 0 and done >= total),
+        )
+
+    @app.get("/scans")
+    async def list_scans() -> dict[str, Any]:
+        """Scans on disk, plus the one currently running, if any."""
+        return {"active": gate.snapshot(), "scans": store.list_meta()}
+
     @app.post("/scan/folder", response_model=ScanSummary)
     async def scan_folder(req: ScanRequest) -> ScanSummary:
         _require_models(req)
         folder = _resolve_scan_folder(req.folder)
+        scan_id = _claim_scan(folder, req)
+        requested = _requested_checks(req)
         try:
             summary = await asyncio.to_thread(
                 scanner.scan_folder,
@@ -399,30 +496,43 @@ def create_app(
                 garment_cfg=req.garments,
                 nsfw_cfg=req.nsfw,
                 guard_cfg=req.guard,
+                scan_id=scan_id,
+                progress=lambda payload: _note_progress(scan_id, requested, payload),
             )
+            store.save(summary)
+            return summary
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
-        store.save(summary)
-        return summary
+        finally:
+            gate.finish(scan_id)
 
     @app.post("/scan/folder/stream")
     async def scan_folder_stream(req: ScanRequest) -> StreamingResponse:
-        """Same as POST /scan/folder, but streams live progress over SSE.
+        """Same as POST /scan/folder, but streams progress and image batches over SSE.
 
-        Emits ``event: progress`` frames ({phase, done, total}) as the scan runs,
-        then a single ``event: complete`` frame carrying the full ScanSummary (the
-        identical payload the non-streaming endpoint returns), or ``event: error``.
+        Emits ``event: progress`` frames ({phase, done, total}) and ``event: chunk``
+        frames (those counts plus the images finished since the previous chunk),
+        then a single ``event: complete`` frame carrying the full ScanSummary, or
+        ``event: error``. A second scan is refused while one is still running.
         """
         _require_models(req)
         folder = _resolve_scan_folder(req.folder)
+        scan_id = _claim_scan(folder, req)
+        requested = _requested_checks(req)
 
         # The scan is blocking CPU work, so it runs in a worker thread and hands
         # events back through a thread-safe queue that the async generator drains.
+        # The slot stays taken until that thread finishes, even if the browser
+        # disconnects, so a refresh cannot start a second scan behind it.
         events: queue.Queue[tuple[str, Any]] = queue.Queue()
         _DONE = "__done__"
 
         def on_progress(payload: dict[str, Any]) -> None:
+            _note_progress(scan_id, requested, payload)
             events.put(("progress", payload))
+
+        def on_chunk(payload: dict[str, Any]) -> None:
+            events.put(("chunk", payload))
 
         def run_scan() -> None:
             try:
@@ -435,13 +545,17 @@ def create_app(
                     garment_cfg=req.garments,
                     nsfw_cfg=req.nsfw,
                     guard_cfg=req.guard,
+                    scan_id=scan_id,
                     progress=on_progress,
+                    chunk=on_chunk,
+                    save=store.save,
                 )
                 store.save(summary)
                 events.put(("complete", summary.model_dump(mode="json")))
             except Exception as exc:  # surface as a stream error, not a 500
                 events.put(("error", {"detail": f"scan failed: {exc}"}))
             finally:
+                gate.finish(scan_id)
                 events.put((_DONE, None))
 
         worker = threading.Thread(target=run_scan, name="curator-scan", daemon=True)
@@ -521,6 +635,58 @@ def create_app(
             rows=rows,
         )
 
+    @app.post("/scan/{scan_id}/delete")
+    async def delete_image(scan_id: str, req: DeleteRequest) -> dict[str, Any]:
+        """Delete source files that MiVOLO reads as under 18 with an exposed score.
+
+        One path or a batch. If any path is not that kind of image, nothing is
+        deleted. A scan that is still running is refused too, because its next
+        save would put the rows back.
+        """
+        paths = req.targets()
+        if not paths:
+            raise HTTPException(status_code=400, detail="no images to delete")
+        active = gate.snapshot()
+        if active and active["scan_id"] == scan_id:
+            raise HTTPException(status_code=409, detail=_busy_detail(active))
+        summary = store.load(scan_id)
+        if summary is None:
+            raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
+        _scan_root_or_400(summary)
+        by_path = {r.rel_path: r for r in summary.results}
+        missing = [path for path in paths if path not in by_path]
+        if missing:
+            raise HTTPException(status_code=404, detail=f"not in scan: {missing[0]}")
+        refused = [path for path in paths if not minor_exposed(by_path[path])]
+        if refused:
+            raise HTTPException(
+                status_code=403,
+                detail="Only an image with a MiVOLO age under 18 and an exposed score of at least 0.2 can be deleted here.",
+            )
+
+        targets = [_image_file(path, scan_id) for path in paths]
+
+        def _unlink() -> None:
+            for target in targets:
+                target.unlink()
+
+        try:
+            await asyncio.to_thread(_unlink)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=f"could not delete: {exc}") from exc
+        gone = set(paths)
+        summary.results = [r for r in summary.results if r.rel_path not in gone]
+        summary.total = len(summary.results)
+        summary.passed = sum(1 for r in summary.results if r.passed)
+        summary.rejected = summary.total - summary.passed
+        summary.duplicates = sum(1 for r in summary.results if r.is_duplicate)
+        summary.returned = len(summary.results)
+        await asyncio.to_thread(store.save, summary)
+        body: dict[str, Any] = {"rel_paths": paths, "total": summary.total}
+        if len(paths) == 1:
+            body["rel_path"] = paths[0]
+        return body
+
     @app.get("/thumb")
     async def thumb(
         path: str = Query(..., description="image path relative to the scan/mount root"),
@@ -547,7 +713,16 @@ def create_app(
         path: str = Query(..., description="image path relative to the scan/mount root"),
         scan_id: str | None = Query(None, description="resolve relative to this scan's folder"),
     ) -> FileResponse:
-        """Serve the original file. Same containment rules as ``/thumb``."""
+        """Serve the original file. Same containment rules as ``/thumb``.
+
+        An under-18 image with an exposed score is not served. The grid keeps a
+        blurred thumbnail, and the file itself is only removed by delete.
+        """
+        if scan_id:
+            summary = store.load(scan_id)
+            match = next((r for r in summary.results if r.rel_path == path), None) if summary else None
+            if match is not None and minor_exposed(match):
+                raise HTTPException(status_code=403, detail="This image stays blurred.")
         target = _image_file(path, scan_id)
         return FileResponse(target, media_type=_IMAGE_TYPES[target.suffix.lower()])
 

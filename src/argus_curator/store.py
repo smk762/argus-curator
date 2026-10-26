@@ -8,7 +8,9 @@ easy to wipe.
 
 from __future__ import annotations
 
+import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from argus_curator.models import ScanSummary
@@ -35,7 +37,10 @@ class ScanStore:
 
     def save(self, summary: ScanSummary) -> Path:
         path = self._path(summary.scan_id)
-        path.write_text(summary.model_dump_json(), encoding="utf-8")
+        # Replace atomically so a reader never sees a half-written summary.
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(summary.model_dump_json(), encoding="utf-8")
+        tmp.replace(path)
         return path
 
     def load(self, scan_id: str) -> ScanSummary | None:
@@ -64,6 +69,26 @@ class ScanStore:
 
     def list_ids(self) -> list[str]:
         return sorted(p.stem for p in self.cache_dir.glob("*.json"))
+
+    def list_meta(self) -> list[dict[str, object]]:
+        """Scan id, folder, and image count, newest first. Skips unreadable files."""
+        rows: list[dict[str, object]] = []
+        for path in self.cache_dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            updated = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            rows.append(
+                {
+                    "scan_id": data.get("scan_id") or path.stem,
+                    "folder": data.get("folder") or "",
+                    "total": int(data.get("total") or 0),
+                    "updated_at": updated,
+                }
+            )
+        rows.sort(key=lambda row: str(row["updated_at"]), reverse=True)
+        return rows
 
     def delete(self, scan_id: str) -> bool:
         path = self._path(scan_id)

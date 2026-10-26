@@ -72,6 +72,7 @@ def check_images(
     items: list[tuple[str, str, bytes]],
     cfg: NsfwConfig,
     progress: Callable[[int, int], None] | None = None,
+    on_done: Callable[..., None] | None = None,
 ) -> bool:
     """Set ``nsfw`` on every image (see :func:`remote.check_all`); return whether
     the check ran at all."""
@@ -87,5 +88,6 @@ def check_images(
         "nsfw",
         int(float_env(WORKERS_ENV, DEFAULT_WORKERS)),
         progress,
+        on_done=on_done,
     )
     return True

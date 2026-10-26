@@ -12,6 +12,7 @@ a scan says otherwise.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import Callable
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
@@ -55,6 +56,7 @@ def check_all(
     field: str,
     workers: int,
     progress: Callable[[int, int], None] | None = None,
+    on_done: Callable[[ImageResult, int, int], None] | None = None,
 ) -> None:
     """Set ``field`` on every image to ``check(data, rel_path)``, *workers* at a time.
 
@@ -87,6 +89,10 @@ def check_all(
                     for other in futures:
                         other.cancel()
             done += 1
+            if on_done is not None:
+                # A chunk consumer must not be counted as a failed check.
+                with contextlib.suppress(Exception):
+                    on_done(r, done, total)
             if progress is not None and (done == total or done % 5 == 0):
                 progress(done, total)
     if failed:
