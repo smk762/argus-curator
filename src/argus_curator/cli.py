@@ -292,11 +292,11 @@ def scan(
     nsfw_on = nsfw_mod.resolve_enabled(nsfw_cfg)
     if nsfw_on:
         try:
-            nsfw_mod.endpoint()
+            nudenet_endpoint = nsfw_mod.endpoint()
         except Exception as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc
-        if not nsfw_mod.configured():
+        if nudenet_endpoint is None:
             typer.echo(f"Error: --nsfw needs a NudeNet server (--nudenet-url or {nsfw_mod.URL_ENV})", err=True)
             raise typer.Exit(1)
     elif nsfw_threshold is not None or label_thresholds:
@@ -350,10 +350,12 @@ def scan(
         typer.echo(f"  Garments (images):     {'  '.join(f'{k}={n}' for k, n in common)}")
     if summary.nsfw_config.enabled:
         checked = [r for r in summary.results if r.nsfw is not None]
-        exposed = sum(1 for r in checked if r.nsfw.exposed_score >= 0.5)
+        # Count against the threshold the export will apply, over its classes.
+        at = export_req.nsfw_threshold if export_req.nsfw_threshold is not None else 0.5
+        exposed = sum(1 for r in checked if nsfw_mod.exposed_score(r.nsfw.labels, export_req.nsfw_exposed_labels) >= at)
         unchecked = summary.total - len(checked)
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
-        typer.echo(f"  NudeNet:               {len(checked)} checked, {exposed} with exposed score >= 0.5{tail}")
+        typer.echo(f"  NudeNet:               {len(checked)} checked, {exposed} with exposed score >= {at:g}{tail}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")

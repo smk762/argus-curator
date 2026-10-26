@@ -18,6 +18,7 @@ server drops detections scoring under 0.2.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -25,7 +26,7 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
@@ -48,6 +49,14 @@ TIMEOUT_ENV = "ARGUS_CURATOR_NUDENET_TIMEOUT"
 WORKERS_ENV = "ARGUS_CURATOR_NUDENET_WORKERS"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_WORKERS = 4
+# Give up on the rest of a scan after this many failures with no success at all:
+# the server is down or unreachable, and every further image would only wait
+# out its timeout.
+MAX_FAILURES_WITHOUT_SUCCESS = 8
+
+# Ignore HTTP(S)_PROXY: images go straight to the operator-configured server,
+# never through whatever proxy happens to be in the environment.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class NsfwCheckFailed(RuntimeError):
@@ -105,8 +114,16 @@ def to_result(raw: list[dict]) -> NsfwResult:
     known = set(NUDENET_LABELS)
     dets: list[NsfwDetection] = []
     for d in raw:
+        if not isinstance(d, dict):
+            continue
         label, score, box = d.get("class"), d.get("score"), d.get("box")
-        if label not in known or not isinstance(score, int | float) or not isinstance(box, list) or len(box) != 4:
+        if (
+            label not in known
+            or not _is_number(score)
+            or not isinstance(box, list)
+            or len(box) != 4
+            or not all(_is_number(v) for v in box)
+        ):
             continue  # an unknown class or malformed entry is not evidence either way
         dets.append(NsfwDetection(label=label, score=round(float(score), 4), bbox=[round(float(v), 1) for v in box]))
     dets.sort(key=lambda d: -d.score)
@@ -120,6 +137,10 @@ def to_result(raw: list[dict]) -> NsfwResult:
     )
 
 
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
 def exposed_score(labels: dict[str, float], exposed: tuple[str, ...] | list[str]) -> float:
     """The highest score among the *exposed* classes (0.0 when none was detected)."""
     return max((labels[c] for c in exposed if c in labels), default=0.0)
@@ -130,11 +151,11 @@ def check(data: bytes, filename: str, url: str, timeout: float) -> NsfwResult:
     body, content_type = _multipart(data, filename)
     req = urllib.request.Request(url, data=body, headers={"Content-Type": content_type}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - operator-configured URL
+        with _OPENER.open(req, timeout=timeout) as resp:  # noqa: S310 - operator-configured URL
             payload = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         raise NsfwCheckFailed(f"NudeNet returned HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
         raise NsfwCheckFailed(f"NudeNet request failed: {exc}") from exc
     except ValueError as exc:
         raise NsfwCheckFailed("NudeNet returned a body that is not JSON") from exc
@@ -157,7 +178,9 @@ def check_images(
     Every image is checked, including ones that failed the quality filters: a
     blurry explicit image is still explicit, and ``include_rejected`` exports
     them. An image whose check fails keeps ``nsfw = None``, which NSFW filters
-    treat as a reason to exclude it.
+    treat as a reason to exclude it. After ``MAX_FAILURES_WITHOUT_SUCCESS``
+    failures with no success the server is taken to be down and the images
+    not yet sent stay unchecked, rather than each waiting out its timeout.
     """
     if not resolve_enabled(cfg):
         return False
@@ -168,7 +191,7 @@ def check_images(
     workers = int(_float_env(WORKERS_ENV, DEFAULT_WORKERS))
     data_by_rel = {rel: data for rel, _abs, data in items}
     pending = [r for r in results if data_by_rel.get(r.rel_path) is not None]
-    total, done, failed = len(pending), 0, 0
+    total, done, failed, succeeded = len(pending), 0, 0, 0
     if progress is not None:
         progress(0, total)
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -180,9 +203,16 @@ def check_images(
             r = futures[fut]
             try:
                 r.nsfw = fut.result()
-            except NsfwCheckFailed as exc:
+                succeeded += 1
+            except CancelledError:
+                pass  # given up on below; the image stays unchecked
+            except Exception as exc:  # one bad image must not fail the whole scan
                 failed += 1
                 logger.warning("nsfw_check_failed", rel_path=r.rel_path, error=str(exc))
+                if not succeeded and failed == MAX_FAILURES_WITHOUT_SUCCESS:
+                    logger.warning("nsfw_server_unreachable", failed=failed, total=total)
+                    for other in futures:
+                        other.cancel()
             done += 1
             if progress is not None and (done == total or done % 5 == 0):
                 progress(done, total)
