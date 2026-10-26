@@ -353,6 +353,7 @@
             ],
             "type": "string"
           },
+          "minItems": 1,
           "title": "Nsfw Exposed Labels",
           "type": "array"
         },

@@ -10,6 +10,7 @@ import csv
 import io
 import json
 import threading
+import time
 from collections.abc import Iterator
 from email.parser import BytesParser
 from email.policy import HTTP
@@ -205,9 +206,51 @@ def test_bad_responses_are_failures(monkeypatch: pytest.MonkeyPatch, payload) ->
         def __exit__(self, *exc) -> None:
             self.close()
 
-    monkeypatch.setattr(remote.urllib.request, "urlopen", lambda req, timeout: _Resp(json.dumps(payload).encode()))
+    monkeypatch.setattr(remote._OPENER, "open", lambda req, timeout: _Resp(json.dumps(payload).encode()))
     with pytest.raises(nsfw.NsfwCheckFailed):
         nsfw.check(_png(10), "a.png", "http://n/infer", 5.0)
+
+
+def test_malformed_detections_are_skipped() -> None:
+    result = nsfw.to_result(
+        [
+            "not-a-dict",
+            {"class": "BUTTOCKS_EXPOSED", "score": 0.7, "box": [0, 0, "w", None]},
+            {"class": "BUTTOCKS_EXPOSED", "score": True, "box": [0, 0, 1, 1]},
+            {"class": "BELLY_EXPOSED", "score": 0.5, "box": [0, 0, 1, 1]},
+        ]
+    )
+    assert result.labels == {"BELLY_EXPOSED": 0.5} and result.exposed_score == 0.0
+
+
+def test_unexpected_errors_leave_the_image_unchecked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(nsfw.URL_ENV, "http://n")
+
+    def boom(*_args):
+        raise ValueError("unexpected")
+
+    monkeypatch.setattr(nsfw, "check", boom)
+    results = [ImageResult(rel_path="a.png", abs_path="/d/a", passed=True)]
+    assert nsfw.check_images(results, [("a.png", "/d/a", _png(30))], NsfwConfig()) is True
+    assert results[0].nsfw is None
+
+
+def test_unreachable_server_is_given_up_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(nsfw.URL_ENV, "http://n")
+    monkeypatch.setenv(nsfw.WORKERS_ENV, "1")
+    calls = []
+
+    def down(*_args):
+        calls.append(1)
+        time.sleep(0.02)  # a real outage waits out a timeout; give the loop time to react
+        raise nsfw.NsfwCheckFailed("NudeNet request failed: timed out")
+
+    monkeypatch.setattr(nsfw, "check", down)
+    results = [ImageResult(rel_path=f"{i}.png", abs_path=f"/d/{i}", passed=True) for i in range(50)]
+    items = [(r.rel_path, r.abs_path, b"x") for r in results]
+    assert nsfw.check_images(results, items, NsfwConfig()) is True
+    assert len(calls) <= remote.MAX_FAILURES_WITHOUT_SUCCESS + 2
+    assert all(r.nsfw is None for r in results)
 
 
 def test_scan_runs_nudenet_when_configured(nudenet: type[_NudeNet]) -> None:
@@ -276,6 +319,7 @@ def test_no_nsfw_filter_keeps_unchecked_images() -> None:
         {"nsfw_label_thresholds": {"FEMALE_BREAST_EXPOSED": 0.05}},
         {"nsfw_label_thresholds": {"NOT_A_CLASS": 0.5}},
         {"nsfw_exposed_labels": ["NOT_A_CLASS"]},
+        {"nsfw_exposed_labels": []},  # would make nsfw_threshold pass everything
     ],
 )
 def test_invalid_nsfw_filters_are_rejected(kwargs) -> None:

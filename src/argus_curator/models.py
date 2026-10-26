@@ -541,7 +541,9 @@ class ExportRequest(BaseModel):
     # or above its threshold, e.g. {"FEMALE_BREAST_EXPOSED": 0.5}.
     nsfw_label_thresholds: dict[NudeNetLabel, float] | None = None
     # The classes nsfw_threshold is taken over.
-    nsfw_exposed_labels: list[NudeNetLabel] = Field(default_factory=lambda: list(DEFAULT_EXPOSED_LABELS))
+    # Never empty: an empty set scores every image 0.0, so nsfw_threshold
+    # would silently pass everything.
+    nsfw_exposed_labels: list[NudeNetLabel] = Field(default_factory=lambda: list(DEFAULT_EXPOSED_LABELS), min_length=1)
 
     # Optional: drop images SingGuard judged unsafe, under any rule.
     guard_unsafe: bool = False

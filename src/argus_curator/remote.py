@@ -14,7 +14,7 @@ import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -24,6 +24,15 @@ from argus_curator.models import ImageResult
 from argus_curator.runtime import ModelUnavailable
 
 logger = structlog.get_logger()
+
+# Give up on the rest of a scan after this many failures with no success at all:
+# the server is down or unreachable, and every further image would only wait
+# out its timeout.
+MAX_FAILURES_WITHOUT_SUCCESS = 8
+
+# Ignore HTTP(S)_PROXY: images go straight to the operator-configured server,
+# never through whatever proxy happens to be in the environment.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class CheckFailed(RuntimeError):
@@ -69,7 +78,7 @@ def post_json(
     """
     req = urllib.request.Request(url, data=body, headers={"Content-Type": content_type}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - operator-configured URL
+        with _OPENER.open(req, timeout=timeout) as resp:  # noqa: S310 - operator-configured URL
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         raise failed(f"{service} returned HTTP {exc.code}") from exc
@@ -92,11 +101,13 @@ def check_all(
     Every image is checked, including ones that failed the quality filters: a
     blurry explicit image is still explicit, and ``include_rejected`` exports
     them. An image whose check fails keeps ``None``, which the filters treat as
-    a reason to exclude it.
+    a reason to exclude it. After ``MAX_FAILURES_WITHOUT_SUCCESS`` failures with
+    no success the server is taken to be down and the images not yet sent stay
+    unchecked, rather than each waiting out its timeout.
     """
     data_by_rel = {rel: data for rel, _abs, data in items}
     pending = [r for r in results if data_by_rel.get(r.rel_path) is not None]
-    total, done, failed = len(pending), 0, 0
+    total, done, failed, succeeded = len(pending), 0, 0, 0
     if progress is not None:
         progress(0, total)
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -105,9 +116,16 @@ def check_all(
             r = futures[fut]
             try:
                 setattr(r, field, fut.result())
-            except CheckFailed as exc:
+                succeeded += 1
+            except CancelledError:
+                pass  # given up on below; the image stays unchecked
+            except Exception as exc:  # one bad image must not fail the whole scan
                 failed += 1
                 logger.warning("remote_check_failed", check=field, rel_path=r.rel_path, error=str(exc))
+                if not succeeded and failed == MAX_FAILURES_WITHOUT_SUCCESS:
+                    logger.warning("remote_server_unreachable", check=field, failed=failed, total=total)
+                    for other in futures:
+                        other.cancel()
             done += 1
             if progress is not None and (done == total or done % 5 == 0):
                 progress(done, total)

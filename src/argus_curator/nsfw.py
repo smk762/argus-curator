@@ -81,8 +81,16 @@ def to_result(raw: list[dict]) -> NsfwResult:
     known = set(NUDENET_LABELS)
     dets: list[NsfwDetection] = []
     for d in raw:
+        if not isinstance(d, dict):
+            continue
         label, score, box = d.get("class"), d.get("score"), d.get("box")
-        if label not in known or not isinstance(score, int | float) or not isinstance(box, list) or len(box) != 4:
+        if (
+            label not in known
+            or not _is_number(score)
+            or not isinstance(box, list)
+            or len(box) != 4
+            or not all(_is_number(v) for v in box)
+        ):
             continue  # an unknown class or malformed entry is not evidence either way
         dets.append(NsfwDetection(label=label, score=round(float(score), 4), bbox=[round(float(v), 1) for v in box]))
     dets.sort(key=lambda d: -d.score)
@@ -94,6 +102,10 @@ def to_result(raw: list[dict]) -> NsfwResult:
         labels=labels,
         exposed_score=exposed_score(labels, DEFAULT_EXPOSED_LABELS),
     )
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
 
 
 def exposed_score(labels: dict[str, float], exposed: tuple[str, ...] | list[str]) -> float:
