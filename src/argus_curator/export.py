@@ -199,6 +199,8 @@ def write_report(
         "garments",
         "nsfw_exposed_score",
         "nsfw_labels",
+        "guard_safe",
+        "guard_rules",
         "width",
         "height",
         "abs_path",
@@ -252,6 +254,8 @@ def write_report(
                     "nsfw_exposed_score": r.nsfw.exposed_score if r.nsfw else "",
                     # "LABEL:score" per detected class, highest first.
                     "nsfw_labels": ";".join(f"{k}:{v:.2f}" for k, v in r.nsfw.labels.items()) if r.nsfw else "",
+                    "guard_safe": "" if r.guard is None else str(r.guard.safe).lower(),
+                    "guard_rules": ";".join(r.guard.rules) if r.guard else "",
                     "width": r.width,
                     "height": r.height,
                     "abs_path": r.abs_path,

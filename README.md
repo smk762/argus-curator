@@ -390,6 +390,56 @@ and `nsfw-<class>` (e.g. `nsfw-belly-exposed`). Exporting with NSFW thresholds
 from a scan that did not run NudeNet is refused (400) rather than excluding
 everything. `GET /detectors` reports `nudenet` when a URL is configured.
 
+### Policy check (SingGuard)
+
+Where NudeNet scores nudity per body part, a [SingGuard](https://huggingface.co/inclusionAI/SingGuard-4b-GGUF)
+server judges each image against a whole moderation policy and answers with a
+**verdict and the rule that fired**. Its default rules:
+
+| Rule | Covers |
+| --- | --- |
+| A. Sexual Content Risk | sexual content |
+| B. Real-World Crimes & Public Safety | violent crime, weapons, public-safety threats |
+| C. Unethical Behavior | hate, harassment, self-harm, gore and shock content |
+| D. Cybersecurity | data leaks, hacking, surveillance abuse |
+| E. Agent Safety | attempts to expose model safeguards |
+| F. Politically Sensitive | political advocacy, unrest, attacks on political figures |
+| G. Animal Abuse | cruelty to animals |
+
+It gives **no scores**, so it complements NudeNet rather than replacing it. It
+runs a vision language model: about a second per image in `fast` mode, several
+in `fast-slow` (which also writes why a rule fired). Configure it like NudeNet:
+
+```bash
+ARGUS_CURATOR_SINGGUARD_URL=http://192.168.1.198:9150   # its origin; /api/guard/check is appended
+ARGUS_CURATOR_SINGGUARD_THINKING=fast                    # or fast-slow, for explanations
+ARGUS_CURATOR_SINGGUARD_POLICY_FILE=/etc/curator/policy.txt  # optional: replaces the default rules
+ARGUS_CURATOR_SINGGUARD_TIMEOUT=90                       # seconds per image (default 90)
+ARGUS_CURATOR_SINGGUARD_WORKERS=2                        # concurrent requests (default 2)
+```
+
+It is opt-out in the same way (`--no-guard`, `"guard": {"enabled": false}`;
+`--guard` makes it mandatory). The default rule A flags any sexual content,
+adult nudity included. For an adult dataset, write a policy file whose
+sexual-content rule covers only apparent minors and non-consent, and whose
+Safe rule names consensual adult nudity. Each image records `guard.safe`, the
+rules that fired, the explanation, the model and the policy (`default`, or
+`custom-<sha256 prefix>` of the file). The CSV report has `guard_safe` and
+`guard_rules`.
+
+```bash
+# Drop anything judged unsafe
+argus-curator scan /data/inbox --guard-unsafe --copy-to /data/clean
+
+# Drop only crime and unethical-behaviour verdicts, by letter or full name
+argus-curator scan /data/inbox --guard-rules B,C --copy-to /data/clean
+```
+
+Over HTTP these are `guard_unsafe` and `guard_rules`. As with NudeNet, an
+unchecked image is excluded whenever a SingGuard filter is set
+(`guard-unchecked`); other reasons are `guard-unsafe` and `guard-rule-<rule>`
+(e.g. `guard-rule-c`). `GET /detectors` reports `singguard`.
+
 ### HTTP server (:8101, peer to argus-lens)
 
 ```bash

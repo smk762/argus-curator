@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections import Counter
 from pathlib import Path
 
 try:
@@ -37,6 +38,12 @@ def _label_thresholds(value: str | None) -> dict[str, float] | None:
         except ValueError:
             raise ValueError(f"{pair!r}: {score!r} is not a number") from None
     return out
+
+
+def _rule_short(rule: str) -> str:
+    """A policy rule by its letter ("A" for "A. Sexual Content Risk"), else in full."""
+    head, sep, _ = rule.partition(".")
+    return head if sep and len(head) == 1 else rule
 
 
 @app.command()
@@ -157,6 +164,18 @@ def scan(
     nsfw_exposed_labels: str | None = Option(
         None, "--nsfw-exposed-labels", help="NudeNet classes --nsfw-threshold is taken over (default: the 5 exposed)"
     ),
+    guard: bool | None = Option(
+        None,
+        "--guard/--no-guard",
+        help="SingGuard policy check (default: on when a SingGuard URL is configured; --no-guard opts out)",
+    ),
+    singguard_url: str | None = Option(
+        None, "--singguard-url", help="SingGuard server origin, e.g. http://guard:9150 (ARGUS_CURATOR_SINGGUARD_URL)"
+    ),
+    guard_unsafe: bool = Option(False, "--guard-unsafe", help="Drop images SingGuard judged unsafe, under any rule"),
+    guard_rules: str | None = Option(
+        None, "--guard-rules", help="Drop images where one of these SingGuard rules fired, comma-separated (e.g. A,C)"
+    ),
     csv_out: Path | None = Option(None, "--csv", help="Write the per-image CSV report here"),
     json_out: Path | None = Option(None, "--json", help="Write the full ScanSummary JSON here"),
     verbose: bool = Option(False, "--verbose", "-v", help="Print per-image details"),
@@ -169,6 +188,7 @@ def scan(
         ExportRequest,
         FaceConfig,
         GarmentConfig,
+        GuardConfig,
         NsfwConfig,
         ScanConfig,
         SceneConfig,
@@ -184,6 +204,7 @@ def scan(
 
     from argus_curator import fairface as fairface_mod
     from argus_curator import garments as garments_mod
+    from argus_curator import guard as guard_mod
     from argus_curator import mivolo as mivolo_mod
     from argus_curator import nsfw as nsfw_mod
     from argus_curator import scenes as scenes_mod
@@ -194,6 +215,7 @@ def scan(
         (places365_model, scenes_mod.MODEL_ENV),
         (garments_model, garments_mod.MODEL_ENV),
         (nudenet_url, nsfw_mod.URL_ENV),
+        (singguard_url, guard_mod.URL_ENV),
     ):
         if model_file is not None:
             os.environ[env] = str(model_file)
@@ -266,6 +288,8 @@ def scan(
             diversify_outfits=diversify_outfits,
             nsfw_threshold=nsfw_threshold,
             nsfw_label_thresholds=label_thresholds,
+            guard_unsafe=guard_unsafe,
+            guard_rules=_csv_list(guard_rules),
             **({"nsfw_exposed_labels": _csv_list(nsfw_exposed_labels)} if nsfw_exposed_labels else {}),
             write_manifest=dest is not None,
         )
@@ -304,8 +328,34 @@ def scan(
         typer.echo(f"Error: NSFW thresholds need the NudeNet check, but {why}", err=True)
         raise typer.Exit(1)
 
+    guard_cfg = GuardConfig(enabled=guard)
+    if guard_mod.resolve_enabled(guard_cfg):
+        try:
+            guard_mod.endpoint()
+            guard_mod.thinking()
+            guard_mod.policy()
+        except Exception as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        if not guard_mod.configured():
+            typer.echo(f"Error: --guard needs a SingGuard server (--singguard-url or {guard_mod.URL_ENV})", err=True)
+            raise typer.Exit(1)
+    elif export_req.guard_unsafe or export_req.guard_rules:
+        why = "--no-guard was given" if guard is False else f"no SingGuard server is configured ({guard_mod.URL_ENV})"
+        typer.echo(f"Error: SingGuard filters need the SingGuard check, but {why}", err=True)
+        raise typer.Exit(1)
+
     typer.echo(f"Scanning {source} (recursive) ...")
-    summary = _scan(source, profile, cfg, faces_cfg, scene_cfg=scene_cfg, garment_cfg=garment_cfg, nsfw_cfg=nsfw_cfg)
+    summary = _scan(
+        source,
+        profile,
+        cfg,
+        faces_cfg,
+        scene_cfg=scene_cfg,
+        garment_cfg=garment_cfg,
+        nsfw_cfg=nsfw_cfg,
+        guard_cfg=guard_cfg,
+    )
 
     typer.echo("=" * 56)
     typer.echo(f"  Scanned:               {summary.total}")
@@ -354,6 +404,14 @@ def scan(
         unchecked = summary.total - len(checked)
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
         typer.echo(f"  NudeNet:               {len(checked)} checked, {exposed} with exposed score >= 0.5{tail}")
+    if summary.guard_config.enabled:
+        judged = [r.guard for r in summary.results if r.guard is not None]
+        by_rule = Counter(_rule_short(rule) for g in judged for rule in g.rules)
+        rules = f" ({', '.join(f'{k}={n}' for k, n in sorted(by_rule.items()))})" if by_rule else ""
+        unchecked = summary.total - len(judged)
+        tail = f"  ({unchecked} could not be checked)" if unchecked else ""
+        unsafe = sum(1 for g in judged if not g.safe)
+        typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{tail}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
@@ -381,6 +439,8 @@ def scan(
                 scene += f" {{{', '.join(worn)}}}"
             if r.nsfw is not None and r.nsfw.exposed_score > 0:
                 scene += f" nsfw={r.nsfw.exposed_score:.2f}"
+            if r.guard is not None and not r.guard.safe:
+                scene += f" guard=unsafe[{','.join(_rule_short(rule) for rule in r.guard.rules)}]"
             typer.echo(f"  {r.score:.3f} {tag:>5}  {r.rel_path}{face}{scene}")
 
     # Persist so the result is reusable by the server / export-by-id.

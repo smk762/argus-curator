@@ -73,6 +73,29 @@ def test_opting_out_while_filtering_on_nsfw_is_an_error(dataset: Path) -> None:
     assert "--no-nsfw" in result.output
 
 
+@pytest.mark.parametrize("flags", [["--guard-unsafe"], ["--guard-rules", "A,C"]])
+def test_guard_filters_without_singguard_fail_before_scanning(dataset: Path, flags: list[str]) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), *flags])
+    assert result.exit_code == 1, result.output
+    assert "SingGuard" in result.output and "Scanning" not in result.output
+
+
+def test_guard_required_without_url_fails_before_scanning(dataset: Path) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), "--guard"])
+    assert result.exit_code == 1, result.output
+    assert "--singguard-url" in result.output and "Scanning" not in result.output
+
+
+def test_bad_singguard_thinking_mode_fails_before_scanning(dataset: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["scan", str(dataset), "--singguard-url", "http://g:1"],
+        env={"ARGUS_CURATOR_SINGGUARD_THINKING": "slow"},
+    )
+    assert result.exit_code == 1, result.output
+    assert "fast-slow" in result.output and "Scanning" not in result.output
+
+
 @pytest.mark.parametrize(
     "value", ["FEMALE_BREAST_EXPOSED", "FEMALE_BREAST_EXPOSED=lots", "=0.5", "NOT_A_CLASS=0.5", "BELLY_EXPOSED=0.1"]
 )

@@ -5,10 +5,9 @@ Curator never imports NudeNet: it posts each image to a NudeNet server
 detections. Running that server is the deployer's choice; curator itself
 stays MIT and gains no dependency.
 
-The server is configured by environment only (``ARGUS_CURATOR_NUDENET_URL``),
-never by a request: a request-supplied URL would let any API caller make this
-server send images wherever they liked. When the URL is set, every scan checks
-its images unless the scan opts out (``NsfwConfig.enabled = False``).
+The server is configured by environment only (``ARGUS_CURATOR_NUDENET_URL``;
+see :mod:`argus_curator.remote`). When the URL is set, every scan checks its
+images unless the scan opts out (``NsfwConfig.enabled = False``).
 
 API (NudeNet's README): ``POST /infer`` with the image as multipart field
 ``f1``, answered by ``{"prediction": [[{"class", "score", "box"}, ...]],
@@ -19,17 +18,12 @@ server drops detections scoring under 0.2.
 from __future__ import annotations
 
 import json
-import os
 import re
 import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import PurePosixPath
-from urllib.parse import urlsplit
-
-import structlog
 
 from argus_curator.models import (
     DEFAULT_EXPOSED_LABELS,
@@ -39,9 +33,8 @@ from argus_curator.models import (
     NsfwDetection,
     NsfwResult,
 )
+from argus_curator.remote import CheckFailed, check_all, env_set, float_env, service_url
 from argus_curator.runtime import ModelUnavailable
-
-logger = structlog.get_logger()
 
 URL_ENV = "ARGUS_CURATOR_NUDENET_URL"
 TIMEOUT_ENV = "ARGUS_CURATOR_NUDENET_TIMEOUT"
@@ -50,8 +43,8 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_WORKERS = 4
 
 
-class NsfwCheckFailed(RuntimeError):
-    """One image could not be checked (network error, bad response)."""
+class NsfwCheckFailed(CheckFailed):
+    """One image could not be checked by NudeNet."""
 
 
 def endpoint() -> str | None:
@@ -60,32 +53,18 @@ def endpoint() -> str | None:
     The variable holds the server's origin (``http://nudenet:8080``); a value
     already ending in ``/infer`` is used as is.
     """
-    base = os.environ.get(URL_ENV, "").strip().rstrip("/")
-    if not base:
-        return None
-    parts = urlsplit(base)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
-        raise ModelUnavailable(f"{URL_ENV} must be an http(s) URL, got {base!r}")
-    return base if base.endswith("/infer") else f"{base}/infer"
+    return service_url(URL_ENV, "/infer")
 
 
 def configured() -> bool:
     """A NudeNet URL is set. A malformed one still counts, so that it fails the
     scan loudly instead of silently switching the check off."""
-    return bool(os.environ.get(URL_ENV, "").strip())
+    return env_set(URL_ENV)
 
 
 def resolve_enabled(cfg: NsfwConfig) -> bool:
     """Whether a scan with *cfg* checks images: explicit choice, else configured."""
     return cfg.enabled if cfg.enabled is not None else configured()
-
-
-def _float_env(name: str, default: float) -> float:
-    try:
-        value = float(os.environ.get(name, ""))
-    except ValueError:
-        return default
-    return value if value > 0 else default
 
 
 def _multipart(data: bytes, filename: str) -> tuple[bytes, str]:
@@ -152,40 +131,20 @@ def check_images(
     cfg: NsfwConfig,
     progress: Callable[[int, int], None] | None = None,
 ) -> bool:
-    """Set ``nsfw`` on every image; return whether the check ran at all.
-
-    Every image is checked, including ones that failed the quality filters: a
-    blurry explicit image is still explicit, and ``include_rejected`` exports
-    them. An image whose check fails keeps ``nsfw = None``, which NSFW filters
-    treat as a reason to exclude it.
-    """
+    """Set ``nsfw`` on every image (see :func:`remote.check_all`); return whether
+    the check ran at all."""
     if not resolve_enabled(cfg):
         return False
     url = endpoint()
     if url is None:
         raise ModelUnavailable(f"NudeNet check requested but {URL_ENV} is not set")
-    timeout = _float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT)
-    workers = int(_float_env(WORKERS_ENV, DEFAULT_WORKERS))
-    data_by_rel = {rel: data for rel, _abs, data in items}
-    pending = [r for r in results if data_by_rel.get(r.rel_path) is not None]
-    total, done, failed = len(pending), 0, 0
-    if progress is not None:
-        progress(0, total)
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = {
-            pool.submit(check, data_by_rel[r.rel_path], PurePosixPath(r.rel_path).name, url, timeout): r
-            for r in pending
-        }
-        for fut in as_completed(futures):
-            r = futures[fut]
-            try:
-                r.nsfw = fut.result()
-            except NsfwCheckFailed as exc:
-                failed += 1
-                logger.warning("nsfw_check_failed", rel_path=r.rel_path, error=str(exc))
-            done += 1
-            if progress is not None and (done == total or done % 5 == 0):
-                progress(done, total)
-    if failed:
-        logger.warning("nsfw_checks_failed", failed=failed, total=total)
+    timeout = float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT)
+    check_all(
+        results,
+        items,
+        lambda data, rel: check(data, PurePosixPath(rel).name, url, timeout),
+        "nsfw",
+        int(float_env(WORKERS_ENV, DEFAULT_WORKERS)),
+        progress,
+    )
     return True
