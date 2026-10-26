@@ -8,7 +8,11 @@ a scan says otherwise.
 
 from __future__ import annotations
 
+import http.client
+import json
 import os
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
@@ -53,6 +57,26 @@ def float_env(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def post_json(
+    url: str, body: bytes, content_type: str, timeout: float, service: str, failed: type[CheckFailed]
+) -> object:
+    """POST *body* to *url* and return the decoded JSON answer.
+
+    Every transport or decoding problem is raised as *failed*, so that
+    :func:`check_all` records it against the one image instead of aborting the scan.
+    """
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": content_type}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - operator-configured URL
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise failed(f"{service} returned HTTP {exc.code}") from exc
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
+        raise failed(f"{service} request failed: {exc}") from exc
+    except ValueError as exc:
+        raise failed(f"{service} returned a body that is not JSON") from exc
 
 
 def check_all(

@@ -40,12 +40,6 @@ def _label_thresholds(value: str | None) -> dict[str, float] | None:
     return out
 
 
-def _rule_short(rule: str) -> str:
-    """A policy rule by its letter ("A" for "A. Sexual Content Risk"), else in full."""
-    head, sep, _ = rule.partition(".")
-    return head if sep and len(head) == 1 else rule
-
-
 @app.command()
 def scan(
     source: Path = Argument(..., help="Root folder to scan (recurses into sub-folders)"),
@@ -406,7 +400,7 @@ def scan(
         typer.echo(f"  NudeNet:               {len(checked)} checked, {exposed} with exposed score >= 0.5{tail}")
     if summary.guard_config.enabled:
         judged = [r.guard for r in summary.results if r.guard is not None]
-        by_rule = Counter(_rule_short(rule) for g in judged for rule in g.rules)
+        by_rule = Counter(guard_mod.rule_letter(rule) for g in judged for rule in g.rules)
         rules = f" ({', '.join(f'{k}={n}' for k, n in sorted(by_rule.items()))})" if by_rule else ""
         unchecked = summary.total - len(judged)
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
@@ -440,7 +434,7 @@ def scan(
             if r.nsfw is not None and r.nsfw.exposed_score > 0:
                 scene += f" nsfw={r.nsfw.exposed_score:.2f}"
             if r.guard is not None and not r.guard.safe:
-                scene += f" guard=unsafe[{','.join(_rule_short(rule) for rule in r.guard.rules)}]"
+                scene += f" guard=unsafe[{','.join(guard_mod.rule_letter(rule) for rule in r.guard.rules)}]"
             typer.echo(f"  {r.score:.3f} {tag:>5}  {r.rel_path}{face}{scene}")
 
     # Persist so the result is reusable by the server / export-by-id.

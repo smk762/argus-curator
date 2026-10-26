@@ -33,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SingGuard export filters: `guard_unsafe` drops every unsafe verdict and
   `guard_rules` only the named rules, by letter or full name (CLI
   `--guard-unsafe`, `--guard-rules`). Unchecked images are excluded
-  (`guard-unchecked`).
+  (`guard-unchecked`), as are unsafe verdicts naming no rule
+  (`guard-rule-unknown`).
 
 ### Changed
 

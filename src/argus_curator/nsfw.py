@@ -17,10 +17,7 @@ server drops detections scoring under 0.2.
 
 from __future__ import annotations
 
-import json
 import re
-import urllib.error
-import urllib.request
 import uuid
 from collections.abc import Callable
 from pathlib import PurePosixPath
@@ -33,7 +30,7 @@ from argus_curator.models import (
     NsfwDetection,
     NsfwResult,
 )
-from argus_curator.remote import CheckFailed, check_all, env_set, float_env, service_url
+from argus_curator.remote import CheckFailed, check_all, env_set, float_env, post_json, service_url
 from argus_curator.runtime import ModelUnavailable
 
 URL_ENV = "ARGUS_CURATOR_NUDENET_URL"
@@ -107,16 +104,7 @@ def exposed_score(labels: dict[str, float], exposed: tuple[str, ...] | list[str]
 def check(data: bytes, filename: str, url: str, timeout: float) -> NsfwResult:
     """Post one image to the NudeNet server and parse its answer."""
     body, content_type = _multipart(data, filename)
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": content_type}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - operator-configured URL
-            payload = json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        raise NsfwCheckFailed(f"NudeNet returned HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise NsfwCheckFailed(f"NudeNet request failed: {exc}") from exc
-    except ValueError as exc:
-        raise NsfwCheckFailed("NudeNet returned a body that is not JSON") from exc
+    payload = post_json(url, body, content_type, timeout, "NudeNet", NsfwCheckFailed)
     prediction = payload.get("prediction") if isinstance(payload, dict) else None
     if not (isinstance(payload, dict) and payload.get("success") is True and isinstance(prediction, list)):
         raise NsfwCheckFailed("NudeNet did not report success")

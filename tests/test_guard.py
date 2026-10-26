@@ -155,7 +155,7 @@ def test_policy_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("fired", "wanted", "expected"),
     [(_CRIME, "B", True), (_CRIME, "b", True), (_CRIME, _CRIME.lower(), True), (_CRIME, "B. Real", False),
-     (_CRIME, "C", False), ("Minors", "minors", True)],
+     (_CRIME, "C", False), ("Minors", "minors", True), (_CRIME, "B.", True)],
 )  # fmt: skip
 def test_rule_matches(fired: str, wanted: str, expected: bool) -> None:
     assert guard.rule_matches(fired, wanted) is expected
@@ -275,6 +275,35 @@ def test_guard_rules_drop_only_the_listed_rules() -> None:
     assert why["gore.jpg"] == "guard-rule-c" and why["unchecked.jpg"] == "guard-unchecked"
     _, why = decide_selection(_RESULTS, ExportRequest(dest="/o", min_score=0.0, guard_rules=[_CRIME]), 0.0)
     assert why["knife.jpg"] == "guard-rule-b-real-world-crimes-public-safety"
+
+
+def test_guard_rules_drop_an_unsafe_verdict_naming_no_rule() -> None:
+    nameless = ImageResult(
+        rel_path="x.jpg", abs_path="/d/x.jpg", score=0.9, passed=True, guard=GuardResult(safe=False, rules=[])
+    )
+    selected, why = decide_selection([nameless], ExportRequest(dest="/o", min_score=0.0, guard_rules=["C"]), 0.0)
+    assert selected == [] and why["x.jpg"] == "guard-rule-unknown"  # fails closed
+
+
+def test_malformed_categories_are_ignored_not_fatal() -> None:
+    result = guard.to_result({"safe": False, "rule": _GORE, "categories": 5}, "default")
+    assert result.rules == [_GORE]
+
+
+def test_rule_letter() -> None:
+    assert guard.rule_letter(_CRIME) == "B" and guard.rule_letter("Minors") == "Minors"
+
+
+def test_downscale_keeps_alpha_and_orientation() -> None:
+    buf = io.BytesIO()
+    Image.new("RGBA", (4000, 10), (0, 0, 0, 0)).save(buf, "PNG")
+    out = Image.open(io.BytesIO(guard._prepare(buf.getvalue())))
+    assert out.format == "PNG" and out.mode == "RGBA"
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90 degrees to view
+    buf = io.BytesIO()
+    Image.new("RGB", (4000, 3000)).save(buf, "JPEG", exif=exif)
+    assert Image.open(io.BytesIO(guard._prepare(buf.getvalue()))).size == (1152, 1536)
 
 
 def test_no_guard_filter_keeps_unchecked_images() -> None:

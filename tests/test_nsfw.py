@@ -20,7 +20,7 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 
-from argus_curator import nsfw
+from argus_curator import nsfw, remote
 from argus_curator.export import write_report
 from argus_curator.models import (
     ExportRequest,
@@ -205,7 +205,7 @@ def test_bad_responses_are_failures(monkeypatch: pytest.MonkeyPatch, payload) ->
         def __exit__(self, *exc) -> None:
             self.close()
 
-    monkeypatch.setattr(nsfw.urllib.request, "urlopen", lambda req, timeout: _Resp(json.dumps(payload).encode()))
+    monkeypatch.setattr(remote.urllib.request, "urlopen", lambda req, timeout: _Resp(json.dumps(payload).encode()))
     with pytest.raises(nsfw.NsfwCheckFailed):
         nsfw.check(_png(10), "a.png", "http://n/infer", 5.0)
 

@@ -441,7 +441,8 @@ argus-curator scan /data/inbox --guard-rules B,C --copy-to /data/clean
 Over HTTP these are `guard_unsafe` and `guard_rules`. As with NudeNet, an
 unchecked image is excluded whenever a SingGuard filter is set
 (`guard-unchecked`); other reasons are `guard-unsafe` and `guard-rule-<rule>`
-(e.g. `guard-rule-c`). `GET /detectors` reports `singguard`.
+(e.g. `guard-rule-c`), or `guard-rule-unknown` for an unsafe verdict that names
+no rule. `GET /detectors` reports `singguard`.
 
 ### HTTP server (:8101, peer to argus-lens)
 

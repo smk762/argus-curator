@@ -27,15 +27,13 @@ import hashlib
 import io
 import json
 import os
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from argus_curator.models import GuardConfig, GuardResult, ImageResult
-from argus_curator.remote import CheckFailed, check_all, env_set, float_env, service_url
+from argus_curator.remote import CheckFailed, check_all, env_set, float_env, post_json, service_url
 from argus_curator.runtime import ModelUnavailable
 
 URL_ENV = "ARGUS_CURATOR_SINGGUARD_URL"
@@ -96,14 +94,21 @@ def policy() -> tuple[str, str | None]:
 
 
 def _prepare(data: bytes) -> bytes:
-    """*data* as is when small enough, else downscaled to a JPEG."""
+    """*data* as is when small enough, else downscaled to a JPEG (a PNG when it has alpha)."""
     try:
         with Image.open(io.BytesIO(data)) as im:
             if max(im.size) <= MAX_EDGE and len(data) <= MAX_BYTES:
                 return data
-            im.thumbnail((MAX_EDGE, MAX_EDGE))
+            # Upright, as a viewer would see it: re-encoding drops the EXIF tag.
+            out = ImageOps.exif_transpose(im)
+            out.thumbnail((MAX_EDGE, MAX_EDGE))
             buf = io.BytesIO()
-            im.convert("RGB").save(buf, "JPEG", quality=90)
+            if out.mode in ("RGBA", "LA", "PA") or (out.mode == "P" and "transparency" in out.info):
+                # Flattening onto black would hide dark content drawn on a
+                # transparent background; keep the alpha, as a small PNG goes.
+                out.save(buf, "PNG", optimize=True)
+            else:
+                out.convert("RGB").save(buf, "JPEG", quality=90)
     except (OSError, ValueError, Image.DecompressionBombError) as exc:
         raise GuardCheckFailed(f"image could not be prepared for SingGuard: {exc}") from exc
     return buf.getvalue()
@@ -122,7 +127,8 @@ def to_result(payload: object, policy_name: str) -> GuardResult:
     safe = payload["safe"]
     rules: list[str] = []
     if not safe:
-        for cat in payload.get("categories") or []:
+        categories = payload.get("categories")
+        for cat in categories if isinstance(categories, list) else []:
             code = _clip(cat.get("code"), _FIELD_MAX) if isinstance(cat, dict) else None
             if code and code not in rules:
                 rules.append(code)
@@ -138,10 +144,16 @@ def to_result(payload: object, policy_name: str) -> GuardResult:
     )
 
 
+def rule_letter(rule: str) -> str:
+    """*rule* by its letter (``"A"`` for ``"A. Sexual Content Risk"``), else in full."""
+    head, sep, _ = rule.strip().partition(".")
+    return head if sep and len(head) == 1 else rule
+
+
 def rule_matches(fired: str, wanted: str) -> bool:
-    """*wanted* names *fired*: in full, or by its letter (``"A"`` for ``"A. Sexual Content Risk"``)."""
+    """*wanted* names *fired*: in full, or by its letter (``"A"`` or ``"A."`` for ``"A. Sexual Content Risk"``)."""
     fired, wanted = fired.strip().casefold(), wanted.strip().casefold()
-    return fired == wanted or fired.startswith(f"{wanted}.")
+    return fired == wanted or fired.startswith(f"{wanted.removesuffix('.')}.")
 
 
 def check(data: bytes, url: str, timeout: float, mode: str, policy_name: str, policy_text: str | None) -> GuardResult:
@@ -153,18 +165,7 @@ def check(data: bytes, url: str, timeout: float, mode: str, policy_name: str, po
     }
     if policy_text is not None:
         body["policy"] = policy_text
-    req = urllib.request.Request(
-        url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}, method="POST"
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - operator-configured URL
-            payload = json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        raise GuardCheckFailed(f"SingGuard returned HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise GuardCheckFailed(f"SingGuard request failed: {exc}") from exc
-    except ValueError as exc:
-        raise GuardCheckFailed("SingGuard returned a body that is not JSON") from exc
+    payload = post_json(url, json.dumps(body).encode(), "application/json", timeout, "SingGuard", GuardCheckFailed)
     return to_result(payload, policy_name)
 
 

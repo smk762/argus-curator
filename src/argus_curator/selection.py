@@ -209,7 +209,8 @@ def _guard_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
     """Keep-reason when *r* fails the SingGuard filters, else ``None``.
 
     Unchecked images are excluded, as with NudeNet. With only ``guard_rules``,
-    an unsafe image whose rules are all unlisted is kept.
+    an unsafe image whose rules are all unlisted is kept; one that names no
+    rule at all is excluded, since it cannot be shown to be unlisted.
     """
     if not req.guard_unsafe and not req.guard_rules:
         return None
@@ -219,6 +220,8 @@ def _guard_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
         return None
     if req.guard_unsafe:
         return "guard-unsafe"
+    if not r.guard.rules:
+        return "guard-rule-unknown"
     for wanted in req.guard_rules or []:
         if any(rule_matches(fired, wanted) for fired in r.guard.rules):
             return f"guard-rule-{re.sub(r'[^a-z0-9]+', '-', wanted.casefold()).strip('-')}"
