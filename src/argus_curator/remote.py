@@ -1,5 +1,9 @@
 """Shared plumbing for the checks curator runs on a remote server (NudeNet, SingGuard).
 
+The HTTP clients themselves are argus-cortex's (:mod:`argus_cortex.moderation`);
+this module holds what is curator's: configuration from the environment, and
+checking a whole scan's images in parallel.
+
 Each server is configured by environment only, never by a request: a
 request-supplied URL would let any API caller make this server send images
 wherever they liked. Each check is opt-out: on whenever its URL is set, unless
@@ -8,20 +12,14 @@ a scan says otherwise.
 
 from __future__ import annotations
 
-import http.client
-import json
 import os
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from typing import Any
-from urllib.parse import urlsplit
 
 import structlog
 
 from argus_curator.models import ImageResult
-from argus_curator.runtime import ModelUnavailable
 
 logger = structlog.get_logger()
 
@@ -30,28 +28,10 @@ logger = structlog.get_logger()
 # out its timeout.
 MAX_FAILURES_WITHOUT_SUCCESS = 8
 
-# Ignore HTTP(S)_PROXY: images go straight to the operator-configured server,
-# never through whatever proxy happens to be in the environment.
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-
-class CheckFailed(RuntimeError):
-    """One image could not be checked (network error, bad response)."""
-
-
-def service_url(env: str, path: str) -> str | None:
-    """The URL in *env* with *path* appended, or ``None`` when *env* is unset.
-
-    The variable holds the server's origin; a value already ending in *path*
-    is used as is.
-    """
-    base = os.environ.get(env, "").strip().rstrip("/")
-    if not base:
-        return None
-    parts = urlsplit(base)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
-        raise ModelUnavailable(f"{env} must be an http(s) URL, got {base!r}")
-    return base if base.endswith(path) else f"{base}{path}"
+def env_value(env: str) -> str | None:
+    """*env*'s value, stripped, or ``None`` when it is unset or blank."""
+    return os.environ.get(env, "").strip() or None
 
 
 def env_set(env: str) -> bool:
@@ -66,26 +46,6 @@ def float_env(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value > 0 else default
-
-
-def post_json(
-    url: str, body: bytes, content_type: str, timeout: float, service: str, failed: type[CheckFailed]
-) -> object:
-    """POST *body* to *url* and return the decoded JSON answer.
-
-    Every transport or decoding problem is raised as *failed*, so that
-    :func:`check_all` records it against the one image instead of aborting the scan.
-    """
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": content_type}, method="POST")
-    try:
-        with _OPENER.open(req, timeout=timeout) as resp:  # noqa: S310 - operator-configured URL
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        raise failed(f"{service} returned HTTP {exc.code}") from exc
-    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
-        raise failed(f"{service} request failed: {exc}") from exc
-    except ValueError as exc:
-        raise failed(f"{service} returned a body that is not JSON") from exc
 
 
 def check_all(

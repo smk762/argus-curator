@@ -38,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The NudeNet and SingGuard HTTP clients, NudeNet's classes, the
+  exposed-nudity set and the `NsfwResult` / `GuardResult` types now come from
+  `argus_cortex.moderation`, shared across the suite. Behaviour and the wire
+  schema are unchanged.
+- `argus-cortex>=0.4,<0.5` is now a base dependency (pydantic-only); the
+  `[server]` extra moves to `argus-cortex[server]>=0.4,<0.5`.
+
 - The NudeNet check is opt-out: whenever `ARGUS_CURATOR_NUDENET_URL` is set,
   scans run it unless they pass `--no-nsfw` / `"nsfw": {"enabled": false}`.
   Deployments that do not set the URL are unaffected; the bundled
