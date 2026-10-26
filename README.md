@@ -47,6 +47,7 @@ audit trail: you can show which images were removed and on what grounds.
 | Demographics | FairFace race and gender with confidences, pooled per identity | `--race`, `--gender`, `--min-attr-conf` |
 | Setting | Places365 scene top-k, indoor/outdoor | `--scene`, `--environment` |
 | Clothing | Fashionpedia garments: type, colour, cut off at the frame edge | `--garment`, `--exclude-garment`, `--uncropped` |
+| Nudity | NudeNet detections per body-part class, exposed score (needs a [NudeNet server](#nudity-detection-nudenet)) | `--nsfw-threshold`, `--nsfw-label` |
 
 A typical moderation pass is scan, review, act:
 
@@ -75,9 +76,10 @@ filters are available over HTTP (`POST /scan/folder`, `GET /scan/{scan_id}`,
 
 **Limits — read before relying on it for moderation:**
 
-- **There is no NSFW, nudity, violence or text-in-image detection.** Curator
-  tags quality, people, setting and clothing; it does not judge whether
-  content is explicit or harmful.
+- **Nudity is the only content check, and only with a NudeNet server.**
+  NudeNet detects exposed body parts; it does not judge violence, gore, hate
+  or text in the image, and it misses things (stylised, partial or unusual
+  poses). Set NSFW thresholds conservatively and review what is near them.
 - **Age and demographics are model estimates from appearance**, not facts
   about anyone. Age estimates are typically off by a few years, more so from
   the face alone (MiVOLO runs face-only here), so filter with a margin above

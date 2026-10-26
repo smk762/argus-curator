@@ -46,4 +46,9 @@ services:
   # Reachable from curator as http://nudenet:8080; no port is published.
   nudenet:
     image: ghcr.io/notai-tech/nudenet@sha256:5d8fb3a20980680b73b7776745ee5b1983851c201a706cbdf3dd827c143783e9
+    # The image's start command runs `ulimit -n 1000000 && <worker> & <api>`.
+    # Where Docker's default limit is lower that ulimit fails, the inference
+    # worker never starts and the API waits for warmup forever.
+    ulimits:
+      nofile: 1000000
     restart: unless-stopped
