@@ -189,28 +189,6 @@ def test_required_check_without_url_fails() -> None:
         nsfw.check_images(results, [("a.png", "/d/a", _png(30))], NsfwConfig(enabled=True))
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"prediction": [[]], "success": False},
-        {"prediction": [[], []], "success": True},
-        {"success": True},
-        ["not", "an", "object"],
-    ],
-)
-def test_bad_responses_are_failures(monkeypatch: pytest.MonkeyPatch, payload) -> None:
-    class _Resp(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc) -> None:
-            self.close()
-
-    monkeypatch.setattr(remote._OPENER, "open", lambda req, timeout: _Resp(json.dumps(payload).encode()))
-    with pytest.raises(nsfw.NsfwCheckFailed):
-        nsfw.check(_png(10), "a.png", "http://n/infer", 5.0)
-
-
 def test_malformed_detections_are_skipped() -> None:
     result = nsfw.to_result(
         [
@@ -229,7 +207,7 @@ def test_unexpected_errors_leave_the_image_unchecked(monkeypatch: pytest.MonkeyP
     def boom(*_args):
         raise ValueError("unexpected")
 
-    monkeypatch.setattr(nsfw, "check", boom)
+    monkeypatch.setattr(nsfw.NudeNetClient, "check", boom)
     results = [ImageResult(rel_path="a.png", abs_path="/d/a", passed=True)]
     assert nsfw.check_images(results, [("a.png", "/d/a", _png(30))], NsfwConfig()) is True
     assert results[0].nsfw is None
@@ -245,7 +223,7 @@ def test_unreachable_server_is_given_up_on(monkeypatch: pytest.MonkeyPatch) -> N
         time.sleep(0.02)  # a real outage waits out a timeout; give the loop time to react
         raise nsfw.NsfwCheckFailed("NudeNet request failed: timed out")
 
-    monkeypatch.setattr(nsfw, "check", down)
+    monkeypatch.setattr(nsfw.NudeNetClient, "check", down)
     results = [ImageResult(rel_path=f"{i}.png", abs_path=f"/d/{i}", passed=True) for i in range(50)]
     items = [(r.rel_path, r.abs_path, b"x") for r in results]
     assert nsfw.check_images(results, items, NsfwConfig()) is True

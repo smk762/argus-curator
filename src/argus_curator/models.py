@@ -11,6 +11,12 @@ from __future__ import annotations
 
 from typing import Literal
 
+from argus_cortex.moderation import (  # re-exported: part of curator's wire contract
+    DEFAULT_EXPOSED_LABELS,
+    GuardResult,
+    NsfwResult,
+    NudeNetLabel,
+)
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 TargetStyle = Literal["photo", "anime"]
@@ -66,39 +72,6 @@ GarmentLabel = Literal[
     "umbrella",
 ]
 GARMENT_LABELS: tuple[GarmentLabel, ...] = GarmentLabel.__args__
-
-# NudeNet's 18 detector classes, verbatim (they are its API vocabulary). Only
-# the *_EXPOSED nudity classes measure nudity; faces and covered body parts
-# are detected too and must not count towards an NSFW score.
-NudeNetLabel = Literal[
-    "FEMALE_GENITALIA_COVERED",
-    "FACE_FEMALE",
-    "BUTTOCKS_EXPOSED",
-    "FEMALE_BREAST_EXPOSED",
-    "FEMALE_GENITALIA_EXPOSED",
-    "MALE_BREAST_EXPOSED",
-    "ANUS_EXPOSED",
-    "FEET_EXPOSED",
-    "BELLY_COVERED",
-    "FEET_COVERED",
-    "ARMPITS_COVERED",
-    "ARMPITS_EXPOSED",
-    "FACE_MALE",
-    "BELLY_EXPOSED",
-    "MALE_GENITALIA_EXPOSED",
-    "ANUS_COVERED",
-    "FEMALE_BREAST_COVERED",
-    "BUTTOCKS_COVERED",
-]
-NUDENET_LABELS: tuple[NudeNetLabel, ...] = NudeNetLabel.__args__
-# The classes an image's exposed score (the "total" NSFW score) is taken over.
-DEFAULT_EXPOSED_LABELS: tuple[NudeNetLabel, ...] = (
-    "BUTTOCKS_EXPOSED",
-    "FEMALE_BREAST_EXPOSED",
-    "FEMALE_GENITALIA_EXPOSED",
-    "MALE_GENITALIA_EXPOSED",
-    "ANUS_EXPOSED",
-)
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -325,43 +298,6 @@ class GarmentDetection(BaseModel):
     touches_edge: bool = False
     # Mean colour of the box's central half, "#rrggbb".
     color: str
-
-
-class NsfwDetection(BaseModel):
-    """One NudeNet detection."""
-
-    label: NudeNetLabel
-    score: float
-    bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
-
-
-class NsfwResult(BaseModel):
-    """NudeNet's view of one image.
-
-    The server reports only detections scoring >= 0.2, so a class missing from
-    ``labels`` scored below that. ``exposed_score`` is the highest score among
-    :data:`DEFAULT_EXPOSED_LABELS`; filters can recompute it over another set.
-    """
-
-    detections: list[NsfwDetection] = Field(default_factory=list)
-    # Highest score per class, highest first.
-    labels: dict[NudeNetLabel, float] = Field(default_factory=dict)
-    exposed_score: float = 0.0
-
-
-class GuardResult(BaseModel):
-    """SingGuard's verdict on one image. A verdict, not a score: SingGuard
-    reports which policy rules fired, not how confident it is."""
-
-    safe: bool
-    # The rules that made the image unsafe, as the policy names them
-    # (e.g. "A. Sexual Content Risk"); empty when safe.
-    rules: list[str] = Field(default_factory=list)
-    explanation: str | None = None
-    # The guard model, and the policy judged against: "default" (SingGuard's
-    # own rules) or "custom-<sha256 prefix>" of the policy file.
-    model: str | None = None
-    policy: str = "default"
 
 
 class ImageResult(BaseModel):
