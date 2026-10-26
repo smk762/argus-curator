@@ -245,6 +245,17 @@ class NsfwConfig(BaseModel):
     enabled: bool | None = None
 
 
+class GuardConfig(BaseModel):
+    """SingGuard policy check via a remote SingGuard server (see guard.py).
+
+    Like NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) and the policy
+    (ARGUS_CURATOR_SINGGUARD_POLICY_FILE) are process configuration.
+    """
+
+    # Same opt-out semantics as NsfwConfig.enabled.
+    enabled: bool | None = None
+
+
 # ---------------------------------------------------------------------------
 # Per-image result
 # ---------------------------------------------------------------------------
@@ -338,6 +349,21 @@ class NsfwResult(BaseModel):
     exposed_score: float = 0.0
 
 
+class GuardResult(BaseModel):
+    """SingGuard's verdict on one image. A verdict, not a score: SingGuard
+    reports which policy rules fired, not how confident it is."""
+
+    safe: bool
+    # The rules that made the image unsafe, as the policy names them
+    # (e.g. "A. Sexual Content Risk"); empty when safe.
+    rules: list[str] = Field(default_factory=list)
+    explanation: str | None = None
+    # The guard model, and the policy judged against: "default" (SingGuard's
+    # own rules) or "custom-<sha256 prefix>" of the policy file.
+    model: str | None = None
+    policy: str = "default"
+
+
 class ImageResult(BaseModel):
     """Per-image curation record — superset of imogen's scanner output.
 
@@ -383,6 +409,8 @@ class ImageResult(BaseModel):
     garments: list[GarmentDetection] | None = None
     # NudeNet nudity detection (None = not checked, or the check failed).
     nsfw: NsfwResult | None = None
+    # SingGuard policy verdict (None = not checked, or the check failed).
+    guard: GuardResult | None = None
 
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
@@ -413,6 +441,7 @@ class ScanSummary(BaseModel):
     scenes_config: SceneConfig = Field(default_factory=SceneConfig)
     garments_config: GarmentConfig = Field(default_factory=GarmentConfig)
     nsfw_config: NsfwConfig = Field(default_factory=NsfwConfig)
+    guard_config: GuardConfig = Field(default_factory=GuardConfig)
 
     total: int
     passed: int
@@ -445,6 +474,7 @@ class ScanRequest(BaseModel):
     scenes: SceneConfig = Field(default_factory=SceneConfig)
     garments: GarmentConfig = Field(default_factory=GarmentConfig)
     nsfw: NsfwConfig = Field(default_factory=NsfwConfig)
+    guard: GuardConfig = Field(default_factory=GuardConfig)
 
 
 class ExportRequest(BaseModel):
@@ -515,6 +545,12 @@ class ExportRequest(BaseModel):
     # would silently pass everything.
     nsfw_exposed_labels: list[NudeNetLabel] = Field(default_factory=lambda: list(DEFAULT_EXPOSED_LABELS), min_length=1)
 
+    # Optional: drop images SingGuard judged unsafe, under any rule.
+    guard_unsafe: bool = False
+    # Optional: drop images where one of these rules fired, named by letter
+    # ("A") or in full ("A. Sexual Content Risk"), case-insensitive.
+    guard_rules: list[str] | None = None
+
     write_manifest: bool = True
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).
     caption_url: str | None = None
@@ -526,6 +562,16 @@ class ExportRequest(BaseModel):
             if not 0.2 <= threshold <= 1.0:
                 raise ValueError(f"{label}: threshold {threshold} must be within 0.2..1 (NudeNet reports from 0.2)")
         return value
+
+    @field_validator("guard_rules")
+    @classmethod
+    def _rules_named(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        rules = [r.strip() for r in value]
+        if not all(rules):
+            raise ValueError("guard_rules entries must be non-empty")
+        return rules
 
     @model_validator(mode="after")
     def _age_range_in_order(self) -> ExportRequest:

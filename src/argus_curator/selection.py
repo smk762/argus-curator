@@ -7,9 +7,12 @@ HITL surfaces can explain *why* it was left out.
 
 from __future__ import annotations
 
+import re
+
 import imagehash
 
 from argus_curator.garments import outfit, outfit_similarity
+from argus_curator.guard import rule_matches
 from argus_curator.models import ExportRequest, ImageResult, ScanSummary
 from argus_curator.nsfw import exposed_score
 
@@ -202,6 +205,39 @@ def _nsfw_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
     return None
 
 
+def _guard_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
+    """Keep-reason when *r* fails the SingGuard filters, else ``None``.
+
+    Unchecked images are excluded, as with NudeNet. With only ``guard_rules``,
+    an unsafe image whose rules are all unlisted is kept; one that names no
+    rule at all is excluded, since it cannot be shown to be unlisted.
+    """
+    if not req.guard_unsafe and not req.guard_rules:
+        return None
+    if r.guard is None:
+        return "guard-unchecked"
+    if r.guard.safe:
+        return None
+    if req.guard_unsafe:
+        return "guard-unsafe"
+    if not r.guard.rules:
+        return "guard-rule-unknown"
+    for wanted in req.guard_rules or []:
+        if any(rule_matches(fired, wanted) for fired in r.guard.rules):
+            return f"guard-rule-{re.sub(r'[^a-z0-9]+', '-', wanted.casefold()).strip('-')}"
+    return None
+
+
+def guard_filter_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """Why *req*'s SingGuard filters cannot be applied to *summary*, else ``None``."""
+    if (req.guard_unsafe or req.guard_rules) and not summary.guard_config.enabled:
+        return (
+            "SingGuard filters need a scan that ran SingGuard; this one did not "
+            "(set ARGUS_CURATOR_SINGGUARD_URL and rescan)"
+        )
+    return None
+
+
 def nsfw_filter_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
     """Why *req*'s NSFW filters cannot be applied to *summary*, else ``None``."""
     uses_nsfw = req.nsfw_threshold is not None or bool(req.nsfw_label_thresholds)
@@ -235,8 +271,8 @@ def decide_selection(
     """Return ``(selected_results, keep_reason_by_rel)`` for an export request.
 
     Mirrors PR #14's ``_decide_keep``: applies score threshold, rejected/duplicate
-    gates, optional face-cluster / pose / attribute / scene / garment / NSFW
-    filters, then an optional diversity cap.
+    gates, optional face-cluster / pose / attribute / scene / garment / NSFW /
+    SingGuard filters, then an optional diversity cap.
     """
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
@@ -262,6 +298,8 @@ def decide_selection(
             keep_reason[r.rel_path] = garment_reason
         elif (nsfw_reason := _nsfw_exclusion(r, req)) is not None:
             keep_reason[r.rel_path] = nsfw_reason
+        elif (guard_reason := _guard_exclusion(r, req)) is not None:
+            keep_reason[r.rel_path] = guard_reason
         else:
             eligible.append(r)
 

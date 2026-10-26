@@ -21,6 +21,10 @@ services:
       # below. Point it elsewhere in .env (e.g. a LAN host running the same
       # image), or set it empty (ARGUS_CURATOR_NUDENET_URL=) to switch it off.
       - ARGUS_CURATOR_NUDENET_URL=${ARGUS_CURATOR_NUDENET_URL-http://nudenet:8080}
+      # SingGuard policy check, off unless .env sets a URL (no server is bundled:
+      # it runs a vision language model). Opt-out once set, like NudeNet.
+      - ARGUS_CURATOR_SINGGUARD_URL=${ARGUS_CURATOR_SINGGUARD_URL-}
+      - ARGUS_CURATOR_SINGGUARD_THINKING=${ARGUS_CURATOR_SINGGUARD_THINKING-fast}
       # Uncomment to permit destructive mode="move" exports.
       # - CURATOR_ALLOW_MOVE=1
     volumes:

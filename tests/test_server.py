@@ -93,6 +93,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "places365",
         "garments",
         "nudenet",
+        "singguard",
     }
 
 
@@ -753,3 +754,33 @@ def test_export_with_nsfw_thresholds_on_unchecked_scan_is_refused(contained: tup
         resp = client.post(endpoint, json=body)
         assert resp.status_code == 400, endpoint
         assert "NudeNet" in resp.json()["detail"]
+
+
+def test_scan_requiring_singguard_without_url_is_refused(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    for endpoint in ("/scan/folder", "/scan/folder/stream"):
+        resp = client.post(endpoint, json={"folder": "", "guard": {"enabled": True}})
+        assert resp.status_code == 400, endpoint
+        assert "ARGUS_CURATOR_SINGGUARD_URL is not set" in resp.json()["detail"]
+
+
+def test_unreadable_singguard_policy_is_refused_without_echoing_its_path(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client, _exports = contained
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_POLICY_FILE", str(tmp_path / "private-dir" / "policy.txt"))
+    resp = client.post("/scan/folder", json={"folder": ""})  # opt-out default: the check is on
+    assert resp.status_code == 400
+    assert "ARGUS_CURATOR_SINGGUARD_POLICY_FILE cannot be read" in resp.json()["detail"]
+    assert "private-dir" not in resp.json()["detail"]
+
+
+def test_export_with_guard_filters_on_unchecked_scan_is_refused(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    assert scan["guard_config"]["enabled"] is False
+    for body in ({"guard_unsafe": True}, {"guard_rules": ["A"]}):
+        resp = client.post("/export", json={"scan_id": scan["scan_id"], "dest": "out", **body})
+        assert resp.status_code == 400, body
+        assert "SingGuard" in resp.json()["detail"]

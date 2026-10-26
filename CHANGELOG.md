@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inclusive; unchecked images are excluded (`nsfw-unchecked`).
 - `docker-compose.yaml` runs a NudeNet server (pinned by digest) next to
   curator and points it there unless `.env` says otherwise.
+- SingGuard policy check through a SingGuard server over HTTP
+  (`ARGUS_CURATOR_SINGGUARD_URL`, plus `_THINKING`, `_POLICY_FILE`, `_TIMEOUT`,
+  `_WORKERS`), opt-out like NudeNet (`--guard/--no-guard`,
+  `ScanRequest.guard`). Each image records the verdict, the rules that fired,
+  the explanation, the model and the policy (`ImageResult.guard`, plus
+  `guard_safe` / `guard_rules` CSV columns), as a new `guard` progress phase.
+  Images over 1536 px are downscaled before sending. `GET /detectors` reports
+  `singguard`.
+- SingGuard export filters: `guard_unsafe` drops every unsafe verdict and
+  `guard_rules` only the named rules, by letter or full name (CLI
+  `--guard-unsafe`, `--guard-rules`). Unchecked images are excluded
+  (`guard-unchecked`), as are unsafe verdicts naming no rule
+  (`guard-rule-unknown`).
 
 ### Changed
 

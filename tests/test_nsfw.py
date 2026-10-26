@@ -21,7 +21,7 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 
-from argus_curator import nsfw
+from argus_curator import nsfw, remote
 from argus_curator.export import write_report
 from argus_curator.models import (
     ExportRequest,
@@ -206,7 +206,7 @@ def test_bad_responses_are_failures(monkeypatch: pytest.MonkeyPatch, payload) ->
         def __exit__(self, *exc) -> None:
             self.close()
 
-    monkeypatch.setattr(nsfw._OPENER, "open", lambda req, timeout: _Resp(json.dumps(payload).encode()))
+    monkeypatch.setattr(remote._OPENER, "open", lambda req, timeout: _Resp(json.dumps(payload).encode()))
     with pytest.raises(nsfw.NsfwCheckFailed):
         nsfw.check(_png(10), "a.png", "http://n/infer", 5.0)
 
@@ -249,7 +249,7 @@ def test_unreachable_server_is_given_up_on(monkeypatch: pytest.MonkeyPatch) -> N
     results = [ImageResult(rel_path=f"{i}.png", abs_path=f"/d/{i}", passed=True) for i in range(50)]
     items = [(r.rel_path, r.abs_path, b"x") for r in results]
     assert nsfw.check_images(results, items, NsfwConfig()) is True
-    assert len(calls) <= nsfw.MAX_FAILURES_WITHOUT_SUCCESS + 2
+    assert len(calls) <= remote.MAX_FAILURES_WITHOUT_SUCCESS + 2
     assert all(r.nsfw is None for r in results)
 
 

@@ -37,6 +37,7 @@ from argus_curator.models import (
     SUPPORTED_EXTS,
     FaceConfig,
     GarmentConfig,
+    GuardConfig,
     ImageResult,
     NsfwConfig,
     ScanConfig,
@@ -357,6 +358,7 @@ def scan_items(
     scene_cfg: SceneConfig | None = None,
     garment_cfg: GarmentConfig | None = None,
     nsfw_cfg: NsfwConfig | None = None,
+    guard_cfg: GuardConfig | None = None,
     folder: str = "",
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
@@ -365,8 +367,8 @@ def scan_items(
 
     When *progress* is supplied it is called with ``{phase, done, total}`` dicts
     as the scan advances through its ``scoring`` -> ``faces`` -> ``scenes`` ->
-    ``garments`` -> ``nsfw`` -> ``clustering`` phases, so a caller can drive a
-    live progress UI (see the SSE endpoint).
+    ``garments`` -> ``nsfw`` -> ``guard`` -> ``clustering`` phases, so a caller
+    can drive a live progress UI (see the SSE endpoint).
     """
     scan_id = scan_id or uuid.uuid4().hex
     total = len(items)
@@ -438,6 +440,16 @@ def scan_items(
         progress=(lambda done, total: _emit(progress, "nsfw", done, total)) if progress else None,
     )
 
+    # SingGuard (opt-out), the same way.
+    from argus_curator import guard as guard_mod
+
+    guard_ran = guard_mod.check_images(
+        results,
+        items,
+        guard_cfg or GuardConfig(),
+        progress=(lambda done, total: _emit(progress, "guard", done, total)) if progress else None,
+    )
+
     _emit(progress, "clustering", 0, total)
     _mark_duplicates(results, cfg)
     multi = _assign_clusters(results)
@@ -456,6 +468,7 @@ def scan_items(
         scenes_config=scene_cfg,
         garments_config=garment_cfg,
         nsfw_config=NsfwConfig(enabled=nsfw_ran),
+        guard_config=GuardConfig(enabled=guard_ran),
         total=len(results),
         passed=len(passed),
         rejected=len(rejected),
@@ -477,6 +490,7 @@ def scan_folder(
     scene_cfg: SceneConfig | None = None,
     garment_cfg: GarmentConfig | None = None,
     nsfw_cfg: NsfwConfig | None = None,
+    guard_cfg: GuardConfig | None = None,
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
 ) -> ScanSummary:
@@ -508,6 +522,7 @@ def scan_folder(
         scene_cfg=scene_cfg,
         garment_cfg=garment_cfg,
         nsfw_cfg=nsfw_cfg,
+        guard_cfg=guard_cfg,
         folder=str(root.resolve()),
         scan_id=scan_id,
         progress=progress,

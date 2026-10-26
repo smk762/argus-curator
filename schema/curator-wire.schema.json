@@ -225,6 +225,26 @@
           "title": "Garments Uncropped",
           "type": "boolean"
         },
+        "guard_rules": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard Rules"
+        },
+        "guard_unsafe": {
+          "default": false,
+          "title": "Guard Unsafe",
+          "type": "boolean"
+        },
         "include_rejected": {
           "default": false,
           "title": "Include Rejected",
@@ -973,6 +993,75 @@
       "title": "GarmentDetection",
       "type": "object"
     },
+    "GuardConfig": {
+      "description": "SingGuard policy check via a remote SingGuard server (see guard.py).\n\nLike NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) and the policy\n(ARGUS_CURATOR_SINGGUARD_POLICY_FILE) are process configuration.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        }
+      },
+      "title": "GuardConfig",
+      "type": "object"
+    },
+    "GuardResult": {
+      "description": "SingGuard's verdict on one image. A verdict, not a score: SingGuard\nreports which policy rules fired, not how confident it is.",
+      "properties": {
+        "explanation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Explanation"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "policy": {
+          "default": "default",
+          "title": "Policy",
+          "type": "string"
+        },
+        "rules": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Rules",
+          "type": "array"
+        },
+        "safe": {
+          "title": "Safe",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "safe"
+      ],
+      "title": "GuardResult",
+      "type": "object"
+    },
     "ImageResult": {
       "description": "Per-image curation record \u2014 superset of imogen's scanner output.\n\n``rel_path`` is the path relative to the scanned root and is the stable key\neverywhere (it stays unique across sub-folders, unlike a bare basename).",
       "properties": {
@@ -1028,6 +1117,17 @@
           "default": 1,
           "title": "Group Size",
           "type": "integer"
+        },
+        "guard": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GuardResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "height": {
           "default": 0,
@@ -1460,6 +1560,9 @@
         "garments": {
           "$ref": "#/$defs/GarmentConfig"
         },
+        "guard": {
+          "$ref": "#/$defs/GuardConfig"
+        },
         "nsfw": {
           "$ref": "#/$defs/NsfwConfig"
         },
@@ -1502,6 +1605,9 @@
         },
         "garments_config": {
           "$ref": "#/$defs/GarmentConfig"
+        },
+        "guard_config": {
+          "$ref": "#/$defs/GuardConfig"
         },
         "limit": {
           "anyOf": [
