@@ -1431,7 +1431,7 @@
       "type": "object"
     },
     "NsfwResult": {
-      "description": "NudeNet's view of one image.\n\nThe server reports only detections scoring >= 0.2, so a class missing from\n``labels`` scored below that. ``exposed_score`` is the highest score among\n:data:`DEFAULT_EXPOSED_LABELS`; filters can recompute it over another set.",
+      "description": "NudeNet's view of one image.\n\nOnly detections scoring >= :data:`MIN_REPORTED_SCORE` are kept, so a class\nmissing from ``labels`` scored below that. ``exposed_score`` is the highest score among\n:data:`DEFAULT_EXPOSED_LABELS`; filters can recompute it over another set.",
       "properties": {
         "detections": {
           "items": {
