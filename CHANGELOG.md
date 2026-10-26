@@ -7,12 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-26
+
 ### Added
 
 - `POST /scan/{scan_id}/select` runs the export filter (`decide_selection`) and
   returns `{rel_path, abs_path, keep_reason}` for every image without copying,
   symlinking, or moving. `GET /image` serves the original file under the same
-  containment rules as `GET /thumb`.
+  containment rules as `GET /thumb`. It refuses the same NSFW, SingGuard and
+  garment-floor filters `/export` would.
 - NudeNet nudity detection through a NudeNet server over HTTP
   (`ARGUS_CURATOR_NUDENET_URL`, plus `_TIMEOUT` / `_WORKERS`); curator never
   imports NudeNet (AGPL-3.0). Each image records its detections, the highest
@@ -39,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--guard-unsafe`, `--guard-rules`). Unchecked images are excluded
   (`guard-unchecked`), as are unsafe verdicts naming no rule
   (`guard-rule-unknown`).
+- Pushing a `v*` tag now creates the GitHub Release once PyPI has the
+  version, with notes from this file's section for that version.
 
 ### Changed
 
@@ -48,7 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema are unchanged.
 - `argus-cortex>=0.4,<0.5` is now a base dependency (pydantic-only); the
   `[server]` extra moves to `argus-cortex[server]>=0.4,<0.5`.
-
+- `GET /thumb` now serves only the extensions the scanner reads (`.jpg`,
+  `.jpeg`, `.png`, `.webp`) and returns 400 for anything else.
 - The NudeNet check is opt-out: whenever `ARGUS_CURATOR_NUDENET_URL` is set,
   scans run it unless they pass `--no-nsfw` / `"nsfw": {"enabled": false}`.
   Deployments that do not set the URL are unaffected; the bundled
@@ -285,7 +291,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/smk762/argus-curator/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/smk762/argus-curator/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/smk762/argus-curator/compare/v0.1.0...v0.2.1
 [0.1.0]: https://github.com/smk762/argus-curator/releases/tag/v0.1.0
