@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image, ImageDraw, ImageFilter
 
 from argus_curator import scan_folder
 from argus_curator.models import FaceConfig, ScanConfig, TargetProfile
+from argus_curator.scanner import _sharpness
 
 
 def test_relative_path_keying_no_clobber(dataset: Path) -> None:
@@ -27,6 +30,52 @@ def test_hard_filters_reject_blurry_and_tiny(dataset: Path) -> None:
     assert by_rel["personA/s1/img.png"].passed is True
     assert summary.rejected == 2
     assert summary.passed == 3
+
+
+def _scene(side: int) -> Image.Image:
+    """The same flat-shaded scene drawn at *side* pixels: a sharp picture at any size."""
+    s = side / 1024
+    img = Image.new("RGB", (side, side), (235, 235, 235))
+    draw = ImageDraw.Draw(img)
+    rng = np.random.default_rng(1)
+    for _ in range(60):
+        x, y = rng.integers(0, 1024, 2)
+        w, h = rng.integers(20, 200, 2)
+        colour = tuple(int(v) for v in rng.integers(0, 255, 3))
+        box = [x * s, y * s, (x + w) * s, (y + h) * s]
+        if rng.random() < 0.5:
+            draw.rectangle(box, fill=colour)
+        else:
+            draw.ellipse(box, fill=colour)
+    return img
+
+
+def test_sharpness_does_not_depend_on_resolution() -> None:
+    """A sharp 4800px studio frame measured at native size scored about a
+    quarter of its 2048px copy and fell under blur_threshold, so faces,
+    MiVOLO ages and the quality score were never computed for it. The same
+    scene must measure about the same at any size at or above 1024px."""
+    at_1024 = _sharpness(_scene(1024))
+    at_4096 = _sharpness(_scene(4096))
+    assert at_1024 > 100.0
+    assert abs(at_4096 - at_1024) / at_1024 < 0.15
+    # Below 1024 the image is measured as it is.
+    assert _sharpness(_scene(768)) > at_1024
+    # The same blur, scaled with the picture, measures the same too.
+    blurred_1024 = _sharpness(_scene(1024).filter(ImageFilter.GaussianBlur(radius=30)))
+    blurred_4096 = _sharpness(_scene(4096).filter(ImageFilter.GaussianBlur(radius=120)))
+    assert blurred_1024 < at_1024 / 3
+    assert abs(blurred_4096 - blurred_1024) / blurred_1024 < 0.15
+
+
+def test_large_sharp_images_pass_the_blur_gate(tmp_path: Path) -> None:
+    _scene(4096).save(tmp_path / "large.png")
+    _scene(1024).save(tmp_path / "small.png")
+    by_rel = {r.rel_path: r for r in scan_folder(tmp_path).results}
+    assert by_rel["large.png"].passed is True
+    assert by_rel["small.png"].passed is True
+    assert by_rel["large.png"].reject_reason is None
+    assert by_rel["large.png"].sharpness > 100.0
 
 
 def test_near_duplicate_clustering(dataset: Path) -> None:
