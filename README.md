@@ -419,14 +419,30 @@ ARGUS_CURATOR_SINGGUARD_THINKING=fast                    # or fast-slow, for exp
 ARGUS_CURATOR_SINGGUARD_POLICY_FILE=/etc/curator/policy.txt  # optional: replaces the default rules
 ARGUS_CURATOR_SINGGUARD_TIMEOUT=90                       # seconds per image (default 90)
 ARGUS_CURATOR_SINGGUARD_WORKERS=2                        # concurrent requests (default 2)
+ARGUS_CURATOR_SINGGUARD_CONTEXT=age,folder,caption       # optional: what the scan knows, sent as request text
 ```
+
+By default SingGuard sees the image alone, and under the adult policies it
+then reasons about an age and a consent it cannot see. `ARGUS_CURATOR_SINGGUARD_CONTEXT`
+sends what the scan already knows as the request text, opening with a line
+that says it is recorded context and not a request (SingGuard reads a bare
+description as a request to produce it): `age` is each face's MiVOLO estimate,
+named as an estimate; `folder` is the image's folder under the scanned root,
+which usually names the set; `caption` is an argus-lens `<stem>.txt` or
+`<stem>.xmp` sidecar, cut to 600 characters. It is off by default. A wrong
+age leans the verdict the wrong way, so measure it on labelled images
+(`scripts/guard_eval.py --images`) before relying on it. The under-18 rule
+(`minor-exposed`) does not read this text.
 
 It is opt-out in the same way (`--no-guard`, `"guard": {"enabled": false}`;
 `--guard` makes it mandatory). The default rule A flags any sexual content,
 adult nudity included. For an adult dataset, pick the built-in **`adult`**
 policy per scan (`--guard-policy adult`, `"guard": {"policy": "adult"}`). Its
 rule A covers only apparent minors, non-consent and sexual violence, and its
-Safe rule names consensual adult nudity. Rules B to G cover the same areas
+Safe rule names consensual adult nudity, a single adult posing for the
+camera, and that consent is not read from the image: a posed, camera-aware
+adult counts as consenting unless hidden recording, restraint, coercion or an
+unconscious person is shown. Rules B to G cover the same areas
 under the same letters, so `--guard-rules B,C` means the same thing under
 both. They are written out as text, though, rather than left to SingGuard's
 built-in wording, so verdicts can differ: a group photo of a poker game that

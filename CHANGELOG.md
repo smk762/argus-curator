@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ARGUS_CURATOR_SINGGUARD_CONTEXT` sends what the scan already knows about an
+  image as SingGuard's request text, framed as recorded context rather than a
+  request: `age` (each face's MiVOLO estimate, named as an estimate), `folder`
+  (the image's folder under the scanned root), `caption` (an argus-lens
+  `<stem>.txt` or `<stem>.xmp` sidecar). Off by default. Measure it on
+  labelled images before relying on it: a wrong age leans the verdict the
+  wrong way, and the under-18 rule does not read it.
+
+### Changed
+
+- The `adult` and `adult-granular` policies say what passes under Safe: a
+  single adult posing nude or in lingerie for the camera, and that consent
+  cannot be read from an image, so a posed, camera-aware adult counts as
+  consenting unless the image shows hidden recording, restraint, coercion or
+  an unconscious person. Rule A's carve-out reads "by adults, alone or
+  together" instead of "between adults", which SingGuard took to need two
+  people. A solo adult in a professional set was flagged under A for lack of
+  "adult interaction"; it now passes. The exceptions live under Safe because
+  SingGuard reads a bullet under a risk heading as a match for that rule, even
+  one that says "is not this rule". `adult-cautious` is unchanged.
+
 ## [0.5.1] - 2026-10-27
 
 ### Changed
