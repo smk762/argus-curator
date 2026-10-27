@@ -40,7 +40,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from argus_cortex.moderation import GuardCheckFailed, SingGuardClient, rule_letter
+from argus_cortex.moderation import THINKING_MODES, GuardCheckFailed, SingGuardClient, rule_letter
 from PIL import Image
 
 from argus_curator import guard
@@ -157,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-probes", action="store_true", help="Only run the --images cases")
     parser.add_argument("--images", type=Path, help="Folder with hard/ ambiguous/ adult/ other/ safe/ subfolders")
     parser.add_argument("--policies", default=",".join(guard.POLICIES), help="Comma-separated policy names")
-    parser.add_argument("--thinking", default="fast", choices=["fast", "fast-slow"])
+    parser.add_argument("--thinking", default="fast", choices=THINKING_MODES)
     parser.add_argument("--repeat", type=int, default=1, help="Runs per case (SingGuard is not deterministic)")
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--out", type=Path, help="Write every verdict here as JSONL")
