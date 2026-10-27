@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A built-in `adult` SingGuard policy, picked per scan with
+  `GuardConfig.policy` (`"guard": {"policy": "adult"}`, CLI
+  `--guard-policy adult`). Its rule A covers only apparent minors,
+  non-consent and sexual violence, and Safe names consensual adult nudity.
+  Rules B to G keep their letters and areas but are written out as text, so
+  their verdicts can differ from SingGuard's built-in wording. A request names a policy and
+  never sends its text. `default` keeps today's behaviour: the policy file
+  when one is set, else SingGuard's own rules. Results record `adult` as the
+  policy name. `GET /detectors` lists the names in `singguard_policies`
+  (empty without a SingGuard server).
+
 ## [0.4.0] - 2026-10-26
 
 ### Added

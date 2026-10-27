@@ -199,6 +199,32 @@ def test_policy_file_is_sent_and_recorded(
     assert results[0].guard.policy == guard.policy()[0]
 
 
+def test_adult_policy_is_sent_in_full_and_recorded_by_name(
+    singguard: type[_SingGuard], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The operator's policy file is for "default"; "adult" does not read it.
+    policy = tmp_path / "p.txt"
+    policy.write_text("### A. Minors\n")
+    monkeypatch.setenv(guard.POLICY_FILE_ENV, str(policy))
+    results = [ImageResult(rel_path="a.png", abs_path="/d/a", passed=True)]
+    guard.check_images(results, [("a.png", "/d/a", _png(20))], GuardConfig(policy="adult"))
+    assert singguard.seen[0]["policy"] == guard.ADULT_POLICY
+    assert results[0].guard.policy == "adult"
+    assert results[0].guard.rules == [_CRIME, _GORE]  # the verdict is still SingGuard's
+
+
+def test_adult_policy_keeps_the_default_rule_letters() -> None:
+    letters = [line[4] for line in guard.ADULT_POLICY.splitlines() if line.startswith("### ") and line[5] == "."]
+    assert letters == list("ABCDEFG")
+    assert "under 18" in guard.ADULT_POLICY
+    assert guard.policy("adult") == ("adult", guard.ADULT_POLICY)
+
+
+def test_unknown_policy_name_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        GuardConfig(policy="nsfw")
+
+
 def test_large_images_are_downscaled(singguard: type[_SingGuard]) -> None:
     results = [ImageResult(rel_path="big.png", abs_path="/d/big", passed=True)]
     guard.check_images(results, [("big.png", "/d/big", _png(10, (4000, 3000)))], GuardConfig())

@@ -218,15 +218,22 @@ class NsfwConfig(BaseModel):
     enabled: bool | None = None
 
 
+# "default" is the operator's policy (ARGUS_CURATOR_SINGGUARD_POLICY_FILE, else
+# SingGuard's own rules); "adult" is curator's built-in policy that allows
+# consensual adult nudity and still flags minors (see guard.ADULT_POLICY).
+GuardPolicy = Literal["default", "adult"]
+
+
 class GuardConfig(BaseModel):
     """SingGuard policy check via a remote SingGuard server (see guard.py).
 
-    Like NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) and the policy
-    (ARGUS_CURATOR_SINGGUARD_POLICY_FILE) are process configuration.
+    Like NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) is process
+    configuration. A request picks a policy by name, never by text.
     """
 
     # Same opt-out semantics as NsfwConfig.enabled.
     enabled: bool | None = None
+    policy: GuardPolicy = "default"
 
 
 # ---------------------------------------------------------------------------
