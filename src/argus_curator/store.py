@@ -8,6 +8,7 @@ easy to wipe.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from datetime import UTC, datetime
@@ -96,3 +97,12 @@ class ScanStore:
             path.unlink()
             return True
         return False
+
+    def delete_all(self) -> int:
+        """Remove every cached scan, half-written ones included. Returns how many."""
+        count = 0
+        for path in list(self.cache_dir.glob("*.json")) + list(self.cache_dir.glob("*.json.tmp")):
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
+                count += path.suffix == ".json"
+        return count

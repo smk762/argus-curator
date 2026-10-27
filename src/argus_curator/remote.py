@@ -12,7 +12,6 @@ a scan says otherwise.
 
 from __future__ import annotations
 
-import contextlib
 import os
 from collections.abc import Callable
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
@@ -21,6 +20,7 @@ from typing import Any
 import structlog
 
 from argus_curator.models import ImageResult
+from argus_curator.runtime import ScanCancelled
 
 logger = structlog.get_logger()
 
@@ -78,30 +78,43 @@ def check_all(
         progress(0, total)
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {pool.submit(check, data_by_rel[r.rel_path], r.rel_path): r for r in pending}
-        for fut in as_completed(futures):
-            r = futures[fut]
-            try:
-                value = fut.result()
-                if store is None:
-                    setattr(r, field, value)
-                else:
-                    store(r, value)
-                succeeded += 1
-            except CancelledError:
-                pass  # given up on below; the image stays unchecked
-            except Exception as exc:  # one bad image must not fail the whole scan
-                failed += 1
-                logger.warning("remote_check_failed", check=field, rel_path=r.rel_path, error=str(exc))
-                if not succeeded and failed == MAX_FAILURES_WITHOUT_SUCCESS:
-                    logger.warning("remote_server_unreachable", check=field, failed=failed, total=total)
-                    for other in futures:
-                        other.cancel()
-            done += 1
-            if on_done is not None:
-                # A chunk consumer must not be counted as a failed check.
-                with contextlib.suppress(Exception):
-                    on_done(r, done, total)
-            if progress is not None and (done == total or done % 5 == 0):
-                progress(done, total)
+        try:
+            for fut in as_completed(futures):
+                r = futures[fut]
+                try:
+                    value = fut.result()
+                    if store is None:
+                        setattr(r, field, value)
+                    else:
+                        store(r, value)
+                    succeeded += 1
+                except CancelledError:
+                    pass  # given up on below; the image stays unchecked
+                except Exception as exc:  # one bad image must not fail the whole scan
+                    failed += 1
+                    logger.warning("remote_check_failed", check=field, rel_path=r.rel_path, error=str(exc))
+                    if not succeeded and failed == MAX_FAILURES_WITHOUT_SUCCESS:
+                        logger.warning("remote_server_unreachable", check=field, failed=failed, total=total)
+                        for other in futures:
+                            other.cancel()
+                done += 1
+                if on_done is not None:
+                    # A chunk consumer must not be counted as a failed check,
+                    # but a stop raised from it is the scanner's to handle.
+                    try:
+                        on_done(r, done, total)
+                    except ScanCancelled:
+                        raise
+                    except Exception:  # pragma: no cover - a consumer's bug
+                        logger.warning("remote_check_consumer_failed", check=field, rel_path=r.rel_path)
+                if progress is not None and (done == total or done % 5 == 0):
+                    progress(done, total)
+        except BaseException:
+            # A stopped scan raises out of the progress hook. Leaving the pool
+            # waits for everything queued, so drop that first; only the
+            # *workers* requests already with the server run to their end.
+            for other in futures:
+                other.cancel()
+            raise
     if failed:
         logger.warning("remote_checks_failed", check=field, failed=failed, total=total)

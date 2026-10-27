@@ -70,6 +70,10 @@ from argus_curator.selection import (
 from argus_curator.store import ScanStore
 
 THUMB_MAX = 384  # longest-edge px for /thumb webp output
+# How long a purge waits for a stopped scan to let go. The checks already with
+# a remote server finish first; SingGuard's reasoning modes take up to the
+# client timeout each, and the scanner sends two at a time.
+_PURGE_WAIT_S = 120.0
 _IMAGE_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -96,10 +100,17 @@ class DeleteRequest(BaseModel):
 
 
 class ScanGate:
-    """The one scan this process is allowed to run at a time."""
+    """The one scan this process is allowed to run at a time.
+
+    A scan can be asked to stop: :meth:`cancel` raises a flag the scanner polls
+    between images, and :meth:`wait_idle` blocks until the scan thread has let
+    go of the slot. The snapshot says ``cancelling`` while that is in progress.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._idle = threading.Condition(self._lock)
+        self._stop = threading.Event()
         self.active: dict[str, Any] | None = None
 
     def start(self, scan_id: str, folder: str, pending: list[str]) -> dict[str, Any] | None:
@@ -107,6 +118,7 @@ class ScanGate:
         with self._lock:
             if self.active is not None:
                 return dict(self.active)
+            self._stop = threading.Event()
             self.active = {
                 "scan_id": scan_id,
                 "folder": folder,
@@ -114,6 +126,7 @@ class ScanGate:
                 "done": 0,
                 "total": 0,
                 "pending_checks": list(pending),
+                "cancelling": False,
             }
             return None
 
@@ -126,10 +139,31 @@ class ScanGate:
         with self._lock:
             if self.active and self.active["scan_id"] == scan_id:
                 self.active = None
+                self._idle.notify_all()
 
     def snapshot(self) -> dict[str, Any] | None:
         with self._lock:
             return dict(self.active) if self.active else None
+
+    def cancel(self, scan_id: str | None = None) -> str | None:
+        """Ask the running scan (or *scan_id*, if that is the one running) to
+        stop. Returns the id asked, or None when no such scan is running."""
+        with self._lock:
+            if self.active is None or (scan_id is not None and self.active["scan_id"] != scan_id):
+                return None
+            self.active["cancelling"] = True
+            self._stop.set()
+            return str(self.active["scan_id"])
+
+    def cancelled(self, scan_id: str) -> bool:
+        """What the scanner polls: has *scan_id* been asked to stop?"""
+        with self._lock:
+            return bool(self.active and self.active["scan_id"] == scan_id and self._stop.is_set())
+
+    def wait_idle(self, timeout: float) -> bool:
+        """Block until no scan holds the slot. False if *timeout* passed first."""
+        with self._idle:
+            return self._idle.wait_for(lambda: self.active is None, timeout=timeout)
 
 
 def _busy_detail(active: dict[str, Any]) -> str:
@@ -318,6 +352,7 @@ def create_app(
     store = ScanStore(cache_dir)
     gate = ScanGate()
     app.state.scan_gate = gate
+    app.state.scan_store = store
     # Containment roots. Scans/thumbs/uploads resolve under the source root;
     # export destinations under the export root. The ARGUS_* names are the
     # deployment-facing ones (argus-halo); CURATOR_* are kept for compose.
@@ -367,6 +402,9 @@ def create_app(
             "source_root": str(Path(default_source).resolve()) if default_source else None,
             "export_root": str(Path(default_export).resolve()) if default_export else None,
             "allow_move": allow_move,
+            # A client asks, rather than sniffing the version: this server can
+            # stop a running scan and purge the scan cache (0.6 and later).
+            "scan_control": True,
         }
 
     @app.get("/detectors")
@@ -500,9 +538,12 @@ def create_app(
                 guard_cfg=req.guard,
                 scan_id=scan_id,
                 progress=lambda payload: _note_progress(scan_id, requested, payload),
+                cancelled=lambda: gate.cancelled(scan_id),
             )
             store.save(summary)
             return summary
+        except scanner.ScanCancelled as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
         finally:
@@ -515,7 +556,9 @@ def create_app(
         Emits ``event: progress`` frames ({phase, done, total}) and ``event: chunk``
         frames (those counts plus the images finished since the previous chunk),
         then a single ``event: complete`` frame carrying the full ScanSummary, or
-        ``event: error``. A second scan is refused while one is still running.
+        ``event: error``, or ``event: cancelled`` after ``POST /scan/{id}/cancel``
+        (the partial summary is dropped). A second scan is refused while one is
+        still running.
         """
         _require_models(req)
         folder = _resolve_scan_folder(req.folder)
@@ -551,9 +594,14 @@ def create_app(
                     progress=on_progress,
                     chunk=on_chunk,
                     save=store.save,
+                    cancelled=lambda: gate.cancelled(scan_id),
                 )
                 store.save(summary)
                 events.put(("complete", summary.model_dump(mode="json")))
+            except scanner.ScanCancelled:
+                # The snapshots saved while it ran are not a result.
+                store.delete(scan_id)
+                events.put(("cancelled", {"scan_id": scan_id}))
             except Exception as exc:  # surface as a stream error, not a 500
                 events.put(("error", {"detail": f"scan failed: {exc}"}))
             finally:
@@ -575,6 +623,28 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/scan/{scan_id}/cancel")
+    async def cancel_scan(scan_id: str) -> dict[str, Any]:
+        """Stop the running scan. The scanner notices between images, so the
+        slot frees once the checks already in flight return; ``GET /scans``
+        says ``cancelling`` until then. The partial summary is dropped."""
+        if gate.cancel(scan_id) is None:
+            raise HTTPException(status_code=404, detail=f"no running scan with scan_id: {scan_id}")
+        return {"scan_id": scan_id, "cancelling": True}
+
+    @app.post("/scans/purge")
+    async def purge_scans() -> dict[str, Any]:
+        """Stop the running scan, if any, and delete every cached scan.
+
+        Waits for the stopped scan to let go before deleting, so its next
+        snapshot cannot land after the purge. Source images are not touched.
+        """
+        cancelled = gate.cancel()
+        if cancelled is not None and not await asyncio.to_thread(gate.wait_idle, _PURGE_WAIT_S):
+            raise HTTPException(status_code=409, detail="the running scan has not stopped yet; try again")
+        deleted = await asyncio.to_thread(store.delete_all)
+        return {"cancelled": cancelled, "deleted": deleted}
 
     @app.get("/scan/{scan_id}", response_model=ScanSummary)
     async def get_scan(

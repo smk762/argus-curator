@@ -173,3 +173,51 @@ def test_target_profile_roundtrips_into_summary(dataset: Path) -> None:
     summary = scan_folder(dataset, profile=profile, faces_cfg=FaceConfig(enabled=False))
     assert summary.target_profile.target_style == "anime"
     assert summary.target_profile.target_category == "wardrobe"
+
+
+def test_cancelled_scan_raises_and_drops_queued_work(dataset: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stop is noticed at the next progress step; the work still queued for
+    a remote server is dropped rather than waited for; nothing after the stop
+    is delivered."""
+    import threading
+
+    from argus_curator import nsfw as nsfw_mod
+    from argus_curator import remote
+    from argus_curator.models import NsfwConfig
+    from argus_curator.scanner import ScanCancelled
+
+    stop = threading.Event()
+    sent: list[str] = []
+    gate = threading.Lock()
+
+    def slow_check(data: bytes, rel_path: str) -> None:
+        with gate:
+            sent.append(rel_path)
+        stop.set()  # the first check asks the scan to stop
+
+    def fake_nsfw(results, items, cfg, progress=None, on_done=None):
+        remote.check_all(results, items, slow_check, "nsfw", workers=1, progress=progress, on_done=on_done)
+        return True
+
+    monkeypatch.setattr(nsfw_mod, "check_images", fake_nsfw)
+    monkeypatch.setattr(nsfw_mod, "resolve_enabled", lambda cfg: True)
+    chunks: list[dict] = []
+    with pytest.raises(ScanCancelled):
+        scan_folder(
+            dataset,
+            faces_cfg=FaceConfig(enabled=False),
+            nsfw_cfg=NsfwConfig(),
+            progress=lambda payload: None,
+            chunk=chunks.append,
+            cancelled=stop.is_set,
+        )
+    # Scoring finished (the stop came during NudeNet), and the pool was drained:
+    # with one worker, at most the checks before the next progress tick ran.
+    assert [c["phase"] for c in chunks].count("scoring") >= 1
+    assert all(c["phase"] == "scoring" for c in chunks)
+    assert len(sent) < 5
+
+
+def test_a_scan_nobody_stops_finishes(dataset: Path) -> None:
+    summary = scan_folder(dataset, faces_cfg=FaceConfig(enabled=False), cancelled=lambda: False)
+    assert summary.total == 5

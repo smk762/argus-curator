@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -1012,3 +1013,129 @@ def test_export_with_guard_filters_on_unchecked_scan_is_refused(contained: tuple
         resp = client.post("/export", json={"scan_id": scan["scan_id"], "dest": "out", **body})
         assert resp.status_code == 400, body
         assert "SingGuard" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Stopping a scan, and purging the cache
+# ---------------------------------------------------------------------------
+
+
+def _summary(scan_id: str, folder: str, total: int):
+    from argus_curator.models import FaceConfig, ScanConfig, ScanSummary, TargetProfile
+
+    return ScanSummary(
+        scan_id=scan_id,
+        folder=folder,
+        target_profile=TargetProfile(),
+        config=ScanConfig(),
+        faces_config=FaceConfig(),
+        total=total,
+        passed=0,
+        rejected=0,
+        duplicates=0,
+        similar_clusters=0,
+    )
+
+
+def _slow_scan(monkeypatch: pytest.MonkeyPatch, started: threading.Event) -> None:
+    """Stand in for the scanner: report progress until asked to stop."""
+    import time
+
+    from argus_curator.runtime import ScanCancelled
+    from argus_curator.server import app as app_mod
+
+    def fake_scan_folder(folder, profile, cfg, faces_cfg, *, scan_id, progress, cancelled, save=None, **_):
+        for i in range(200):
+            progress({"phase": "guard", "done": i, "total": 200, "pending_checks": ["guard"]})
+            if save is not None:
+                save(_summary(scan_id, str(folder), total=200))
+            started.set()
+            if cancelled():
+                raise ScanCancelled(f"scan {scan_id} was cancelled")
+            time.sleep(0.02)
+        raise AssertionError("the scan was never stopped")
+
+    monkeypatch.setattr(app_mod.scanner, "scan_folder", fake_scan_folder)
+
+
+def test_cancel_stops_the_running_scan_and_drops_its_snapshot(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _exports = contained
+    started = threading.Event()
+    _slow_scan(monkeypatch, started)
+
+    assert client.post("/scan/nothing/cancel").status_code == 404
+
+    events: list = []
+
+    def run() -> None:
+        resp = client.post("/scan/folder/stream", json={"folder": "", "faces": {"enabled": False}})
+        events.extend(_parse_sse(resp.text))
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert started.wait(5)
+    active = client.get("/scans").json()["active"]
+    assert active and active["cancelling"] is False
+    scan_id = active["scan_id"]
+    assert client.post("/scan/some-other-id/cancel").status_code == 404
+
+    resp = client.post(f"/scan/{scan_id}/cancel")
+    assert resp.status_code == 200 and resp.json() == {"scan_id": scan_id, "cancelling": True}
+    worker.join(5)
+    assert not worker.is_alive()
+    assert [k for k, _ in events][-1] == "cancelled" and events[-1][1] == {"scan_id": scan_id}
+    listed = client.get("/scans").json()
+    assert listed["active"] is None
+    assert all(row["scan_id"] != scan_id for row in listed["scans"]), "a cancelled scan is not a result"
+    assert client.get(f"/scan/{scan_id}").status_code == 404
+    # A second cancel of a scan that is over is a 404 too, not an error.
+    assert client.post(f"/scan/{scan_id}/cancel").status_code == 404
+
+
+def test_purge_stops_the_scan_and_empties_the_cache(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _exports = contained
+    store = client.app.state.scan_store
+    for i in range(3):
+        store.save(_summary(f"old{i}", "/data/images", total=1))
+    assert len(client.get("/scans").json()["scans"]) == 3
+
+    # With nothing running, a purge just empties the cache.
+    resp = client.post("/scans/purge")
+    assert resp.status_code == 200 and resp.json() == {"cancelled": None, "deleted": 3}
+    assert client.get("/scans").json() == {"active": None, "scans": []}
+
+    started = threading.Event()
+    _slow_scan(monkeypatch, started)
+    events: list = []
+    worker = threading.Thread(
+        target=lambda: events.extend(
+            _parse_sse(client.post("/scan/folder/stream", json={"folder": "", "faces": {"enabled": False}}).text)
+        )
+    )
+    worker.start()
+    assert started.wait(5)
+    scan_id = client.get("/scans").json()["active"]["scan_id"]
+
+    resp = client.post("/scans/purge")
+    worker.join(5)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cancelled"] == scan_id and body["deleted"] >= 0
+    assert [k for k, _ in events][-1] == "cancelled"
+    assert client.get("/scans").json() == {"active": None, "scans": []}
+
+
+def test_health_says_it_can_stop_and_purge(client: TestClient) -> None:
+    assert client.get("/health").json()["scan_control"] is True
+
+
+def test_cancel_and_purge_are_writes(contained: tuple[TestClient, Path]) -> None:
+    """A cross-site page cannot stop or purge."""
+    client, _exports = contained
+    evil = {"Origin": "https://evil.example"}
+    assert client.post("/scans/purge", headers=evil).status_code == 403
+    assert client.post("/scan/x/cancel", headers=evil).status_code == 403
