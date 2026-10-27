@@ -518,9 +518,10 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 The `*/stream` variants emit `event: progress` frames (`{phase, done, total}`)
 while the work runs, then a single `event: complete` frame carrying the same
 payload the non-streaming endpoint returns (or `event: error`). A scan runs
-`scoring` → `faces` → `nsfw` → `scenes` → `garments` → `guard` → `identities`
-→ `clustering`: ages and the exposed score come first, so a viewer can lift a
-blur as soon as both are known. Scan progress and `event: chunk` frames carry
+`scoring` → `faces` and `nsfw` together → `scenes` → `garments` → `guard` →
+`identities` → `clustering`: ages and the exposed score come first, so a
+viewer can lift a blur as soon as both are known, and their progress events
+interleave while both run. Scan progress and `event: chunk` frames carry
 `pending_checks`, the checks among `faces`, `nsfw` and `guard` whose results
 have not all landed yet; a check that could not run is not listed.
 
