@@ -437,6 +437,17 @@ lists the names in `singguard_policies`.
 `adult-granular` (a letter per hard case: A minors, H non-consent, I sexual
 violence) and `adult-cautious` (doubt about age or consent counts as rule A)
 are under evaluation against `adult`; don't build on them yet.
+
+To compare policies on your own images, judge one scan under several:
+`"guard": {"policy": "adult", "variants": ["adult-granular", "adult-cautious"]}`
+(CLI `--guard-variants`). `guard` stays the official verdict, and
+`guard_variants` holds every policy's verdict by name, the official one
+included. A missing name means that check failed. Each variant is one more
+SingGuard pass per image. The filters read the official verdict unless
+`guard_policies` lists others (CLI `--guard-policies`). An image is then
+dropped if any listed verdict fails, or is missing, with the policy named in
+the keep reason (`guard-unsafe:adult-granular`). The CSV report adds a
+`guard_variants` column.
 `scripts/guard_eval.py --url <singguard>` scores every policy on the text
 probes in `eval/guard_probes.jsonl` and on an optional folder of images
 sorted by expected verdict.

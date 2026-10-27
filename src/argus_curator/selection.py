@@ -14,7 +14,7 @@ from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
 from argus_curator.garments import outfit, outfit_similarity
 from argus_curator.guard import rule_matches
-from argus_curator.models import ExportRequest, FaceAttributes, ImageResult, ScanSummary
+from argus_curator.models import ExportRequest, FaceAttributes, GuardResult, ImageResult, ScanSummary
 from argus_curator.nsfw import exposed_score
 
 # A MiVOLO age under this, together with any reported exposed detection, is never kept.
@@ -232,26 +232,45 @@ def _nsfw_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
     return None
 
 
-def _guard_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
-    """Keep-reason when *r* fails the SingGuard filters, else ``None``.
+def _verdict_exclusion(verdict: GuardResult | None, req: ExportRequest) -> str | None:
+    """Keep-reason when one verdict fails the SingGuard filters, else ``None``.
 
     Unchecked images are excluded, as with NudeNet. With only ``guard_rules``,
     an unsafe image whose rules are all unlisted is kept; one that names no
     rule at all is excluded, since it cannot be shown to be unlisted.
     """
-    if not req.guard_unsafe and not req.guard_rules:
-        return None
-    if r.guard is None:
+    if verdict is None:
         return "guard-unchecked"
-    if r.guard.safe:
+    if verdict.safe:
         return None
     if req.guard_unsafe:
         return "guard-unsafe"
-    if not r.guard.rules:
+    if not verdict.rules:
         return "guard-rule-unknown"
     for wanted in req.guard_rules or []:
-        if any(rule_matches(fired, wanted) for fired in r.guard.rules):
+        if any(rule_matches(fired, wanted) for fired in verdict.rules):
             return f"guard-rule-{re.sub(r'[^a-z0-9]+', '-', wanted.casefold()).strip('-')}"
+    return None
+
+
+def _guard_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
+    """Keep-reason when *r* fails the SingGuard filters, else ``None``.
+
+    With ``guard_policies`` every listed verdict is tested, and the first that
+    fails names its policy (``guard-unsafe:adult-granular``). A policy the scan
+    ran as a variant but whose check failed for *r* is unchecked; it never
+    falls back to the official verdict. :func:`guard_filter_problem` refuses
+    names the scan did not run.
+    """
+    if not req.guard_unsafe and not req.guard_rules:
+        return None
+    if not req.guard_policies:
+        return _verdict_exclusion(r.guard, req)
+    for name in req.guard_policies:
+        # A scan without variants has only the official verdict.
+        verdict = r.guard_variants.get(name) if r.guard_variants is not None else r.guard
+        if (reason := _verdict_exclusion(verdict, req)) is not None:
+            return f"{reason}:{name}"
     return None
 
 
@@ -261,6 +280,12 @@ def guard_filter_problem(req: ExportRequest, summary: ScanSummary) -> str | None
         return (
             "SingGuard filters need a scan that ran SingGuard; this one did not "
             "(set ARGUS_CURATOR_SINGGUARD_URL and rescan)"
+        )
+    ran = [summary.guard_config.policy, *summary.guard_config.variants]
+    missing = [name for name in req.guard_policies or [] if name not in ran]
+    if missing:
+        return (
+            f"guard_policies {', '.join(missing)}: this scan judged only {', '.join(ran)} (rescan with guard.variants)"
         )
     return None
 

@@ -36,7 +36,7 @@ from argus_cortex.moderation import (
     rule_matches,  # noqa: F401 - re-exported for selection
 )
 
-from argus_curator.models import GuardConfig, GuardPolicy, ImageResult
+from argus_curator.models import GuardConfig, GuardPolicy, GuardResult, ImageResult
 from argus_curator.remote import check_all, env_set, env_value, float_env
 from argus_curator.runtime import ModelUnavailable
 
@@ -218,21 +218,46 @@ def check_images(
     on_done: Callable[..., None] | None = None,
 ) -> bool:
     """Set ``guard`` on every image (see :func:`remote.check_all`); return whether
-    the check ran at all."""
+    the check ran at all.
+
+    With ``cfg.variants``, every image is then judged again under each variant,
+    one pass per policy, and ``guard_variants`` holds every verdict by policy
+    name, the official one included. Progress counts images times policies.
+    """
     if not resolve_enabled(cfg):
         return False
-    guard = client(cfg.policy)
-    if guard is None:
+    names = [cfg.policy, *cfg.variants]
+    clients = {name: client(name) for name in names}
+    if clients[cfg.policy] is None:
         raise ModelUnavailable(f"SingGuard check requested but {URL_ENV} is not set")
-    # The client names a policy by its text's hash; record the name asked for.
-    recorded, _text = policy(cfg.policy)
-    check_all(
-        results,
-        items,
-        lambda data, _rel: guard.check(data).model_copy(update={"policy": recorded}),
-        "guard",
-        int(float_env(WORKERS_ENV, DEFAULT_WORKERS)),
-        progress,
-        on_done=on_done,
-    )
+    workers = int(float_env(WORKERS_ENV, DEFAULT_WORKERS))
+    has_data = {rel for rel, _abs, data in items if data is not None}
+    pending = sum(1 for r in results if r.rel_path in has_data)
+    grand_total = pending * len(names)
+
+    for offset, name in enumerate(names):
+        guard = clients[name]
+        # The client names a policy by its text's hash; record the name asked for.
+        recorded, _text = policy(name)
+        official = name == cfg.policy
+        base = offset * pending
+
+        def store(r: ImageResult, value: GuardResult, name: str = name, official: bool = official) -> None:
+            if official:
+                r.guard = value
+            if cfg.variants:
+                r.guard_variants = {**(r.guard_variants or {}), name: value}
+
+        check_all(
+            results,
+            items,
+            lambda data, _rel, guard=guard, recorded=recorded: guard.check(data).model_copy(
+                update={"policy": recorded}
+            ),
+            "guard" if official else f"guard:{name}",
+            workers,
+            (lambda done, _total, base=base: progress(base + done, grand_total)) if progress else None,
+            on_done=(lambda r, done, _total, base=base: on_done(r, base + done, grand_total)) if on_done else None,
+            store=store,
+        )
     return True
