@@ -166,10 +166,23 @@ class FaceConfig(BaseModel):
     fairface: bool = False  # race, gender, age bracket
     mivolo: bool = False  # age in years, gender (supersedes FairFace's)
 
+    # Read an age for the frames with no face off the set they belong to (see
+    # faces.infer_set_age). Only when the scan looks like one subject: at
+    # least set_age_min_faces MiVOLO ages, and at least set_age_min_share of
+    # the faces in one identity. The frames with no face are often the most
+    # explicit ones, and MiVOLO has nothing to read on them. Off by default:
+    # in a mixed folder the inherited age would be someone else's.
+    set_age: bool = False
+    set_age_min_faces: int = Field(5, ge=1)
+    set_age_min_share: float = Field(0.9, ge=0.0, le=1.0)
+
     @model_validator(mode="after")
     def _attributes_need_faces(self) -> FaceConfig:
         # Attributes are read off detected faces; asking for them without
-        # detection would otherwise silently yield nothing.
+        # detection would otherwise silently yield nothing. A set age is read
+        # off MiVOLO ages.
+        if self.set_age:
+            self.mivolo = True
         if self.fairface or self.mivolo:
             self.enabled = True
         return self
@@ -273,6 +286,23 @@ class FaceAttributes(BaseModel):
     age_source: AttributeSource | None = None
 
 
+class SetAge(BaseModel):
+    """An age for a frame with no face, read off the set the frame belongs to.
+
+    ``years`` is the median MiVOLO age of the faces in the scan's dominant
+    identity, ``cluster_id`` that identity, ``faces`` how many ages it is read
+    from, and ``share`` the fraction of the scan's faces in it. It is an
+    inference about the set, not a reading of this frame: a viewer shows it as
+    such, and treats it as it treats a measured age where a wrong age would be
+    the costlier mistake.
+    """
+
+    years: float
+    cluster_id: str
+    faces: int
+    share: float
+
+
 class FaceDetection(BaseModel):
     """One detected face within an image."""
 
@@ -356,6 +386,8 @@ class ImageResult(BaseModel):
     primary_face_yaw: float | None = None
     # Attributes of the primary face (when FaceConfig.fairface / .mivolo ran).
     primary_face_attributes: FaceAttributes | None = None
+    # Only on a passing frame with no face, when FaceConfig.set_age found one subject.
+    set_age: SetAge | None = None
 
     # Places365 scene tags (when SceneConfig.enabled ran).
     scene: SceneTags | None = None
@@ -408,6 +440,10 @@ class ScanSummary(BaseModel):
 
     reject_reasons: dict[str, int] = Field(default_factory=dict)
     face_clusters: list[FaceCluster] = Field(default_factory=list)
+    # When FaceConfig.set_age asked: the set age given to the frames with no
+    # face, or why none was (``set_age_skipped``). Both None when not asked.
+    set_age: SetAge | None = None
+    set_age_skipped: str | None = None
     results: list[ImageResult] = Field(default_factory=list)
 
     # Pagination metadata (server fills these when slicing ``results``)

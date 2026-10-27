@@ -405,6 +405,8 @@ def create_app(
             # A client asks, rather than sniffing the version: this server can
             # stop a running scan and purge the scan cache (0.6 and later).
             "scan_control": True,
+            # FaceConfig.set_age: frames with no face can take the set's age (0.7 and later).
+            "set_age": True,
         }
 
     @app.get("/detectors")

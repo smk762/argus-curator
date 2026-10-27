@@ -21,7 +21,7 @@ import numpy as np
 import structlog
 
 from argus_curator.attributes import RawAttributes, pool, to_attributes
-from argus_curator.models import FaceCluster, FaceConfig, FaceDetection, ImageResult
+from argus_curator.models import FaceCluster, FaceConfig, FaceDetection, ImageResult, SetAge
 from argus_curator.runtime import providers
 
 logger = structlog.get_logger()
@@ -368,6 +368,47 @@ def cluster_identities(
         )
     clusters.sort(key=lambda c: -c.size)
     return clusters
+
+
+def infer_set_age(
+    results: list[ImageResult], clusters: list[FaceCluster], cfg: FaceConfig
+) -> tuple[SetAge | None, str | None]:
+    """Give the passing frames with no face an age read off the set, when the scan looks like one subject.
+
+    The dominant identity must hold at least ``cfg.set_age_min_share`` of the
+    scan's faces and have at least ``cfg.set_age_min_faces`` MiVOLO ages; its
+    median age becomes each faceless frame's :class:`SetAge`. Returns the age
+    and ``None``, or ``None`` and why nothing was given. Frames the hard
+    filters rejected are left alone: face detection never looked at them.
+    """
+    if not clusters:
+        return None, "no faces were found in this scan"
+    total = sum(cluster.size for cluster in clusters)
+    top = max(clusters, key=lambda cluster: cluster.size)
+    share = top.size / total if total else 0.0
+    if share < cfg.set_age_min_share:
+        return (
+            None,
+            f"the largest identity ({top.cluster_id}) has {share:.0%} of the faces, {cfg.set_age_min_share:.0%} needed",
+        )
+    ages = [
+        face.attributes.age_years
+        for r in results
+        for face in r.faces
+        if face.cluster_id == top.cluster_id
+        and face.attributes is not None
+        and face.attributes.age_years is not None
+        and face.attributes.age_source in (None, "mivolo")
+    ]
+    if len(ages) < cfg.set_age_min_faces:
+        return None, f"{top.cluster_id} has {len(ages)} MiVOLO ages, {cfg.set_age_min_faces} needed"
+    set_age = SetAge(
+        years=round(float(np.median(ages)), 1), cluster_id=top.cluster_id, faces=len(ages), share=round(share, 3)
+    )
+    for r in results:
+        if r.passed and not r.faces:
+            r.set_age = set_age
+    return set_age, None
 
 
 def detect_and_cluster(

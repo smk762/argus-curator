@@ -443,12 +443,13 @@ def scan_items(
 
     When *progress* is supplied it is called with ``{phase, done, total,
     pending_checks}`` dicts as the scan advances through its ``scoring`` ->
-    ``faces`` + ``nsfw`` -> ``scenes`` -> ``garments`` -> ``guard`` ->
-    ``identities`` -> ``clustering`` phases. Face detection (MiVOLO ages and
+    ``faces`` + ``nsfw`` -> ``identities`` -> ``scenes`` -> ``garments`` ->
+    ``guard`` -> ``clustering`` phases. Face detection (MiVOLO ages and
     FairFace race) and NudeNet run at the same time and their progress events
     interleave, so a viewer has what it needs to lift a blur as early as it is
-    safe to; scenes and garments come after, since nothing waits on them. Identity clustering waits until the checks
-    finish. A caller can drive a live progress UI (see the SSE endpoint).
+    safe to. Identities follow at once, and with ``FaceConfig.set_age`` the
+    frames with no face get the set's age then, before SingGuard reads it as
+    context; scenes and garments come after, since nothing waits on them. A caller can drive a live progress UI (see the SSE endpoint).
     *chunk* receives the images finished since the previous call, and *save*
     receives a partial summary so a scan can be reopened while it is still
     running. ``pending_checks`` names the checks (``faces``, ``nsfw``,
@@ -493,6 +494,12 @@ def scan_items(
 
     # Whether each opt-out check actually ran, read when a snapshot is saved.
     ran = {"nsfw": False, "guard": False}
+    # The set age given to the frames with no face, or why none was.
+    # Until the identities phase a saved snapshot says the age is still to come.
+    set_age: dict[str, Any] = {
+        "age": None,
+        "skipped": "the identities have not been read yet" if faces_cfg.set_age else None,
+    }
     # Face detection and NudeNet run side by side, so chunks, saves and the
     # completed set are touched under one lock.
     lock = threading.Lock()
@@ -520,6 +527,8 @@ def scan_items(
             similar_clusters=0,
             reject_reasons=_tally_reasons(rejected),
             face_clusters=face_clusters,
+            set_age=set_age["age"],
+            set_age_skipped=set_age["skipped"],
             results=rows,
             returned=len(rows),
         )
@@ -666,6 +675,22 @@ def scan_items(
         if faces_future is not None:
             detected_faces = faces_future.result()
 
+    # Identities, as soon as the faces are in: the clustering is quick and
+    # local, and the set age read off the dominant identity is part of the
+    # context SingGuard gets for a frame with no face, so it comes before
+    # the guard pass. The ages themselves went out with the faces chunks.
+    check_cancelled()
+    if detected_faces is not None:
+        from argus_curator import faces as faces_mod
+
+        emit("identities", 0, total)
+        face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
+        if faces_cfg.set_age:
+            set_age["age"], set_age["skipped"] = faces_mod.infer_set_age(results, face_clusters, faces_cfg)
+            logger.info("set_age", years=set_age["age"].years if set_age["age"] else None, skipped=set_age["skipped"])
+        emit("identities", total, total)
+        deliver("identities", total, total, results, force=True)
+
     # Places365 scene tags (optional): whole-image, independent of faces.
     if scene_cfg.enabled:
         from argus_curator import scenes as scenes_mod
@@ -716,14 +741,6 @@ def scan_items(
         finish("guard")
 
     check_cancelled()
-    if detected_faces is not None:
-        from argus_curator import faces as faces_mod
-
-        emit("identities", 0, total)
-        face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
-        emit("identities", total, total)
-        deliver("identities", total, total, results, force=True)
-
     emit("clustering", 0, total)
     _mark_duplicates(results, cfg)
     multi = _assign_clusters(results)

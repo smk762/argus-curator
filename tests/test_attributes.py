@@ -22,7 +22,9 @@ from argus_curator.models import (
     FACE_RACES,
     ExportRequest,
     FaceAttributes,
+    FaceCluster,
     FaceConfig,
+    FaceDetection,
     ImageResult,
 )
 from argus_curator.selection import decide_selection
@@ -425,3 +427,76 @@ def test_inverted_age_range_is_rejected() -> None:
     with pytest.raises(ValidationError, match="above max_age_years"):
         ExportRequest(dest="/out", min_age_years=40, max_age_years=25)
     assert ExportRequest(dest="/out", min_age_years=25, max_age_years=25).min_age_years == 25
+
+
+# ---------------------------------------------------------------------------
+# Set age: frames with no face take the set's age when one identity holds the scan
+# ---------------------------------------------------------------------------
+
+
+def _faced(rel: str, cluster: str, years: float | None, *, passed: bool = True, source: str = "mivolo") -> ImageResult:
+    attrs = FaceAttributes(age_years=years, age_source=source) if years is not None else None
+    face = FaceDetection(bbox=[0, 0, 1, 1], det_score=0.9, primary=True, cluster_id=cluster, attributes=attrs)
+    return ImageResult(
+        rel_path=rel, abs_path=f"/d/{rel}", passed=passed, faces=[face], face_count=1, primary_face_attributes=attrs
+    )
+
+
+def _faceless(rel: str, *, passed: bool = True) -> ImageResult:
+    return ImageResult(rel_path=rel, abs_path=f"/d/{rel}", passed=passed)
+
+
+def _clusters(*sizes: tuple[str, int]) -> list[FaceCluster]:
+    return [FaceCluster(cluster_id=cid, size=n, representative_rel_path="x.jpg") for cid, n in sizes]
+
+
+def test_set_age_is_the_dominant_identitys_median_and_lands_on_faceless_frames() -> None:
+    cfg = FaceConfig(set_age=True)
+    assert cfg.mivolo and cfg.enabled  # a set age is read off MiVOLO ages
+    results = [
+        *(
+            _faced(f"f{i}.jpg", "face_1", age)
+            for i, age in enumerate([18.2, 19.4, 18.9, 21.0, 17.5, 19.1, 18.4, 19.6, 20.2, 18.6])
+        ),
+        _faced("other.jpg", "face_2", 44.0),  # one stray face in eleven does not break the set
+        _faceless("body1.jpg"),
+        _faceless("body2.jpg"),
+        _faceless("blurry.jpg", passed=False),  # rejected: detection never looked
+    ]
+    age, why = faces.infer_set_age(results, _clusters(("face_1", 10), ("face_2", 1)), cfg)
+    assert why is None and age is not None
+    assert age.years == 19.0 and age.cluster_id == "face_1" and age.faces == 10 and age.share == round(10 / 11, 3)
+    by = {r.rel_path: r for r in results}
+    assert by["body1.jpg"].set_age == age and by["body2.jpg"].set_age == age
+    assert by["blurry.jpg"].set_age is None
+    assert all(r.set_age is None for r in results if r.faces)
+
+
+def test_set_age_is_withheld_when_the_scan_is_not_one_subject() -> None:
+    cfg = FaceConfig(set_age=True)
+    faceless = [_faceless("body.jpg")]
+
+    age, why = faces.infer_set_age(faceless, [], cfg)
+    assert age is None and why == "no faces were found in this scan"
+
+    mixed = [
+        *(_faced(f"a{i}.jpg", "face_1", 20.0) for i in range(6)),
+        *(_faced(f"b{i}.jpg", "face_2", 30.0) for i in range(4)),
+        *faceless,
+    ]
+    age, why = faces.infer_set_age(mixed, _clusters(("face_1", 6), ("face_2", 4)), cfg)
+    assert age is None and why == "the largest identity (face_1) has 60% of the faces, 90% needed"
+    assert faceless[0].set_age is None
+
+    few = [*(_faced(f"a{i}.jpg", "face_1", 20.0) for i in range(3)), *faceless]
+    age, why = faces.infer_set_age(few, _clusters(("face_1", 3)), cfg)
+    assert age is None and why == "face_1 has 3 MiVOLO ages, 5 needed"
+
+    # FairFace brackets are not years and do not count.
+    bracketed = [*(_faced(f"a{i}.jpg", "face_1", 20.0, source="fairface") for i in range(6)), *faceless]
+    age, why = faces.infer_set_age(bracketed, _clusters(("face_1", 6)), cfg)
+    assert age is None and why == "face_1 has 0 MiVOLO ages, 5 needed"
+
+    # The thresholds are the caller's to set.
+    age, why = faces.infer_set_age(few, _clusters(("face_1", 3)), FaceConfig(set_age=True, set_age_min_faces=3))
+    assert why is None and age is not None and age.faces == 3

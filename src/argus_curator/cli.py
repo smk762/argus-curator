@@ -77,6 +77,11 @@ def scan(
     fairface_model: Path | None = Option(
         None, "--fairface-model", help="Converted FairFace ONNX model (ARGUS_CURATOR_FAIRFACE_MODEL)"
     ),
+    set_age: bool = Option(
+        False,
+        "--set-age",
+        help="Give frames with no face the set's median MiVOLO age when one identity holds the scan (implies --mivolo)",
+    ),
     mivolo_model: Path | None = Option(
         None, "--mivolo-model", help="Converted MiVOLO ONNX model (ARGUS_CURATOR_MIVOLO_MODEL)"
     ),
@@ -251,6 +256,7 @@ def scan(
         device=device,
         fairface=fairface,
         mivolo=mivolo,
+        set_age=set_age,
     )
 
     scene_cfg = SceneConfig(enabled=scenes, top_k=scene_top_k, device=device)
