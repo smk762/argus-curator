@@ -1,0 +1,20 @@
+---
+description: Keep main releasable by doing work on dev in a worktree
+alwaysApply: true
+---
+
+# Git workflow
+
+`main` is the release branch. Do not commit on it, and do not push it.
+
+`dev` is `main` plus updates that are not released yet. Before starting work, fetch and merge `origin/main` into `dev`.
+
+Do each change in a worktree branched from `dev`. Open a pull request into `dev`. A release is a pull request from `dev` into `main`.
+
+```bash
+git fetch origin
+git switch dev && git merge origin/main
+git worktree add ../argus-curator-<topic> -b <topic> dev
+```
+
+Do not force-push `main`. Do not commit secrets.

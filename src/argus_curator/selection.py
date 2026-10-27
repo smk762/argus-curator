@@ -11,10 +11,15 @@ import re
 
 import imagehash
 
+from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
+
 from argus_curator.garments import outfit, outfit_similarity
 from argus_curator.guard import rule_matches
-from argus_curator.models import ExportRequest, ImageResult, ScanSummary
+from argus_curator.models import ExportRequest, FaceAttributes, ImageResult, ScanSummary
 from argus_curator.nsfw import exposed_score
+
+# A MiVOLO age under this, together with any reported exposed detection, is never kept.
+MINOR_AGE_YEARS = 18.0
 
 _MAX_DIST = 64.0  # maximum 64-bit pHash Hamming distance
 
@@ -104,6 +109,29 @@ def select_diverse(
         remaining.remove(best_idx)
 
     return [candidates[i] for i in selected_idx]
+
+
+def _mivolo_years(attrs: FaceAttributes | None) -> float | None:
+    """MiVOLO's age in years, ignoring a FairFace bracket that has no year value."""
+    if attrs is None or attrs.age_years is None:
+        return None
+    if attrs.age_source not in (None, "mivolo"):
+        return None
+    return attrs.age_years
+
+
+def minor_exposed(result: ImageResult) -> bool:
+    """True when any MiVOLO age is under 18 and an exposed class scored at least 0.2.
+
+    0.2 is the lowest score NudeNet reports, so this is any detection of the
+    default exposed classes. Covered parts, faces, belly, feet, and chest do
+    not count. The check uses every face on the image, not only the primary.
+    """
+    if result.nsfw is None or exposed_score(result.nsfw.labels) < MIN_REPORTED_SCORE:
+        return False
+    years = [_mivolo_years(face.attributes) for face in result.faces]
+    years.append(_mivolo_years(result.primary_face_attributes))
+    return any(age is not None and age < MINOR_AGE_YEARS for age in years)
 
 
 def _attribute_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
@@ -273,6 +301,9 @@ def decide_selection(
     Mirrors PR #14's ``_decide_keep``: applies score threshold, rejected/duplicate
     gates, optional face-cluster / pose / attribute / scene / garment / NSFW /
     SingGuard filters, then an optional diversity cap.
+
+    An under-18 face with a reported exposed score is rejected first, whatever
+    the request asked to keep.
     """
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
@@ -280,7 +311,9 @@ def decide_selection(
 
     eligible: list[ImageResult] = []
     for r in results:
-        if r.score < req.min_score:
+        if minor_exposed(r):
+            keep_reason[r.rel_path] = "minor-exposed"
+        elif r.score < req.min_score:
             keep_reason[r.rel_path] = "below-score"
         elif not r.passed and not req.include_rejected:
             keep_reason[r.rel_path] = r.reject_reason or "rejected"

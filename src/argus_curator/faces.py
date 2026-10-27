@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 import structlog
@@ -208,40 +209,56 @@ def _face_attributes(
     return raws
 
 
-def detect_and_cluster(
+@dataclass
+class DetectedFaces:
+    """Face embeddings held until identity clustering. Not written into the scan."""
+
+    embeddings: list[np.ndarray]
+    # (rel_path, face_index_within_image, bbox_xywh, det_score, centrality, area)
+    meta: list[tuple[str, int, list[float], float, float, float]]
+    raws: list[RawAttributes]
+
+
+def _assign_primary(result: ImageResult) -> None:
+    """Largest, most central face becomes the primary. A cluster id is copied when it exists."""
+    if not result.faces:
+        return
+    primary_i = max(
+        range(len(result.faces)),
+        key=lambda i: (result.faces[i].bbox[2] * result.faces[i].bbox[3]) * (0.5 + 0.5 * result.faces[i].det_score),
+    )
+    for i, face in enumerate(result.faces):
+        face.primary = i == primary_i
+    primary = result.faces[primary_i]
+    result.primary_face_cluster = primary.cluster_id
+    result.primary_face_pose = primary.pose
+    result.primary_face_yaw = primary.yaw
+    result.primary_face_attributes = primary.attributes
+
+
+def detect_faces(
     results: list[ImageResult],
     items: list[tuple[str, str, bytes]],
     cfg: FaceConfig,
     progress: Callable[[int, int], None] | None = None,
-) -> list[FaceCluster]:
-    """Detect faces on passing images, cluster identities, mutate ``results``.
+    on_done: Callable[[ImageResult, int, int], None] | None = None,
+) -> DetectedFaces:
+    """Detect faces and run MiVOLO and FairFace. Identity clustering is separate.
 
-    Returns the dataset-wide list of :class:`FaceCluster`. Each result gets its
-    ``faces`` list, ``face_count``, and ``primary_face_cluster`` populated; with
-    ``cfg.fairface`` / ``cfg.mivolo`` each face, primary face and cluster also
-    gets predicted attributes (see :mod:`argus_curator.attributes`).
-
-    When *progress* is supplied it is called ``progress(done, total)`` as the
-    per-image detection sweep advances (``total`` = passing images), so a caller
-    can drive a determinate progress bar for the long detection pass. The final
-    embedding-clustering step is a single batched call and is not subdivided.
+    ``on_done(image, done, total)`` fires once each passing image has its faces,
+    so a caller can show ages and race before the rest of the scan. ``total`` is
+    the number of passing images.
     """
+    empty = DetectedFaces([], [], [])
     if not cfg.enabled:
-        return []
+        return empty
 
     app = _get_app(cfg)
     sessions = _attribute_sessions(cfg)
     data_by_rel = {rel: data for rel, _abs, data in items}
     result_by_rel = {r.rel_path: r for r in results}
+    found = DetectedFaces([], [], [])
 
-    # Detect faces on every passing image; collect embeddings to cluster jointly.
-    flat_embeddings: list[np.ndarray] = []
-    # (rel_path, face_index_within_image, bbox_xywh, det_score, centrality, area)
-    flat_meta: list[tuple[str, int, list[float], float, float, float]] = []
-    # Per-face raw attribute outputs, aligned with flat_meta (pooled per cluster).
-    flat_raw: list[RawAttributes] = []
-
-    # Materialise the work list up front so we know the total for progress.
     pending = [(rel, r) for rel, r in result_by_rel.items() if r.passed and data_by_rel.get(rel) is not None]
     total = len(pending)
     step = max(1, total // 100)  # throttle to ~100 updates over the sweep
@@ -251,60 +268,69 @@ def detect_and_cluster(
     for i, (rel, r) in enumerate(pending):
         if progress is not None and i % step == 0:
             progress(i, total)
-        data = data_by_rel[rel]
-        bgr = _to_bgr(data)
-        if bgr is None:
-            continue
-        try:
-            detections = app.get(bgr)
-        except Exception as exc:
-            logger.warning("face_detect_failed", rel_path=rel, error=str(exc))
-            continue
-
-        h, w = bgr.shape[:2]
-        kept = 0
-        kps_by_face: list[np.ndarray | None] = []
-        for face in detections:
-            det_score = float(getattr(face, "det_score", 0.0))
-            if det_score < cfg.min_det_score:
-                continue
-            x1, y1, x2, y2 = (float(v) for v in face.bbox)
-            bbox = [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)]
-            emb = getattr(face, "normed_embedding", None)
-            if emb is None:
-                emb = getattr(face, "embedding", None)
-                if emb is None:
-                    continue
-                emb = emb / (np.linalg.norm(emb) + 1e-9)
-            area = bbox[2] * bbox[3]
-            yaw, pitch = _extract_pose(face)
-            flat_embeddings.append(np.asarray(emb, dtype=np.float32))
-            flat_meta.append((rel, kept, bbox, det_score, _centrality(bbox, w, h), area))
-            r.faces.append(
-                FaceDetection(
-                    bbox=bbox,
-                    det_score=round(det_score, 4),
-                    yaw=round(yaw, 2) if yaw is not None else None,
-                    pitch=round(pitch, 2) if pitch is not None else None,
-                    pose=classify_pose(yaw, cfg),
-                )
-            )
-            kps_by_face.append(getattr(face, "kps", None))
-            kept += 1
-        r.face_count = kept
-
-        raws = _face_attributes(sessions, bgr, kps_by_face, [f.bbox for f in r.faces], rel)
-        for f, raw in zip(r.faces, raws, strict=True):
-            f.attributes = to_attributes(raw)
-        flat_raw.extend(raws)
+        bgr = _to_bgr(data_by_rel[rel])
+        if bgr is not None:
+            try:
+                detections = app.get(bgr)
+            except Exception as exc:
+                logger.warning("face_detect_failed", rel_path=rel, error=str(exc))
+                detections = None
+            if detections is not None:
+                h, w = bgr.shape[:2]
+                kept = 0
+                kps_by_face: list[np.ndarray | None] = []
+                for face in detections:
+                    det_score = float(getattr(face, "det_score", 0.0))
+                    if det_score < cfg.min_det_score:
+                        continue
+                    x1, y1, x2, y2 = (float(v) for v in face.bbox)
+                    bbox = [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)]
+                    emb = getattr(face, "normed_embedding", None)
+                    if emb is None:
+                        emb = getattr(face, "embedding", None)
+                        if emb is None:
+                            continue
+                        emb = emb / (np.linalg.norm(emb) + 1e-9)
+                    area = bbox[2] * bbox[3]
+                    yaw, pitch = _extract_pose(face)
+                    found.embeddings.append(np.asarray(emb, dtype=np.float32))
+                    found.meta.append((rel, kept, bbox, det_score, _centrality(bbox, w, h), area))
+                    r.faces.append(
+                        FaceDetection(
+                            bbox=bbox,
+                            det_score=round(det_score, 4),
+                            yaw=round(yaw, 2) if yaw is not None else None,
+                            pitch=round(pitch, 2) if pitch is not None else None,
+                            pose=classify_pose(yaw, cfg),
+                        )
+                    )
+                    kps_by_face.append(getattr(face, "kps", None))
+                    kept += 1
+                r.face_count = kept
+                raws = _face_attributes(sessions, bgr, kps_by_face, [f.bbox for f in r.faces], rel)
+                for f, raw in zip(r.faces, raws, strict=True):
+                    f.attributes = to_attributes(raw)
+                found.raws.extend(raws)
+                _assign_primary(r)
+        if on_done is not None:
+            on_done(r, i + 1, total)
 
     if progress is not None:
         progress(total, total)
+    return found
 
-    if not flat_embeddings:
+
+def cluster_identities(
+    results: list[ImageResult],
+    detected: DetectedFaces,
+    cfg: FaceConfig,
+) -> list[FaceCluster]:
+    """Group the embeddings from :func:`detect_faces` into ``face_<n>`` identities."""
+    if not detected.embeddings:
         return []
 
-    labels = _cluster_embeddings(np.vstack(flat_embeddings), cfg.cluster_eps)
+    result_by_rel = {r.rel_path: r for r in results}
+    labels = _cluster_embeddings(np.vstack(detected.embeddings), cfg.cluster_eps)
 
     # Stable, size-ordered cluster ids: the largest identity becomes face_1.
     raw_sizes: dict[int, int] = {}
@@ -317,27 +343,14 @@ def detect_and_cluster(
     cluster_members: dict[str, list[tuple[str, list[float], float]]] = {}
     cluster_raw: dict[str, list[RawAttributes]] = {}
 
-    for (rel, face_idx, bbox, det_score, _central, area), raw, lbl in zip(flat_meta, flat_raw, labels, strict=True):
+    for (rel, face_idx, bbox, det_score, _central, area), raw, lbl in zip(detected.meta, detected.raws, labels, strict=True):
         cluster_id = label_to_id[lbl]
         result_by_rel[rel].faces[face_idx].cluster_id = cluster_id
         cluster_members.setdefault(cluster_id, []).append((rel, bbox, det_score * (area or 1.0)))
         cluster_raw.setdefault(cluster_id, []).append(raw)
 
-    # Per-image primary face = largest * most-central detected face.
     for r in results:
-        if not r.faces:
-            continue
-        primary_i = max(
-            range(len(r.faces)),
-            key=lambda i: (r.faces[i].bbox[2] * r.faces[i].bbox[3]) * (0.5 + 0.5 * r.faces[i].det_score),
-        )
-        for i, f in enumerate(r.faces):
-            f.primary = i == primary_i
-        primary = r.faces[primary_i]
-        r.primary_face_cluster = primary.cluster_id
-        r.primary_face_pose = primary.pose
-        r.primary_face_yaw = primary.yaw
-        r.primary_face_attributes = primary.attributes
+        _assign_primary(r)
 
     clusters: list[FaceCluster] = []
     for cluster_id, members in cluster_members.items():
@@ -353,3 +366,14 @@ def detect_and_cluster(
         )
     clusters.sort(key=lambda c: -c.size)
     return clusters
+
+
+def detect_and_cluster(
+    results: list[ImageResult],
+    items: list[tuple[str, str, bytes]],
+    cfg: FaceConfig,
+    progress: Callable[[int, int], None] | None = None,
+) -> list[FaceCluster]:
+    """Detect, attribute, and cluster. Ages are set before clustering starts."""
+    detected = detect_faces(results, items, cfg, progress=progress)
+    return cluster_identities(results, detected, cfg)

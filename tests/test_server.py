@@ -164,6 +164,26 @@ def test_scan_stream_emits_progress_then_complete(contained: tuple[TestClient, P
     # The completed scan is persisted and fetchable like a non-streamed one.
     assert client.get(f"/scan/{summary['scan_id']}").status_code == 200
 
+    chunks = [payload for kind, payload in events if kind == "chunk"]
+    assert chunks, "expected image batches before the scan finished"
+    assert chunks[0]["results"]
+    assert chunks[0]["scan_id"] == summary["scan_id"]
+    listed = client.get("/scans").json()
+    assert listed["active"] is None
+    assert any(row["scan_id"] == summary["scan_id"] for row in listed["scans"])
+
+
+def test_scan_refuses_while_one_is_running(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    gate = client.app.state.scan_gate
+    gate.start("busy", "/data/images", ["guard"])
+    try:
+        refused = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}})
+        assert refused.status_code == 409
+        assert "already running" in refused.json()["detail"]
+    finally:
+        gate.finish("busy")
+
 
 def test_export_stream_emits_progress_then_complete(contained: tuple[TestClient, Path]) -> None:
     client, exports = contained
@@ -204,6 +224,81 @@ def test_export_stream_unknown_scan_404(client: TestClient) -> None:
 
 def test_unknown_scan_404(client: TestClient) -> None:
     assert client.get("/scan/does-not-exist").status_code == 404
+
+
+def test_delete_removes_only_an_under_18_exposed_file(tmp_path: Path) -> None:
+    from argus_curator.models import (
+        FaceAttributes,
+        FaceConfig,
+        FaceDetection,
+        ImageResult,
+        ScanConfig,
+        ScanSummary,
+        TargetProfile,
+    )
+    from argus_curator.nsfw import to_result
+    from argus_curator.store import ScanStore
+
+    root = tmp_path / "mount"
+    root.mkdir()
+    minor = root / "minor.png"
+    minor_b = root / "minor-b.png"
+    adult = root / "adult.png"
+    minor.write_bytes(_png_bytes())
+    minor_b.write_bytes(_png_bytes())
+    adult.write_bytes(_png_bytes())
+
+    def row(name: str, years: float, label: str) -> ImageResult:
+        return ImageResult(
+            rel_path=name,
+            abs_path=str(root / name),
+            score=0.9,
+            passed=True,
+            faces=[
+                FaceDetection(
+                    bbox=[0, 0, 4, 4],
+                    det_score=0.9,
+                    primary=True,
+                    attributes=FaceAttributes(age_years=years, age_source="mivolo"),
+                )
+            ],
+            primary_face_attributes=FaceAttributes(age_years=years, age_source="mivolo"),
+            nsfw=to_result([{"class": label, "score": 0.4, "box": [0, 0, 1, 1]}]),
+        )
+
+    cache = tmp_path / "cache"
+    ScanStore(cache).save(
+        ScanSummary(
+            scan_id="scan",
+            folder=str(root),
+            target_profile=TargetProfile(),
+            config=ScanConfig(),
+            faces_config=FaceConfig(),
+            total=3,
+            passed=3,
+            rejected=0,
+            duplicates=0,
+            similar_clusters=0,
+            results=[
+                row("minor.png", 16.0, "FEMALE_BREAST_EXPOSED"),
+                row("minor-b.png", 15.0, "BUTTOCKS_EXPOSED"),
+                row("adult.png", 30.0, "FEMALE_BREAST_EXPOSED"),
+            ],
+        )
+    )
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    refused = client.post("/scan/scan/delete", json={"rel_paths": ["minor.png", "adult.png"]})
+    assert refused.status_code == 403
+    assert minor.exists() and adult.exists()
+    deleted = client.post("/scan/scan/delete", json={"rel_paths": ["minor.png", "minor-b.png"]})
+    assert deleted.status_code == 200
+    assert deleted.json()["total"] == 1
+    assert not minor.exists() and not minor_b.exists()
+    assert adult.exists()
+    hidden = client.get("/image", params={"path": "adult.png", "scan_id": "scan"})
+    assert hidden.status_code == 200
+    gone = client.get("/image", params={"path": "minor.png", "scan_id": "scan"})
+    assert gone.status_code == 404
 
 
 def _png_bytes() -> bytes:

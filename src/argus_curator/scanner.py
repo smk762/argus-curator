@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,9 +51,16 @@ from argus_curator.models import (
 logger = structlog.get_logger()
 
 # A progress sink: called with {"phase": str, "done": int, "total": int}.
+# A chunk sink receives the same counts plus the images finished since the
+# previous chunk, so a grid can fill before the slow checks are done.
 # Kept deliberately tolerant — any raised exception is swallowed so a flaky
 # consumer (e.g. a disconnected SSE client) can never abort the scan itself.
 ProgressFn = Callable[[dict[str, Any]], None]
+ChunkFn = Callable[[dict[str, Any]], None]
+SaveFn = Callable[[ScanSummary], None]
+
+# How many newly finished images to hand the client at once.
+CHUNK_SIZE = 8
 
 
 def _emit(progress: ProgressFn | None, phase: str, done: int, total: int) -> None:
@@ -61,6 +69,30 @@ def _emit(progress: ProgressFn | None, phase: str, done: int, total: int) -> Non
     # Never let a flaky consumer (e.g. a disconnected SSE client) break a scan.
     with contextlib.suppress(Exception):  # pragma: no cover
         progress({"phase": phase, "done": done, "total": total})
+
+
+def _emit_chunk(chunk: ChunkFn | None, payload: dict[str, Any]) -> None:
+    if chunk is None:
+        return
+    with contextlib.suppress(Exception):  # pragma: no cover
+        chunk(payload)
+
+
+def pending_checks(phase: str, requested: list[str], *, phase_done: bool = False) -> list[str]:
+    """Checks still ahead of *phase*, so a client can hold images waiting on them.
+
+    ``phase_done`` means this phase's last image has been delivered. NudeNet
+    finishes before SingGuard starts; clustering means both are done.
+    """
+    if phase == "nsfw" and phase_done:
+        phase = "guard"
+    elif phase == "guard" and phase_done:
+        return []
+    elif phase not in {"starting", "collecting", "scoring", "faces", "scenes", "garments", "nsfw", "guard"}:
+        return []
+    if phase == "guard":
+        return [name for name in requested if name == "guard"]
+    return [name for name in requested if name in ("nsfw", "guard")]
 
 
 # ---------------------------------------------------------------------------
@@ -362,51 +394,150 @@ def scan_items(
     folder: str = "",
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
+    chunk: ChunkFn | None = None,
+    save: SaveFn | None = None,
 ) -> ScanSummary:
     """Score, (optionally) face-cluster, and de-duplicate a batch of images.
 
     When *progress* is supplied it is called with ``{phase, done, total}`` dicts
     as the scan advances through its ``scoring`` -> ``faces`` -> ``scenes`` ->
-    ``garments`` -> ``nsfw`` -> ``guard`` -> ``clustering`` phases, so a caller
-    can drive a live progress UI (see the SSE endpoint).
+    ``garments`` -> ``nsfw`` -> ``guard`` -> ``identities`` -> ``clustering``
+    phases. Face detection publishes MiVOLO ages and FairFace race before the
+    later checks; identity clustering waits until those checks finish. A caller
+    can drive a live progress UI (see the SSE endpoint). *chunk* receives the
+    images finished since the previous call, and *save* receives a partial
+    summary so a scan can be reopened while it is still running.
     """
+    from argus_curator import guard as guard_mod
+    from argus_curator import nsfw as nsfw_mod
+
     scan_id = scan_id or uuid.uuid4().hex
     total = len(items)
+    scene_cfg = scene_cfg or SceneConfig()
+    garment_cfg = garment_cfg or GarmentConfig()
+    nsfw_cfg = nsfw_cfg or NsfwConfig()
+    guard_cfg = guard_cfg or GuardConfig()
+    requested: list[str] = []
+    if nsfw_mod.resolve_enabled(nsfw_cfg):
+        requested.append("nsfw")
+    if guard_mod.resolve_enabled(guard_cfg):
+        requested.append("guard")
 
-    # Phase 1: per-image scoring — the long pole, reported incrementally.
-    _emit(progress, "scoring", 0, total)
     results_by_rel: dict[str, ImageResult] = {}
+    face_clusters: list[Any] = []
+    saved_at = 0.0
+
+    def ordered() -> list[ImageResult]:
+        return [results_by_rel[rel] for rel, _, _ in items if rel in results_by_rel]
+
+    def snapshot(nsfw_ran: bool, guard_ran: bool) -> ScanSummary:
+        rows = ordered()
+        rejected = [r for r in rows if not r.passed]
+        passed = [r for r in rows if r.passed]
+        duplicates = [r for r in passed if r.is_duplicate]
+        return ScanSummary(
+            scan_id=scan_id,
+            folder=folder,
+            target_profile=profile,
+            config=cfg,
+            faces_config=faces_cfg,
+            scenes_config=scene_cfg,
+            garments_config=garment_cfg,
+            nsfw_config=NsfwConfig(enabled=nsfw_ran),
+            guard_config=GuardConfig(enabled=guard_ran),
+            total=total,
+            passed=len(passed),
+            rejected=len(rejected),
+            duplicates=len(duplicates),
+            similar_clusters=0,
+            reject_reasons=_tally_reasons(rejected),
+            face_clusters=face_clusters,
+            results=rows,
+            returned=len(rows),
+        )
+
+    def maybe_save(summary: ScanSummary, *, force: bool = False) -> None:
+        nonlocal saved_at
+        if save is None:
+            return
+        now = time.monotonic()
+        if not force and saved_at and now - saved_at < 2:
+            return
+        saved_at = now
+        with contextlib.suppress(Exception):  # pragma: no cover
+            save(summary)
+
+    def deliver(
+        phase: str,
+        done: int,
+        phase_total: int,
+        batch: list[ImageResult],
+        *,
+        nsfw_ran: bool = False,
+        guard_ran: bool = False,
+        force: bool = False,
+    ) -> None:
+        if not batch and not face_clusters:
+            return
+        phase_done = phase_total > 0 and done >= phase_total
+        payload: dict[str, Any] = {
+            "scan_id": scan_id,
+            "folder": folder,
+            "phase": phase,
+            "done": done,
+            "total": phase_total,
+            "pending_checks": pending_checks(phase, requested, phase_done=phase_done),
+            "results": [row.model_dump(mode="json") for row in batch],
+        }
+        if face_clusters:
+            payload["face_clusters"] = [cluster.model_dump(mode="json") for cluster in face_clusters]
+        _emit_chunk(chunk, payload)
+        maybe_save(snapshot(nsfw_ran, guard_ran), force=force or phase_done)
+
+    # Phase 1: per-image scoring. Batches land in the grid while later phases run.
+    _emit(progress, "scoring", 0, total)
     done = 0
+    batch: list[ImageResult] = []
     with ThreadPoolExecutor(max_workers=max(1, cfg.max_workers)) as pool:
         futures = {pool.submit(_score_image, rel, abs_path, data, profile, cfg): rel for rel, abs_path, data in items}
         for fut in as_completed(futures):
-            r = fut.result()
-            results_by_rel[r.rel_path] = r
+            row = fut.result()
+            results_by_rel[row.rel_path] = row
             done += 1
+            batch.append(row)
             # Throttle: every 5 images (and the final one) is plenty for a bar.
             if done == total or done % 5 == 0:
                 _emit(progress, "scoring", done, total)
+            if done == total or len(batch) >= CHUNK_SIZE:
+                deliver("scoring", done, total, batch)
+                batch = []
 
-    results = [results_by_rel[rel] for rel, _, _ in items]
+    results = ordered()
 
-    # M2: face detection + identity clustering (optional, GPU-friendly).
-    face_clusters = []
+    # Face boxes, MiVOLO age, and FairFace race. Identities are clustered after
+    # the other checks so an under-18 age is visible before that work finishes.
+    detected_faces = None
     if faces_cfg.enabled:
         from argus_curator import faces as faces_mod
 
-        # detect_and_cluster drives the "faces" phase itself (per-image sweep),
-        # so the browser gets a determinate bar instead of an endless spinner.
-        face_clusters = faces_mod.detect_and_cluster(
+        face_batch: list[ImageResult] = []
+
+        def on_face(row: ImageResult, phase_done: int, phase_total: int) -> None:
+            finalize_score(row, profile, cfg, faces_known=True)
+            face_batch.append(row)
+            if phase_done == phase_total or len(face_batch) >= CHUNK_SIZE:
+                deliver("faces", phase_done, phase_total, face_batch)
+                face_batch.clear()
+
+        detected_faces = faces_mod.detect_faces(
             results,
             items,
             faces_cfg,
-            progress=(lambda done, total: _emit(progress, "faces", done, total)) if progress else None,
+            progress=(lambda done, phase_total: _emit(progress, "faces", done, phase_total)) if progress else None,
+            on_done=on_face,
         )
-        for r in results:
-            finalize_score(r, profile, cfg, faces_known=True)
 
     # Places365 scene tags (optional): whole-image, independent of faces.
-    scene_cfg = scene_cfg or SceneConfig()
     if scene_cfg.enabled:
         from argus_curator import scenes as scenes_mod
 
@@ -414,11 +545,11 @@ def scan_items(
             results,
             items,
             scene_cfg,
-            progress=(lambda done, total: _emit(progress, "scenes", done, total)) if progress else None,
+            progress=(lambda done, phase_total: _emit(progress, "scenes", done, phase_total)) if progress else None,
         )
+        deliver("scenes", total, total, results, force=True)
 
     # Fashionpedia garments (optional): whole-image, independent of faces.
-    garment_cfg = garment_cfg or GarmentConfig()
     if garment_cfg.enabled:
         from argus_curator import garments as garments_mod
 
@@ -426,59 +557,68 @@ def scan_items(
             results,
             items,
             garment_cfg,
-            progress=(lambda done, total: _emit(progress, "garments", done, total)) if progress else None,
+            progress=(lambda done, phase_total: _emit(progress, "garments", done, phase_total)) if progress else None,
         )
+        deliver("garments", total, total, results, force=True)
 
     # NudeNet (opt-out): on whenever a NudeNet server is configured, unless
     # this scan says otherwise. The summary records whether it actually ran.
-    from argus_curator import nsfw as nsfw_mod
+    nsfw_batch: list[ImageResult] = []
+
+    def on_nsfw(row: ImageResult, phase_done: int, phase_total: int) -> None:
+        nsfw_batch.append(row)
+        if phase_done == phase_total or len(nsfw_batch) >= CHUNK_SIZE:
+            deliver("nsfw", phase_done, phase_total, nsfw_batch, nsfw_ran=phase_done == phase_total)
+            nsfw_batch.clear()
 
     nsfw_ran = nsfw_mod.check_images(
         results,
         items,
-        nsfw_cfg or NsfwConfig(),
-        progress=(lambda done, total: _emit(progress, "nsfw", done, total)) if progress else None,
+        nsfw_cfg,
+        progress=(lambda phase_done, phase_total: _emit(progress, "nsfw", phase_done, phase_total)) if progress else None,
+        on_done=on_nsfw,
     )
 
     # SingGuard (opt-out), the same way.
-    from argus_curator import guard as guard_mod
+    guard_batch: list[ImageResult] = []
+
+    def on_guard(row: ImageResult, phase_done: int, phase_total: int) -> None:
+        guard_batch.append(row)
+        if phase_done == phase_total or len(guard_batch) >= CHUNK_SIZE:
+            deliver(
+                "guard",
+                phase_done,
+                phase_total,
+                guard_batch,
+                nsfw_ran=nsfw_ran,
+                guard_ran=phase_done == phase_total,
+            )
+            guard_batch.clear()
 
     guard_ran = guard_mod.check_images(
         results,
         items,
-        guard_cfg or GuardConfig(),
-        progress=(lambda done, total: _emit(progress, "guard", done, total)) if progress else None,
+        guard_cfg,
+        progress=(lambda phase_done, phase_total: _emit(progress, "guard", phase_done, phase_total)) if progress else None,
+        on_done=on_guard,
     )
+
+    if detected_faces is not None:
+        from argus_curator import faces as faces_mod
+
+        _emit(progress, "identities", 0, total)
+        face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
+        _emit(progress, "identities", total, total)
+        deliver("identities", total, total, results, nsfw_ran=nsfw_ran, guard_ran=guard_ran, force=True)
 
     _emit(progress, "clustering", 0, total)
     _mark_duplicates(results, cfg)
     multi = _assign_clusters(results)
     _emit(progress, "clustering", total, total)
 
-    rejected = [r for r in results if not r.passed]
-    passed = [r for r in results if r.passed]
-    duplicates = [r for r in passed if r.is_duplicate]
-
-    return ScanSummary(
-        scan_id=scan_id,
-        folder=folder,
-        target_profile=profile,
-        config=cfg,
-        faces_config=faces_cfg,
-        scenes_config=scene_cfg,
-        garments_config=garment_cfg,
-        nsfw_config=NsfwConfig(enabled=nsfw_ran),
-        guard_config=GuardConfig(enabled=guard_ran),
-        total=len(results),
-        passed=len(passed),
-        rejected=len(rejected),
-        duplicates=len(duplicates),
-        similar_clusters=multi,
-        reject_reasons=_tally_reasons(rejected),
-        face_clusters=face_clusters,
-        results=results,
-        returned=len(results),
-    )
+    summary = snapshot(nsfw_ran, guard_ran)
+    summary.similar_clusters = multi
+    return summary
 
 
 def scan_folder(
@@ -493,11 +633,14 @@ def scan_folder(
     guard_cfg: GuardConfig | None = None,
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
+    chunk: ChunkFn | None = None,
+    save: SaveFn | None = None,
 ) -> ScanSummary:
     """Recursively scan all supported images under *folder*.
 
     Pass *progress* to receive ``{phase, done, total}`` updates (used by the
-    SSE endpoint to stream live scan progress to the browser).
+    SSE endpoint to stream live scan progress to the browser). Pass *chunk*
+    to receive image batches as each phase produces them.
     """
     profile = profile or TargetProfile()
     cfg = cfg or ScanConfig()
@@ -526,4 +669,6 @@ def scan_folder(
         folder=str(root.resolve()),
         scan_id=scan_id,
         progress=progress,
+        chunk=chunk,
+        save=save,
     )

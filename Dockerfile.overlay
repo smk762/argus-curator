@@ -1,0 +1,13 @@
+# Published curator, plus scan batches and the one-scan-at-a-time list.
+# The package version stays 0.4.0; only these modules are replaced.
+FROM ghcr.io/smk762/argus-curator:latest
+COPY src/argus_curator/scanner.py /usr/local/lib/python3.12/site-packages/argus_curator/scanner.py
+COPY src/argus_curator/faces.py /usr/local/lib/python3.12/site-packages/argus_curator/faces.py
+COPY src/argus_curator/remote.py /usr/local/lib/python3.12/site-packages/argus_curator/remote.py
+COPY src/argus_curator/store.py /usr/local/lib/python3.12/site-packages/argus_curator/store.py
+COPY src/argus_curator/selection.py /usr/local/lib/python3.12/site-packages/argus_curator/selection.py
+COPY src/argus_curator/export.py /usr/local/lib/python3.12/site-packages/argus_curator/export.py
+COPY src/argus_curator/nsfw.py /usr/local/lib/python3.12/site-packages/argus_curator/nsfw.py
+COPY src/argus_curator/guard.py /usr/local/lib/python3.12/site-packages/argus_curator/guard.py
+COPY src/argus_curator/server/app.py /usr/local/lib/python3.12/site-packages/argus_curator/server/app.py
+RUN python -c "import pathlib; root=pathlib.Path('/usr/local/lib/python3.12/site-packages/argus_curator'); [path.unlink() for path in root.rglob('*.pyc')]"
