@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-27
+
 ### Added
 
 - `FaceConfig.set_age` (`--set-age`): a passing frame with no face takes a
@@ -426,7 +428,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/smk762/argus-curator/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/smk762/argus-curator/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/smk762/argus-curator/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/smk762/argus-curator/compare/v0.5.0...v0.5.1
