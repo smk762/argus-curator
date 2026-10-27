@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Sharpness is measured with the image's long side at 1024px, so
+  `blur_threshold` and `sharpness_ref` mean the same thing for every file
+  size. The 3x3 edge kernel reads per-pixel contrast, which falls as
+  resolution rises: a sharp 3200x4800 studio frame measured about 57 at
+  native size, under the default threshold of 100, and was rejected as
+  blurry. Rejected images skip face detection, so those frames also had no
+  MiVOLO age and a quality score of 0. Images under 1024px measure as before.
+  Scans of large files made before this release should be run again.
+
 ## [0.6.0] - 2026-10-27
 
 ### Added
