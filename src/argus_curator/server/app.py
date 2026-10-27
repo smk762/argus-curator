@@ -452,12 +452,7 @@ def create_app(
                 raise HTTPException(status_code=400, detail=f"SingGuard check requested but {exc}") from exc
 
     def _requested_checks(req: ScanRequest) -> list[str]:
-        pending: list[str] = []
-        if nsfw_mod.resolve_enabled(req.nsfw):
-            pending.append("nsfw")
-        if guard_mod.resolve_enabled(req.guard):
-            pending.append("guard")
-        return pending
+        return scanner.requested_checks(req.faces, req.nsfw, req.guard)
 
     def _claim_scan(folder: Path, req: ScanRequest) -> str:
         scan_id = uuid.uuid4().hex
@@ -470,12 +465,15 @@ def create_app(
         done = int(payload.get("done") or 0)
         total = int(payload.get("total") or 0)
         phase = str(payload.get("phase") or "")
+        # The scanner says which checks are still running. Events from before
+        # scoring carry no list; every requested check is ahead then.
+        pending = payload.get("pending_checks")
         gate.update(
             scan_id,
             phase=phase,
             done=done,
             total=total,
-            pending_checks=scanner.pending_checks(phase, requested, phase_done=total > 0 and done >= total),
+            pending_checks=list(pending) if isinstance(pending, list) else list(requested),
         )
 
     @app.get("/scans")
