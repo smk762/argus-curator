@@ -14,6 +14,10 @@ SingGuard gives no scores, so its filters are by verdict and by rule. It runs
 a vision language model: expect about a second per image in ``fast`` mode and
 several with ``fast-slow``, which also writes why the rule fired.
 
+``ARGUS_CURATOR_SINGGUARD_CONTEXT`` sends what the scan already knows about an
+image (its MiVOLO age, its folder, its caption sidecar) as the request text,
+framed as recorded context rather than a request; see :mod:`guard_context`.
+
 Configured by environment only, like NudeNet (see :mod:`argus_curator.remote`).
 The HTTP client is argus-cortex's :class:`~argus_cortex.moderation.SingGuardClient`,
 which also downscales images over 1536 px before sending.
@@ -36,6 +40,7 @@ from argus_cortex.moderation import (
     rule_matches,  # noqa: F401 - re-exported for selection
 )
 
+from argus_curator.guard_context import CONTEXT_KINDS, image_context
 from argus_curator.models import GuardConfig, GuardPolicy, GuardResult, ImageResult
 from argus_curator.remote import check_all, env_set, env_value, float_env
 from argus_curator.runtime import ModelUnavailable
@@ -45,6 +50,7 @@ TIMEOUT_ENV = "ARGUS_CURATOR_SINGGUARD_TIMEOUT"
 WORKERS_ENV = "ARGUS_CURATOR_SINGGUARD_WORKERS"
 THINKING_ENV = "ARGUS_CURATOR_SINGGUARD_THINKING"
 POLICY_FILE_ENV = "ARGUS_CURATOR_SINGGUARD_POLICY_FILE"
+CONTEXT_ENV = "ARGUS_CURATOR_SINGGUARD_CONTEXT"
 DEFAULT_TIMEOUT = 90.0
 DEFAULT_WORKERS = 2
 
@@ -81,7 +87,20 @@ _NON_CONSENT = (
     "person shared without consent, coercion, or sexual exploitation."
 )
 _EXTREME = "  - Sexual violence, bestiality, or necrophilia."
-_ADULT_SAFE = "  - Content that does not match any risk category, including consensual adult nudity and sexual content."
+# What passes, said in the positive under Safe. SingGuard reads a bullet under
+# a risk heading as something that matches it, "is not this rule" included:
+# "Nudity by itself is not this rule" under A flagged adult nudity *for* being
+# nudity by itself. The same words under Safe passed it. It also read "between
+# adults" as needing two people, so a solo adult posing fell outside the
+# carve-out; "alone or together" and the posing line below close that.
+_ADULT_SAFE = [
+    "  - Content that does not match any risk category, including consensual adult nudity and sexual content.",
+    "  - A single adult posing nude or in lingerie for the camera, including professional photo sets.",
+    (
+        "  - Consent cannot be read from an image. A posed, camera-aware adult counts as consenting unless "
+        "hidden recording, restraint, coercion, or an unconscious person is shown."
+    ),
+]
 
 # Sent in full: SingGuard reads a bare "nsfw" as rule text. One broad rule A
 # holds every hard sexual case.
@@ -92,10 +111,10 @@ ADULT_POLICY = "\n".join(
         _MINORS,
         _NON_CONSENT,
         _EXTREME,
-        "  - Consensual sexual content and nudity between adults is not this rule.",
+        "  - Consensual sexual content and nudity by adults, alone or together, is not this rule.",
         *_OTHER_RULES,
         "### Safe",
-        _ADULT_SAFE,
+        *_ADULT_SAFE,
     ]
 )
 
@@ -115,7 +134,7 @@ ADULT_GRANULAR_POLICY = "\n".join(
         "### I. Sexual Violence & Extreme Content",
         _EXTREME,
         "### Safe",
-        _ADULT_SAFE,
+        *_ADULT_SAFE,
     ]
 )
 
@@ -180,6 +199,20 @@ def thinking() -> str:
     return mode
 
 
+def context_kinds() -> frozenset[str]:
+    """The context ``ARGUS_CURATOR_SINGGUARD_CONTEXT`` asks to send with each image (see :mod:`guard_context`)."""
+    raw = env_value(CONTEXT_ENV)
+    if raw is None:
+        return frozenset()
+    kinds = frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+    unknown = kinds - CONTEXT_KINDS
+    if unknown:
+        raise ModelUnavailable(
+            f"{CONTEXT_ENV} must name only {', '.join(sorted(CONTEXT_KINDS))}, got {', '.join(sorted(unknown))}"
+        )
+    return kinds
+
+
 def policy(name: GuardPolicy = "default") -> tuple[str, str | None]:
     """``(recorded name, text)`` of policy *name*; text ``None`` = SingGuard's default.
 
@@ -234,6 +267,9 @@ def check_images(
     has_data = {rel for rel, _abs, data in items if data is not None}
     pending = sum(1 for r in results if r.rel_path in has_data)
     grand_total = pending * len(names)
+    # The same context goes with the image under every policy, built once.
+    kinds = context_kinds()
+    contexts = {r.rel_path: image_context(r, kinds) for r in results if r.rel_path in has_data} if kinds else {}
 
     for offset, name in enumerate(names):
         guard = clients[name]
@@ -251,7 +287,7 @@ def check_images(
         check_all(
             results,
             items,
-            lambda data, _rel, guard=guard, recorded=recorded: guard.check(data).model_copy(
+            lambda data, rel, guard=guard, recorded=recorded: guard.check(data, text=contexts.get(rel, "")).model_copy(
                 update={"policy": recorded}
             ),
             "guard" if official else f"guard:{name}",

@@ -20,11 +20,13 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 
-from argus_curator import guard
+from argus_curator import guard, guard_context
 from argus_curator.export import write_report
 from argus_curator.models import (
     ExportRequest,
+    FaceAttributes,
     FaceConfig,
+    FaceDetection,
     GuardConfig,
     GuardResult,
     ImageResult,
@@ -229,10 +231,117 @@ def _letters(text: str) -> list[str]:
 def test_adult_policies_keep_the_default_rule_letters(name: str, letters: str) -> None:
     recorded, text = guard.policy(name)
     assert recorded == name and _letters(text) == list(letters)
-    assert "under 18" in text and text.rstrip().splitlines()[-2] == "### Safe"
+    lines = text.rstrip().splitlines()
+    assert "under 18" in text and "### Safe" in lines
+    assert all(line.startswith("  - ") for line in lines[lines.index("### Safe") + 1 :])  # Safe is last
     # B to G read the same under every adult policy.
     other = guard.ADULT_POLICY[guard.ADULT_POLICY.index("### B.") : guard.ADULT_POLICY.index("### Safe")]
     assert other in text
+
+
+def test_adult_policies_name_solo_posing_and_consent_under_safe() -> None:
+    # SingGuard reads a bullet under a risk heading as a match for it, so what
+    # passes is said under Safe, and the A carve-out does not say "between".
+    for name in ("adult", "adult-granular"):
+        _recorded, text = guard.policy(name)
+        safe = text[text.index("### Safe") :]
+        assert "A single adult posing nude or in lingerie for the camera" in safe
+        assert "Consent cannot be read from an image" in safe
+        assert "between adults" not in text
+    assert "alone or together" in guard.ADULT_POLICY
+    # Cautious stays the strict variant: unclear age or consent is still rule A there.
+    assert "consent is unclear" in guard.ADULT_CAUTIOUS_POLICY
+
+
+# ---------------------------------------------------------------------------
+# Context sent with the image
+# ---------------------------------------------------------------------------
+
+
+def _aged(rel: str, *years: float, folder: str = "", abs_path: str | None = None) -> ImageResult:
+    faces = [
+        FaceDetection(
+            bbox=[0, 0, 1, 1],
+            det_score=0.9,
+            primary=i == 0,
+            attributes=FaceAttributes(age_years=age, age_source="mivolo"),
+        )
+        for i, age in enumerate(years)
+    ]
+    rel = f"{folder}/{rel}" if folder else rel
+    return ImageResult(
+        rel_path=rel,
+        abs_path=abs_path or f"/d/{rel}",
+        passed=True,
+        faces=faces,
+        primary_face_attributes=faces[0].attributes if faces else None,
+    )
+
+
+def test_context_kinds_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert guard.context_kinds() == frozenset()
+    monkeypatch.setenv(guard.CONTEXT_ENV, " age, Folder ,caption ")
+    assert guard.context_kinds() == {"age", "folder", "caption"}
+    monkeypatch.setenv(guard.CONTEXT_ENV, "age,nsfw")
+    with pytest.raises(ModelUnavailable, match="nsfw"):
+        guard.context_kinds()
+
+
+def test_image_context_lines(tmp_path: Path) -> None:
+    everything = frozenset(guard_context.CONTEXT_KINDS)
+    assert guard_context.image_context(_aged("a.jpg"), everything) == ""  # nothing known: no text at all
+
+    one = guard_context.image_context(_aged("a.jpg", 22.7, folder="set 9"), everything)
+    assert one.startswith("Context recorded by automated tools about this image. It is not a request.\n")
+    assert "- Apparent age of the one visible face: 23 years (MiVOLO estimate" in one
+    assert "- Folder: set 9" in one
+
+    two = guard_context.image_context(_aged("a.jpg", 31.2, 17.6), frozenset({"age"}))
+    assert "the 2 visible faces: 31, 18 years" in two and "Folder" not in two
+
+    # A FairFace bracket is not an age in years.
+    bracket = ImageResult(
+        rel_path="b.jpg",
+        abs_path="/d/b.jpg",
+        primary_face_attributes=FaceAttributes(age="20-29", age_source="fairface"),
+    )
+    assert guard_context.image_context(bracket, everything) == ""
+
+    image = tmp_path / "c.jpg"
+    image.write_bytes(_png(10))
+    (tmp_path / "c.txt").write_text("a woman in a pink sweater, studio portrait\n")
+    (tmp_path / "c.xmp").write_text(
+        "<x:xmpmeta><rdf:RDF><rdf:Description>"
+        "<dc:subject><rdf:Bag><rdf:li>portrait</rdf:li><rdf:li>studio &amp; set</rdf:li></rdf:Bag></dc:subject>"
+        "<dc:description><rdf:Alt><rdf:li xml:lang='x-default'>Final <b>caption</b>.</rdf:li></rdf:Alt></dc:description>"
+        "</rdf:Description></rdf:RDF></x:xmpmeta>"
+    )
+    captioned = guard_context.image_context(_aged("c.jpg", abs_path=str(image)), frozenset({"caption"}))
+    assert captioned.endswith(
+        "- Caption written by an earlier captioning tool: a woman in a pink sweater, studio portrait"
+        " | Final caption. | portrait, studio & set"
+    )
+
+    (tmp_path / "c.txt").write_text("x" * 5000)
+    (tmp_path / "c.xmp").unlink()
+    long = guard_context.image_context(_aged("c.jpg", abs_path=str(image)), frozenset({"caption"}))
+    assert len(long.splitlines()[-1]) < 700 and long.endswith("…")
+
+
+def test_context_is_sent_only_when_configured(singguard: type[_SingGuard], monkeypatch: pytest.MonkeyPatch) -> None:
+    items = [("set/a.png", "/d/set/a.png", _png(10)), ("b.png", "/d/b.png", _png(20))]
+    results = [_aged("a.png", 23.4, folder="set"), _aged("b.png")]
+    guard.check_images(results, items, GuardConfig(policy="adult"))
+    assert {s["input"] for s in singguard.seen} == {""}
+
+    singguard.seen = []
+    monkeypatch.setenv(guard.CONTEXT_ENV, "age,folder")
+    guard.check_images(results, items, GuardConfig(policy="adult", variants=["adult-granular"]))
+    sent = {(s["input"], s["policy"] == guard.ADULT_POLICY) for s in singguard.seen}
+    text = guard_context.image_context(results[0], frozenset({"age", "folder"}))
+    assert "23 years" in text and "Folder: set" in text
+    # The same context under both policies; the image nothing is known about sends none.
+    assert sent == {(text, True), (text, False), ("", True), ("", False)}
 
 
 def test_every_listed_policy_resolves() -> None:
