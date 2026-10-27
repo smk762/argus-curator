@@ -96,6 +96,21 @@ def test_bad_singguard_thinking_mode_fails_before_scanning(dataset: Path) -> Non
     assert "fast-slow" in result.output and "Scanning" not in result.output
 
 
+def test_guard_policies_must_be_judged_before_scanning(dataset: Path) -> None:
+    args = ["scan", str(dataset), "--singguard-url", "http://g:1", "--guard-policy", "adult", "--guard-unsafe"]
+    result = runner.invoke(app, [*args, "--guard-policies", "adult,adult-cautious"])
+    assert result.exit_code == 1, result.output
+    assert "--guard-variants" in result.output and "Scanning" not in result.output
+    result = runner.invoke(app, [*args, "--guard-variants", "adult-nope"])
+    assert result.exit_code == 1 and "adult-nope" in result.output
+
+
+def test_unknown_guard_policy_fails_before_scanning(dataset: Path) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), "--singguard-url", "http://g:1", "--guard-policy", "nsfw"])
+    assert result.exit_code == 1, result.output
+    assert "default, adult" in result.output and "Scanning" not in result.output
+
+
 @pytest.mark.parametrize(
     "value", ["FEMALE_BREAST_EXPOSED", "FEMALE_BREAST_EXPOSED=lots", "=0.5", "NOT_A_CLASS=0.5", "BELLY_EXPOSED=0.1"]
 )

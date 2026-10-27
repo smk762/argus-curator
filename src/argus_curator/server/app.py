@@ -135,12 +135,13 @@ class ScanGate:
 def _busy_detail(active: dict[str, Any]) -> str:
     return f"A scan is already running ({active['phase']} {active['done']}/{active['total']})."
 
+
 # Default CORS origins for `--cors`: the argus-studio dev frontend. Anything
 # else must be allow-listed explicitly (or use the credential-less wildcard).
 _LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
-def _detectors() -> dict[str, bool]:
+def _detectors() -> dict[str, bool | list[str]]:
     torch_ok = find_spec("torch") is not None
     cuda_ok = False
     if torch_ok:
@@ -163,6 +164,8 @@ def _detectors() -> dict[str, bool]:
         # A NudeNet server URL is configured; reachability is not probed here.
         "nudenet": nsfw_mod.configured(),
         "singguard": guard_mod.configured(),
+        # Policy names a scan can pass as guard.policy; empty without a server.
+        "singguard_policies": list(guard_mod.POLICIES) if guard_mod.configured() else [],
     }
 
 
@@ -367,7 +370,7 @@ def create_app(
         }
 
     @app.get("/detectors")
-    async def detectors() -> dict[str, bool]:
+    async def detectors() -> dict[str, bool | list[str]]:
         return _detectors()
 
     @app.get("/folders")
@@ -443,7 +446,8 @@ def create_app(
                 )
             try:
                 guard_mod.thinking()
-                guard_mod.policy()
+                for name in (req.guard.policy, *req.guard.variants):
+                    guard_mod.policy(name)
             except ModelUnavailable as exc:  # these name no URL or path
                 raise HTTPException(status_code=400, detail=f"SingGuard check requested but {exc}") from exc
 

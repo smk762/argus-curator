@@ -218,15 +218,33 @@ class NsfwConfig(BaseModel):
     enabled: bool | None = None
 
 
+# "default" is the operator's policy (ARGUS_CURATOR_SINGGUARD_POLICY_FILE, else
+# SingGuard's own rules); "adult" is curator's built-in policy that allows
+# consensual adult nudity and still flags minors (see guard.ADULT_POLICY).
+# "adult-granular" and "adult-cautious" are variants under evaluation.
+GuardPolicy = Literal["default", "adult", "adult-granular", "adult-cautious"]
+
+
 class GuardConfig(BaseModel):
     """SingGuard policy check via a remote SingGuard server (see guard.py).
 
-    Like NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) and the policy
-    (ARGUS_CURATOR_SINGGUARD_POLICY_FILE) are process configuration.
+    Like NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) is process
+    configuration. A request picks a policy by name, never by text.
     """
 
     # Same opt-out semantics as NsfwConfig.enabled.
     enabled: bool | None = None
+    # The official verdict (ImageResult.guard) and what the filters use by default.
+    policy: GuardPolicy = "default"
+    # Extra policies to judge every image under too, for comparison: one more
+    # SingGuard pass per image each. Results land in ImageResult.guard_variants.
+    variants: list[GuardPolicy] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _variants_distinct(self) -> GuardConfig:
+        # The official policy already runs; a repeat would only double the cost.
+        self.variants = [v for i, v in enumerate(self.variants) if v != self.policy and v not in self.variants[:i]]
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +365,9 @@ class ImageResult(BaseModel):
     nsfw: NsfwResult | None = None
     # SingGuard policy verdict (None = not checked, or the check failed).
     guard: GuardResult | None = None
+    # Only when GuardConfig.variants ran: every policy's verdict by name, the
+    # official one included. A missing name means that check failed.
+    guard_variants: dict[GuardPolicy, GuardResult] | None = None
 
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
@@ -486,6 +507,10 @@ class ExportRequest(BaseModel):
     # Optional: drop images where one of these rules fired, named by letter
     # ("A") or in full ("A. Sexual Content Risk"), case-insensitive.
     guard_rules: list[str] | None = None
+    # Which policies' verdicts guard_unsafe / guard_rules read (None = the
+    # official one). An image is dropped if any listed verdict fails, or is
+    # missing: the union, so an export matches a "flagged by any" view.
+    guard_policies: list[GuardPolicy] | None = Field(None, min_length=1)
 
     write_manifest: bool = True
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).
@@ -640,6 +665,7 @@ class SelectRequest(BaseModel):
 
     guard_unsafe: bool = False
     guard_rules: list[str] | None = None
+    guard_policies: list[GuardPolicy] | None = Field(None, min_length=1)
 
     @model_validator(mode="after")
     def _valid_as_export(self) -> SelectRequest:

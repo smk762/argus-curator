@@ -343,7 +343,9 @@ def cluster_identities(
     cluster_members: dict[str, list[tuple[str, list[float], float]]] = {}
     cluster_raw: dict[str, list[RawAttributes]] = {}
 
-    for (rel, face_idx, bbox, det_score, _central, area), raw, lbl in zip(detected.meta, detected.raws, labels, strict=True):
+    for (rel, face_idx, bbox, det_score, _central, area), raw, lbl in zip(
+        detected.meta, detected.raws, labels, strict=True
+    ):
         cluster_id = label_to_id[lbl]
         result_by_rel[rel].faces[face_idx].cluster_id = cluster_id
         cluster_members.setdefault(cluster_id, []).append((rel, bbox, det_score * (area or 1.0)))

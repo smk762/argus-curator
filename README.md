@@ -423,12 +423,38 @@ ARGUS_CURATOR_SINGGUARD_WORKERS=2                        # concurrent requests (
 
 It is opt-out in the same way (`--no-guard`, `"guard": {"enabled": false}`;
 `--guard` makes it mandatory). The default rule A flags any sexual content,
-adult nudity included. For an adult dataset, write a policy file whose
-sexual-content rule covers only apparent minors and non-consent, and whose
-Safe rule names consensual adult nudity. Each image records `guard.safe`, the
-rules that fired, the explanation, the model and the policy (`default`, or
-`custom-<sha256 prefix>` of the file). The CSV report has `guard_safe` and
-`guard_rules`.
+adult nudity included. For an adult dataset, pick the built-in **`adult`**
+policy per scan (`--guard-policy adult`, `"guard": {"policy": "adult"}`). Its
+rule A covers only apparent minors, non-consent and sexual violence, and its
+Safe rule names consensual adult nudity. Rules B to G cover the same areas
+under the same letters, so `--guard-rules B,C` means the same thing under
+both. They are written out as text, though, rather than left to SingGuard's
+built-in wording, so verdicts can differ: a group photo of a poker game that
+the default rule B flags passes under `adult`. `default` is the policy file when one is set, else SingGuard's own
+rules. A request names a policy and never sends policy text. `GET /detectors`
+lists the names in `singguard_policies`.
+
+`adult-granular` (a letter per hard case: A minors, H non-consent, I sexual
+violence) and `adult-cautious` (doubt about age or consent counts as rule A)
+are under evaluation against `adult`; don't build on them yet.
+
+To compare policies on your own images, judge one scan under several:
+`"guard": {"policy": "adult", "variants": ["adult-granular", "adult-cautious"]}`
+(CLI `--guard-variants`). `guard` stays the official verdict, and
+`guard_variants` holds every policy's verdict by name, the official one
+included. A missing name means that check failed. Each variant is one more
+SingGuard pass per image. The filters read the official verdict unless
+`guard_policies` lists others (CLI `--guard-policies`). An image is then
+dropped if any listed verdict fails, or is missing, with the policy named in
+the keep reason (`guard-unsafe:adult-granular`). The CSV report adds a
+`guard_variants` column.
+`scripts/guard_eval.py --url <singguard>` scores every policy on the text
+probes in `eval/guard_probes.jsonl` and on an optional folder of images
+sorted by expected verdict.
+
+Each image records `guard.safe`, the rules that fired, the explanation, the
+model and the policy: `default`, `adult`, or `custom-<sha256 prefix>` of the
+file. The CSV report has `guard_safe` and `guard_rules`.
 
 ```bash
 # Drop anything judged unsafe

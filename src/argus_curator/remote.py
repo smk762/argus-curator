@@ -57,8 +57,12 @@ def check_all(
     workers: int,
     progress: Callable[[int, int], None] | None = None,
     on_done: Callable[[ImageResult, int, int], None] | None = None,
+    store: Callable[[ImageResult, Any], None] | None = None,
 ) -> None:
     """Set ``field`` on every image to ``check(data, rel_path)``, *workers* at a time.
+
+    *store* replaces the ``setattr`` when the result goes somewhere else;
+    ``field`` still names the check in logs.
 
     Every image is checked, including ones that failed the quality filters: a
     blurry explicit image is still explicit, and ``include_rejected`` exports
@@ -77,7 +81,11 @@ def check_all(
         for fut in as_completed(futures):
             r = futures[fut]
             try:
-                setattr(r, field, fut.result())
+                value = fut.result()
+                if store is None:
+                    setattr(r, field, value)
+                else:
+                    store(r, value)
                 succeeded += 1
             except CancelledError:
                 pass  # given up on below; the image stays unchecked

@@ -225,6 +225,28 @@
           "title": "Garments Uncropped",
           "type": "boolean"
         },
+        "guard_policies": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "default",
+                  "adult",
+                  "adult-granular",
+                  "adult-cautious"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard Policies"
+        },
         "guard_rules": {
           "anyOf": [
             {
@@ -994,7 +1016,7 @@
       "type": "object"
     },
     "GuardConfig": {
-      "description": "SingGuard policy check via a remote SingGuard server (see guard.py).\n\nLike NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) and the policy\n(ARGUS_CURATOR_SINGGUARD_POLICY_FILE) are process configuration.",
+      "description": "SingGuard policy check via a remote SingGuard server (see guard.py).\n\nLike NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) is process\nconfiguration. A request picks a policy by name, never by text.",
       "properties": {
         "enabled": {
           "anyOf": [
@@ -1007,6 +1029,30 @@
           ],
           "default": null,
           "title": "Enabled"
+        },
+        "policy": {
+          "default": "default",
+          "enum": [
+            "default",
+            "adult",
+            "adult-granular",
+            "adult-cautious"
+          ],
+          "title": "Policy",
+          "type": "string"
+        },
+        "variants": {
+          "items": {
+            "enum": [
+              "default",
+              "adult",
+              "adult-granular",
+              "adult-cautious"
+            ],
+            "type": "string"
+          },
+          "title": "Variants",
+          "type": "array"
         }
       },
       "title": "GuardConfig",
@@ -1128,6 +1174,29 @@
             }
           ],
           "default": null
+        },
+        "guard_variants": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/GuardResult"
+              },
+              "propertyNames": {
+                "enum": [
+                  "default",
+                  "adult",
+                  "adult-granular",
+                  "adult-cautious"
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard Variants"
         },
         "height": {
           "default": 0,
@@ -1961,6 +2030,28 @@
           "default": false,
           "title": "Garments Uncropped",
           "type": "boolean"
+        },
+        "guard_policies": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "default",
+                  "adult",
+                  "adult-granular",
+                  "adult-cautious"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard Policies"
         },
         "guard_rules": {
           "anyOf": [
