@@ -174,6 +174,7 @@ def test_faces_and_nsfw_run_side_by_side_and_chunks_say_what_is_still_ahead(
     first = {phase: phases.index(phase) for phase in ("scoring", "faces", "nsfw", "identities", "clustering")}
     last_check = max(len(phases) - 1 - phases[::-1].index(phase) for phase in ("faces", "nsfw"))
     assert first["scoring"] < first["faces"] and first["scoring"] < first["nsfw"]
+    # Identities follow the faces at once: the set age read off them is context for the guard pass.
     assert last_check < first["identities"] < first["clustering"]
     # Progress events carry the same list the chunks do.
     assert all("pending_checks" in e for e in events if e["phase"] != "collecting")
@@ -188,6 +189,54 @@ def test_faces_and_nsfw_run_side_by_side_and_chunks_say_what_is_still_ahead(
     assert by_phase["identities"][-1]["pending_checks"] == []
     assert summary.nsfw_config.enabled is True
     assert all(r.nsfw is not None for r in summary.results)
+
+
+def test_set_age_reaches_the_faceless_frames_before_the_guard_pass(
+    dataset: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dominant identity's median age lands on the passing frames with no
+    face during the identities phase, which now runs before scenes, garments
+    and guard, so SingGuard can be told what the set says."""
+    from argus_curator import faces as faces_mod
+    from argus_curator.attributes import RawAttributes
+    from argus_curator.models import FaceAttributes, FaceDetection
+
+    same_person = np.zeros(512, dtype=np.float32)
+    same_person[0] = 1.0
+
+    def fake_faces(results, items, cfg, progress=None, on_done=None):
+        detected = faces_mod.DetectedFaces([], [], [])
+        passing = [r for r in results if r.passed]
+        for i, r in enumerate(passing):
+            if r.rel_path != "personA/s2/img.png":  # one passing frame shows no face
+                age = 18.0 + i
+                attrs = FaceAttributes(age_years=age, age_source="mivolo", age="10-19" if age < 20 else "20-29")
+                r.faces = [FaceDetection(bbox=[0, 0, 10, 10], det_score=0.9, primary=True, attributes=attrs)]
+                r.face_count = 1
+                r.primary_face_attributes = attrs
+                detected.embeddings.append(same_person)
+                detected.meta.append((r.rel_path, 0, [0, 0, 10, 10], 0.9, 1.0, 100.0))
+                detected.raws.append(RawAttributes(mivolo_age=age))
+            if on_done is not None:
+                on_done(r, i + 1, len(passing))
+        return detected
+
+    monkeypatch.setattr(faces_mod, "detect_faces", fake_faces)
+    events: list[dict] = []
+    summary = scan_folder(dataset, faces_cfg=FaceConfig(set_age=True, set_age_min_faces=2), progress=events.append)
+
+    phases = [e["phase"] for e in events]
+    assert phases.index("identities") < phases.index("clustering")
+    assert summary.set_age is not None and summary.set_age_skipped is None
+    assert summary.set_age.cluster_id == "face_1" and summary.set_age.faces == 2 and summary.set_age.share == 1.0
+    by_rel = {r.rel_path: r for r in summary.results}
+    assert by_rel["personA/s2/img.png"].set_age == summary.set_age
+    assert by_rel["personA/s1/img.png"].set_age is None  # it has a face of its own
+    assert by_rel["personB/blurry.png"].set_age is None  # rejected before detection
+
+    # Not asked: nothing is said either way.
+    plain = scan_folder(dataset, faces_cfg=FaceConfig(mivolo=True))
+    assert plain.set_age is None and plain.set_age_skipped is None
 
 
 def test_nsfw_failure_still_lets_faces_finish(dataset: Path, monkeypatch: pytest.MonkeyPatch) -> None:

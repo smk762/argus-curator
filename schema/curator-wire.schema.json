@@ -823,6 +823,24 @@
           "default": 45.0,
           "title": "Profile Min Yaw",
           "type": "number"
+        },
+        "set_age": {
+          "default": false,
+          "title": "Set Age",
+          "type": "boolean"
+        },
+        "set_age_min_faces": {
+          "default": 5,
+          "minimum": 1,
+          "title": "Set Age Min Faces",
+          "type": "integer"
+        },
+        "set_age_min_share": {
+          "default": 0.9,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Set Age Min Share",
+          "type": "number"
         }
       },
       "title": "FaceConfig",
@@ -1342,6 +1360,17 @@
           "title": "Score Breakdown",
           "type": "object"
         },
+        "set_age": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SetAge"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "sharpness": {
           "default": 0.0,
           "title": "Sharpness",
@@ -1743,6 +1772,29 @@
         },
         "scenes_config": {
           "$ref": "#/$defs/SceneConfig"
+        },
+        "set_age": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SetAge"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "set_age_skipped": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Set Age Skipped"
         },
         "similar_clusters": {
           "title": "Similar Clusters",
@@ -2317,6 +2369,35 @@
         "abs_path"
       ],
       "title": "SelectRow",
+      "type": "object"
+    },
+    "SetAge": {
+      "description": "An age for a frame with no face, read off the set the frame belongs to.\n\n``years`` is the median MiVOLO age of the faces in the scan's dominant\nidentity, ``cluster_id`` that identity, ``faces`` how many ages it is read\nfrom, and ``share`` the fraction of the scan's faces in it. It is an\ninference about the set, not a reading of this frame: a viewer shows it as\nsuch, and treats it as it treats a measured age where a wrong age would be\nthe costlier mistake.",
+      "properties": {
+        "cluster_id": {
+          "title": "Cluster Id",
+          "type": "string"
+        },
+        "faces": {
+          "title": "Faces",
+          "type": "integer"
+        },
+        "share": {
+          "title": "Share",
+          "type": "number"
+        },
+        "years": {
+          "title": "Years",
+          "type": "number"
+        }
+      },
+      "required": [
+        "years",
+        "cluster_id",
+        "faces",
+        "share"
+      ],
+      "title": "SetAge",
       "type": "object"
     },
     "TargetProfile": {

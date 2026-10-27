@@ -56,7 +56,14 @@ def mivolo_ages(result: ImageResult) -> list[float]:
 def age_line(result: ImageResult) -> str | None:
     ages = mivolo_ages(result)
     if not ages:
-        return None
+        if result.set_age is None:
+            return None
+        # No face to read. What the rest of the set says about its one subject.
+        return (
+            f"No face is visible in this frame. The other frames of this set show one person, "
+            f"estimated at {round(result.set_age.years)} years (MiVOLO estimate over {result.set_age.faces} faces; "
+            f"it can be off by several years)."
+        )
     years = ", ".join(f"{round(age)}" for age in ages)
     faces = "the one visible face" if len(ages) == 1 else f"the {len(ages)} visible faces"
     return f"Apparent age of {faces}: {years} years (MiVOLO estimate; it can be off by several years)."

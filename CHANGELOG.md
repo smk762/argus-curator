@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `FaceConfig.set_age` (`--set-age`): a passing frame with no face takes a
+  `set_age` read off the set, when one identity holds at least 90% of the
+  scan's faces (`set_age_min_share`) with at least 5 MiVOLO ages
+  (`set_age_min_faces`): the identity's median `years`, its `cluster_id`,
+  the `faces` counted and its `share`. The summary carries the same
+  `set_age`, or `set_age_skipped` saying why none was given. With the `age`
+  SingGuard context the frame's text says no face is visible and what the
+  rest of the set shows. `/health` reports `set_age`.
+
+### Changed
+
+- The `identities` phase runs right after `faces` and `nsfw`, before
+  `scenes`, `garments` and `guard`, so the set age is known before the guard
+  pass. The ages themselves still arrive with the `faces` chunks.
+
 ## [0.6.1] - 2026-10-27
 
 ### Fixed
