@@ -905,6 +905,8 @@ def test_select_validates_like_export(contained: tuple[TestClient, Path]) -> Non
         {"nsfw_label_thresholds": {"FEMALE_BREAST_EXPOSED": 0.1}},
         {"guard_rules": [" "]},
         {"nsfw_exposed_labels": []},
+        {"guard_policies": []},
+        {"guard_policies": ["nsfw"]},
     ):
         assert client.post(f"/scan/{scan['scan_id']}/select", json=body).status_code == 422, body
 

@@ -53,6 +53,7 @@ _ANSWERS: dict[int, dict] = {
     40: {"verdict": "safe"},  # no boolean verdict: a failed check, not a pass
 }
 _FAIL = 99  # this red value gets an HTTP 500
+_NON_CONSENT = "H. Non-Consensual Sexual Content"
 
 
 def _png(red: int, size: tuple[int, int] = (64, 48)) -> bytes:
@@ -74,11 +75,15 @@ class _SingGuard(BaseHTTPRequestHandler):
         type(self).seen.append(
             {"path": self.path, "size": image.size, **{k: v for k, v in body.items() if k != "image_base64"}}
         )
-        if red == _FAIL:
+        policy = body.get("policy") or ""
+        # The cautious policy's check of the cat fails, so one variant verdict goes missing.
+        if red == _FAIL or (red == 10 and policy == guard.ADULT_CAUTIOUS_POLICY):
             self.send_response(500)
             self.end_headers()
             return
         answer = {**_ANSWERS.get(red, _ANSWERS[10]), "model": "SingGuard-4b", "elapsed_ms": 5}
+        if red == 10 and policy == guard.ADULT_GRANULAR_POLICY:
+            answer = {**answer, "safe": False, "verdict": "unsafe", "rule": _NON_CONSENT, "categories": []}
         out = json.dumps(answer).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -241,6 +246,30 @@ def test_unknown_policy_name_is_rejected() -> None:
         GuardConfig(policy="nsfw")
 
 
+def test_variants_judge_every_image_under_each_policy(singguard: type[_SingGuard]) -> None:
+    items = [("cat.png", "/d/cat", _png(10)), ("knife.png", "/d/knife", _png(20))]
+    results = [ImageResult(rel_path=rel, abs_path=a, passed=True) for rel, a, _ in items]
+    cfg = GuardConfig(policy="adult", variants=["adult-granular", "adult", "adult-cautious", "adult-granular"])
+    assert cfg.variants == ["adult-granular", "adult-cautious"]  # the official one and repeats dropped
+    seen: list[tuple[int, int]] = []
+    guard.check_images(results, items, cfg, progress=lambda d, t: seen.append((d, t)))
+
+    cat, knife = results
+    assert cat.guard.safe and cat.guard.policy == "adult"  # the official verdict is adult's
+    assert set(cat.guard_variants) == {"adult", "adult-granular"}  # cautious failed: missing, not clean
+    assert cat.guard_variants["adult-granular"].rules == [_NON_CONSENT]
+    assert cat.guard_variants["adult"] == cat.guard
+    assert set(knife.guard_variants) == {"adult", "adult-granular", "adult-cautious"}
+    assert {g.policy for g in knife.guard_variants.values()} == {"adult", "adult-granular", "adult-cautious"}
+    assert len(singguard.seen) == 6 and seen[-1] == (6, 6)  # images x policies
+
+
+def test_a_scan_without_variants_records_none(singguard: type[_SingGuard]) -> None:
+    results = [ImageResult(rel_path="a.png", abs_path="/d/a", passed=True)]
+    guard.check_images(results, [("a.png", "/d/a", _png(20))], GuardConfig(policy="adult"))
+    assert results[0].guard is not None and results[0].guard_variants is None
+
+
 def test_large_images_are_downscaled(singguard: type[_SingGuard]) -> None:
     results = [ImageResult(rel_path="big.png", abs_path="/d/big", passed=True)]
     guard.check_images(results, [("big.png", "/d/big", _png(10, (4000, 3000)))], GuardConfig())
@@ -332,6 +361,65 @@ def test_empty_rule_names_are_rejected() -> None:
     assert ExportRequest(dest="/o", guard_rules=[" A "]).guard_rules == ["A"]
 
 
+def _compared(rel: str, official: list[str] | None, **variants: list[str] | None) -> ImageResult:
+    def verdict(rules: list[str] | None, name: str) -> GuardResult | None:
+        return None if rules is None else GuardResult(safe=not rules, rules=rules, policy=name)
+
+    found = {"adult": verdict(official, "adult")} | {k.replace("_", "-"): verdict(v, k) for k, v in variants.items()}
+    return ImageResult(
+        rel_path=rel,
+        abs_path=f"/d/{rel}",
+        score=0.9,
+        passed=True,
+        guard=found["adult"],
+        guard_variants={k: v for k, v in found.items() if v is not None},
+    )
+
+
+_COMPARED = [
+    _compared("agree.jpg", [], adult_granular=[]),
+    _compared("granular-only.jpg", [], adult_granular=[_NON_CONSENT]),
+    _compared("granular-missing.jpg", [], adult_granular=None),
+]
+
+
+def test_guard_policies_drop_on_any_listed_verdict() -> None:
+    def reasons(**req: object) -> dict[str, str]:
+        found = decide_selection(_COMPARED, ExportRequest(dest="/o", min_score=0, **req), 0.5)[1]
+        return {rel: why for rel, why in found.items() if why}  # "" = kept
+
+    assert reasons(guard_unsafe=True) == {}  # the official verdict only: all safe
+    assert reasons(guard_unsafe=True, guard_policies=["adult"]) == {}
+    assert reasons(guard_unsafe=True, guard_policies=["adult", "adult-granular"]) == {
+        "granular-only.jpg": "guard-unsafe:adult-granular",
+        # A variant whose check failed is unchecked; it never falls back to the official verdict.
+        "granular-missing.jpg": "guard-unchecked:adult-granular",
+    }
+    assert reasons(guard_rules=["H"], guard_policies=["adult-granular"])["granular-only.jpg"] == (
+        "guard-rule-h:adult-granular"
+    )
+
+
+def test_guard_policies_on_a_scan_without_variants_read_the_official_verdict() -> None:
+    req = ExportRequest(dest="/o", min_score=0, guard_unsafe=True, guard_policies=["default"])
+    assert decide_selection(_RESULTS, req, 0.5)[1]["knife.jpg"] == "guard-unsafe:default"
+
+
+def test_guard_policies_the_scan_did_not_run_are_a_problem() -> None:
+    base = {
+        "scan_id": "s", "folder": "/d", "target_profile": TargetProfile().model_dump(),
+        "config": ScanConfig().model_dump(), "faces_config": FaceConfig().model_dump(),
+        "total": 0, "passed": 0, "rejected": 0, "duplicates": 0, "similar_clusters": 0,
+    }  # fmt: skip
+    ran = ScanSummary.model_validate(
+        {**base, "guard_config": {"enabled": True, "policy": "adult", "variants": ["adult-granular"]}}
+    )
+    ok = ExportRequest(dest="/o", guard_unsafe=True, guard_policies=["adult", "adult-granular"])
+    assert guard_filter_problem(ok, ran) is None
+    bad = ExportRequest(dest="/o", guard_unsafe=True, guard_policies=["adult-cautious"])
+    assert "adult-cautious" in guard_filter_problem(bad, ran) and "rescan" in guard_filter_problem(bad, ran)
+
+
 def test_filters_on_a_scan_without_singguard_are_a_problem() -> None:
     base = {
         "scan_id": "s", "folder": "/d", "target_profile": TargetProfile().model_dump(),
@@ -354,3 +442,9 @@ def test_report_includes_guard_columns(tmp_path: Path) -> None:
     assert rows["a.jpg"]["guard_safe"] == "false" and rows["a.jpg"]["guard_rules"] == f"{_CRIME};{_GORE}"
     assert rows["b.jpg"]["guard_safe"] == "true" and rows["b.jpg"]["guard_rules"] == ""
     assert rows["c.jpg"]["guard_safe"] == "" and rows["c.jpg"]["guard_rules"] == ""
+    assert rows["a.jpg"]["guard_variants"] == ""  # no variants ran
+
+    write_report(_COMPARED, {}, set(), {}, report)
+    rows = {r["rel_path"]: r for r in csv.DictReader(report.open())}
+    assert rows["granular-only.jpg"]["guard_variants"] == "adult=safe;adult-granular=unsafe[H]"
+    assert rows["granular-missing.jpg"]["guard_variants"] == "adult=safe"
