@@ -32,6 +32,7 @@ from argus_curator.models import (
     ImageResult,
     ScanConfig,
     ScanSummary,
+    SetAge,
     TargetProfile,
 )
 from argus_curator.runtime import ModelUnavailable
@@ -298,6 +299,25 @@ def test_image_context_lines(tmp_path: Path) -> None:
 
     two = guard_context.image_context(_aged("a.jpg", 31.2, 17.6), frozenset({"age"}))
     assert "the 2 visible faces: 31, 18 years" in two and "Folder" not in two
+
+    # A frame with no face says so and gives the set's age, when the scan gave it one.
+    body = ImageResult(
+        rel_path="body.jpg",
+        abs_path="/d/body.jpg",
+        passed=True,
+        set_age=SetAge(years=18.8, cluster_id="face_1", faces=25, share=0.96),
+    )
+    body_text = guard_context.image_context(body, frozenset({"age"}))
+    assert (
+        "- No face is visible in this frame. The other frames of this set show one person, estimated at 19 years (MiVOLO estimate over 25 faces"
+        in body_text
+    )
+    assert (
+        guard_context.image_context(
+            ImageResult(rel_path="body.jpg", abs_path="/d/body.jpg", passed=True), frozenset({"age"})
+        )
+        == ""
+    )
 
     # A FairFace bracket is not an age in years.
     bracket = ImageResult(

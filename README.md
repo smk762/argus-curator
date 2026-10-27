@@ -249,6 +249,24 @@ server configuration, never part of a request; a server without a requested
 model refuses the scan with 400 before scoring anything, and `GET /detectors`
 reports `fairface` / `mivolo`.
 
+#### An age for the frames with no face
+
+MiVOLO reads a face, so a frame that shows none has no age, and in a set
+those are often the most explicit frames. `--set-age` (or
+`"faces": {"set_age": true}` on the request; implies `--mivolo`) gives each
+passing frame with no face a `set_age` read off the set, when the scan looks
+like one subject: the largest identity must hold at least 90% of the scan's
+faces (`set_age_min_share`) and have at least 5 MiVOLO ages
+(`set_age_min_faces`). Its median age is the `years`, with the `cluster_id`,
+the number of `faces` it is read from and the identity's `share`. The summary
+carries the same `set_age`, or `set_age_skipped` saying why none was given
+(faces split across identities, too few ages), so a mixed folder gets nothing
+rather than someone else's age. With `ARGUS_CURATOR_SINGGUARD_CONTEXT=age`
+the frame's SingGuard context says that no face is visible and what the rest
+of the set shows. It is an inference about the set, not a reading of the
+frame: a viewer shows it as such, and where a wrong age is the costlier
+mistake treats it as it treats a measured one. `/health` reports `set_age`.
+
 ### Scene tags (Places365)
 
 `--scenes` (or `"scenes": {"enabled": true}` on the scan request) runs a
@@ -540,10 +558,11 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 The `*/stream` variants emit `event: progress` frames (`{phase, done, total}`)
 while the work runs, then a single `event: complete` frame carrying the same
 payload the non-streaming endpoint returns (or `event: error`). A scan runs
-`scoring` → `faces` and `nsfw` together → `scenes` → `garments` → `guard` →
-`identities` → `clustering`: ages and the exposed score come first, so a
-viewer can lift a blur as soon as both are known, and their progress events
-interleave while both run. Scan progress and `event: chunk` frames carry
+`scoring` → `faces` and `nsfw` together → `identities` → `scenes` →
+`garments` → `guard` → `clustering`: ages and the exposed score come first, so
+a viewer can lift a blur as soon as both are known, and their progress events
+interleave while both run; identities follow at once, so a set age is known
+before the guard pass reads it as context. Scan progress and `event: chunk` frames carry
 `pending_checks`, the checks among `faces`, `nsfw` and `guard` whose results
 have not all landed yet; a check that could not run is not listed.
 

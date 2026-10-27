@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-27
+
+### Added
+
+- `FaceConfig.set_age` (`--set-age`): a passing frame with no face takes a
+  `set_age` read off the set, when one identity holds at least 90% of the
+  scan's faces (`set_age_min_share`) with at least 5 MiVOLO ages
+  (`set_age_min_faces`): the identity's median `years`, its `cluster_id`,
+  the `faces` counted and its `share`. The summary carries the same
+  `set_age`, or `set_age_skipped` saying why none was given. With the `age`
+  SingGuard context the frame's text says no face is visible and what the
+  rest of the set shows. `/health` reports `set_age`.
+
+### Changed
+
+- The `identities` phase runs right after `faces` and `nsfw`, before
+  `scenes`, `garments` and `guard`, so the set age is known before the guard
+  pass. The ages themselves still arrive with the `faces` chunks.
+
 ## [0.6.1] - 2026-10-27
 
 ### Fixed
@@ -409,7 +428,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/smk762/argus-curator/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/smk762/argus-curator/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/smk762/argus-curator/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/smk762/argus-curator/compare/v0.5.0...v0.5.1
