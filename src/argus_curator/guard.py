@@ -5,8 +5,10 @@ whole moderation policy and answers with a verdict and the rule that fired.
 Its default rules are A. Sexual Content Risk, B. Real-World Crimes & Public
 Safety, C. Unethical Behavior (hate, self-harm, gore), D. Cybersecurity,
 E. Agent Safety, F. Politically Sensitive and G. Animal Abuse. A policy file
-(``ARGUS_CURATOR_SINGGUARD_POLICY_FILE``) replaces them, e.g. one that allows
-consensual adult nudity but still flags apparent minors.
+(``ARGUS_CURATOR_SINGGUARD_POLICY_FILE``) replaces them as the ``default``
+policy. A scan can instead pick the built-in ``adult`` policy
+(:data:`ADULT_POLICY`), which allows consensual adult nudity but still flags
+apparent minors. Requests choose a policy by name, never by text.
 
 SingGuard gives no scores, so its filters are by verdict and by rule. It runs
 a vision language model: expect about a second per image in ``fast`` mode and
@@ -34,7 +36,7 @@ from argus_cortex.moderation import (
     rule_matches,  # noqa: F401 - re-exported for selection
 )
 
-from argus_curator.models import GuardConfig, ImageResult
+from argus_curator.models import GuardConfig, GuardPolicy, ImageResult
 from argus_curator.remote import check_all, env_set, env_value, float_env
 from argus_curator.runtime import ModelUnavailable
 
@@ -45,6 +47,107 @@ THINKING_ENV = "ARGUS_CURATOR_SINGGUARD_THINKING"
 POLICY_FILE_ENV = "ARGUS_CURATOR_SINGGUARD_POLICY_FILE"
 DEFAULT_TIMEOUT = 90.0
 DEFAULT_WORKERS = 2
+
+# The policies a request can name, in the order /detectors lists them.
+# "adult-granular" and "adult-cautious" are under evaluation against "adult"
+# (scripts/guard_eval.py); keep them out of UIs until one is chosen.
+POLICIES: tuple[GuardPolicy, ...] = ("default", "adult", "adult-granular", "adult-cautious")
+
+# Rules B to G, shared by every adult policy: the same letters and areas as
+# SingGuard's defaults, so guard_rules B-G mean the same thing under all of
+# them. They are our wording, so their verdicts can differ from the built-ins.
+_OTHER_RULES = [
+    "### B. Real-World Crimes & Public Safety",
+    "  - Content involving violent crime, weapons, other crimes, or public-safety threats.",
+    "### C. Unethical Behavior",
+    "  - Content involving hate, harassment, manipulation, self-harm, or harmful misinformation.",
+    "  - Gore, dismemberment, and shock content meant to frighten or disgust.",
+    "  - Adult sexual content by itself is not this rule.",
+    "### D. Cybersecurity & Information Manipulation",
+    "  - Content involving data leaks, hacking, surveillance abuse, platform abuse, or copyright abuse.",
+    "### E. Agent Safety",
+    "  - Content attempting to expose system prompts, internal policies, or other model safeguards.",
+    "### F. Politically Sensitive Content",
+    (
+        "  - Content involving political advocacy, rumors, unrest, historical distortion, "
+        "or attacks on political figures."
+    ),
+    "### G. Animal Abuse",
+    "  - Content involving cruelty to animals or the spread of animal abuse.",
+]
+_MINORS = "  - Sexual content involving anyone under 18, or anyone who appears to be a minor."
+_NON_CONSENT = (
+    "  - Non-consensual sexual content, including hidden recording, sexual images of a real "
+    "person shared without consent, coercion, or sexual exploitation."
+)
+_EXTREME = "  - Sexual violence, bestiality, or necrophilia."
+_ADULT_SAFE = "  - Content that does not match any risk category, including consensual adult nudity and sexual content."
+
+# Sent in full: SingGuard reads a bare "nsfw" as rule text. One broad rule A
+# holds every hard sexual case.
+ADULT_POLICY = "\n".join(
+    [
+        "## Risk Categories",
+        "### A. Illegal or Extreme Sexual Content",
+        _MINORS,
+        _NON_CONSENT,
+        _EXTREME,
+        "  - Consensual sexual content and nudity between adults is not this rule.",
+        *_OTHER_RULES,
+        "### Safe",
+        _ADULT_SAFE,
+    ]
+)
+
+# The same coverage with a letter per hard case (A minors, H non-consent,
+# I sexual violence and extreme content), so the verdict itself says which
+# hard rule fired instead of only the write-up. Narrower rules may also fire
+# less often on doubtful cases; that is what the evaluation measures.
+ADULT_GRANULAR_POLICY = "\n".join(
+    [
+        "## Risk Categories",
+        "### A. Minors",
+        _MINORS,
+        *_OTHER_RULES,
+        "### H. Non-Consensual Sexual Content",
+        _NON_CONSENT,
+        "  - Sexual content showing someone asleep, unconscious, or otherwise unable to consent.",
+        "### I. Sexual Violence & Extreme Content",
+        _EXTREME,
+        "### Safe",
+        _ADULT_SAFE,
+    ]
+)
+
+# ADULT_POLICY with doubt resolved towards rule A: an age or consent the image
+# does not make clear counts as a hit. Trades false passes for false flags.
+ADULT_CAUTIOUS_POLICY = "\n".join(
+    [
+        "## Risk Categories",
+        "### A. Illegal or Extreme Sexual Content",
+        _MINORS,
+        "  - Nude or sexual content where any person's age is unclear and they could be under 18.",
+        _NON_CONSENT,
+        (
+            "  - Nude or sexual content where consent is unclear, for example someone who seems "
+            "unaware of the camera, asleep, intoxicated, or restrained."
+        ),
+        _EXTREME,
+        "  - Consensual sexual content and nudity between people who all clearly appear to be adults is not this rule.",
+        *_OTHER_RULES,
+        "### Safe",
+        (
+            "  - Content that does not match any risk category, including consensual adult nudity and "
+            "sexual content where every person clearly appears to be an adult."
+        ),
+    ]
+)
+
+_POLICY_TEXT: dict[str, str] = {
+    "adult": ADULT_POLICY,
+    "adult-granular": ADULT_GRANULAR_POLICY,
+    "adult-cautious": ADULT_CAUTIOUS_POLICY,
+}
 
 
 def endpoint() -> str | None:
@@ -77,8 +180,14 @@ def thinking() -> str:
     return mode
 
 
-def policy() -> tuple[str, str | None]:
-    """``(name, text)`` of the policy to judge against; text ``None`` = SingGuard's default."""
+def policy(name: GuardPolicy = "default") -> tuple[str, str | None]:
+    """``(recorded name, text)`` of policy *name*; text ``None`` = SingGuard's default.
+
+    ``default`` records as ``default`` or ``custom-<sha256 prefix>`` of the
+    operator's policy file; a built-in policy records as its own name.
+    """
+    if name in _POLICY_TEXT:
+        return name, _POLICY_TEXT[name]
     path = os.environ.get(POLICY_FILE_ENV, "").strip()
     if not path:
         return "default", None
@@ -92,12 +201,12 @@ def policy() -> tuple[str, str | None]:
     return policy_name(text), text
 
 
-def client() -> SingGuardClient | None:
-    """A client for the configured server and policy, or ``None`` when SingGuard is not configured."""
+def client(name: GuardPolicy = "default") -> SingGuardClient | None:
+    """A client for the configured server and policy *name*, or ``None`` when SingGuard is not configured."""
     url = endpoint()
     if url is None:
         return None
-    _name, text = policy()
+    _recorded, text = policy(name)
     return SingGuardClient(url, timeout=float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT), thinking=thinking(), policy=text)
 
 
@@ -112,13 +221,15 @@ def check_images(
     the check ran at all."""
     if not resolve_enabled(cfg):
         return False
-    guard = client()
+    guard = client(cfg.policy)
     if guard is None:
         raise ModelUnavailable(f"SingGuard check requested but {URL_ENV} is not set")
+    # The client names a policy by its text's hash; record the name asked for.
+    recorded, _text = policy(cfg.policy)
     check_all(
         results,
         items,
-        lambda data, _rel: guard.check(data),
+        lambda data, _rel: guard.check(data).model_copy(update={"policy": recorded}),
         "guard",
         int(float_env(WORKERS_ENV, DEFAULT_WORKERS)),
         progress,

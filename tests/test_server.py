@@ -94,7 +94,28 @@ def test_detectors_keys(client: TestClient) -> None:
         "garments",
         "nudenet",
         "singguard",
+        "singguard_policies",
     }
+    assert resp.json()["singguard_policies"] == []  # no SingGuard server configured
+
+
+def test_detectors_list_policies_when_singguard_is_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
+    body = client.get("/detectors").json()
+    assert body["singguard"] is True and body["singguard_policies"] == [
+        "default",
+        "adult",
+        "adult-granular",
+        "adult-cautious",
+    ]
+
+
+def test_scan_refuses_an_unknown_guard_policy(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    resp = client.post("/scan/folder", json={"folder": "", "guard": {"policy": "anything-goes"}})
+    assert resp.status_code == 422
 
 
 def test_scan_then_paginate_then_export(contained: tuple[TestClient, Path]) -> None:

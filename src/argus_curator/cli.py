@@ -166,6 +166,11 @@ def scan(
     singguard_url: str | None = Option(
         None, "--singguard-url", help="SingGuard server origin, e.g. http://guard:9150 (ARGUS_CURATOR_SINGGUARD_URL)"
     ),
+    guard_policy: str = Option(
+        "default",
+        "--guard-policy",
+        help="SingGuard policy: default (the policy file, else SingGuard's rules) or adult (allows adult nudity)",
+    ),
     guard_unsafe: bool = Option(False, "--guard-unsafe", help="Drop images SingGuard judged unsafe, under any rule"),
     guard_rules: str | None = Option(
         None, "--guard-rules", help="Drop images where one of these SingGuard rules fired, comma-separated (e.g. A,C)"
@@ -322,12 +327,15 @@ def scan(
         typer.echo(f"Error: NSFW thresholds need the NudeNet check, but {why}", err=True)
         raise typer.Exit(1)
 
-    guard_cfg = GuardConfig(enabled=guard)
+    if guard_policy not in guard_mod.POLICIES:
+        typer.echo(f"Error: --guard-policy must be one of {', '.join(guard_mod.POLICIES)}", err=True)
+        raise typer.Exit(1)
+    guard_cfg = GuardConfig(enabled=guard, policy=guard_policy)
     if guard_mod.resolve_enabled(guard_cfg):
         try:
             guard_mod.endpoint()
             guard_mod.thinking()
-            guard_mod.policy()
+            guard_mod.policy(guard_cfg.policy)
         except Exception as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc

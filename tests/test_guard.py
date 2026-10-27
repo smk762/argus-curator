@@ -199,6 +199,48 @@ def test_policy_file_is_sent_and_recorded(
     assert results[0].guard.policy == guard.policy()[0]
 
 
+def test_adult_policy_is_sent_in_full_and_recorded_by_name(
+    singguard: type[_SingGuard], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The operator's policy file is for "default"; "adult" does not read it.
+    policy = tmp_path / "p.txt"
+    policy.write_text("### A. Minors\n")
+    monkeypatch.setenv(guard.POLICY_FILE_ENV, str(policy))
+    results = [ImageResult(rel_path="a.png", abs_path="/d/a", passed=True)]
+    guard.check_images(results, [("a.png", "/d/a", _png(20))], GuardConfig(policy="adult"))
+    assert singguard.seen[0]["policy"] == guard.ADULT_POLICY
+    assert results[0].guard.policy == "adult"
+    assert results[0].guard.rules == [_CRIME, _GORE]  # the verdict is still SingGuard's
+
+
+def _letters(text: str) -> list[str]:
+    return [line[4] for line in text.splitlines() if line.startswith("### ") and line[5] == "."]
+
+
+@pytest.mark.parametrize(
+    ("name", "letters"),
+    [("adult", "ABCDEFG"), ("adult-cautious", "ABCDEFG"), ("adult-granular", "ABCDEFGHI")],
+)
+def test_adult_policies_keep_the_default_rule_letters(name: str, letters: str) -> None:
+    recorded, text = guard.policy(name)
+    assert recorded == name and _letters(text) == list(letters)
+    assert "under 18" in text and text.rstrip().splitlines()[-2] == "### Safe"
+    # B to G read the same under every adult policy.
+    other = guard.ADULT_POLICY[guard.ADULT_POLICY.index("### B.") : guard.ADULT_POLICY.index("### Safe")]
+    assert other in text
+
+
+def test_every_listed_policy_resolves() -> None:
+    assert set(guard.POLICIES) == set(GuardConfig.model_fields["policy"].annotation.__args__)
+    for name in guard.POLICIES:
+        guard.policy(name)
+
+
+def test_unknown_policy_name_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        GuardConfig(policy="nsfw")
+
+
 def test_large_images_are_downscaled(singguard: type[_SingGuard]) -> None:
     results = [ImageResult(rel_path="big.png", abs_path="/d/big", passed=True)]
     guard.check_images(results, [("big.png", "/d/big", _png(10, (4000, 3000)))], GuardConfig())
@@ -228,6 +270,10 @@ def test_scan_runs_singguard_when_configured(singguard: type[_SingGuard]) -> Non
     summary = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig())
     assert summary.guard_config.enabled is True
     assert {r.rel_path: r.guard.safe for r in summary.results} == {"a.png": False, "b.png": True}
+
+    adult = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), guard_cfg=GuardConfig(policy="adult"))
+    assert adult.guard_config.policy == "adult"  # the summary says which policy judged it
+    assert {r.guard.policy for r in adult.results} == {"adult"}
 
     opted_out = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), guard_cfg=GuardConfig(enabled=False))
     assert opted_out.guard_config.enabled is False

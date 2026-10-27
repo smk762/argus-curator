@@ -10,7 +10,6 @@ from __future__ import annotations
 import re
 
 import imagehash
-
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
 from argus_curator.garments import outfit, outfit_similarity

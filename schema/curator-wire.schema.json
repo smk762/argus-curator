@@ -994,7 +994,7 @@
       "type": "object"
     },
     "GuardConfig": {
-      "description": "SingGuard policy check via a remote SingGuard server (see guard.py).\n\nLike NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) and the policy\n(ARGUS_CURATOR_SINGGUARD_POLICY_FILE) are process configuration.",
+      "description": "SingGuard policy check via a remote SingGuard server (see guard.py).\n\nLike NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) is process\nconfiguration. A request picks a policy by name, never by text.",
       "properties": {
         "enabled": {
           "anyOf": [
@@ -1007,6 +1007,17 @@
           ],
           "default": null,
           "title": "Enabled"
+        },
+        "policy": {
+          "default": "default",
+          "enum": [
+            "default",
+            "adult",
+            "adult-granular",
+            "adult-cautious"
+          ],
+          "title": "Policy",
+          "type": "string"
         }
       },
       "title": "GuardConfig",
