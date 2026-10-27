@@ -403,7 +403,7 @@ def create_app(
             "export_root": str(Path(default_export).resolve()) if default_export else None,
             "allow_move": allow_move,
             # A client asks, rather than sniffing the version: this server can
-            # stop a running scan and purge the scan cache (0.7 and later).
+            # stop a running scan and purge the scan cache (0.6 and later).
             "scan_control": True,
         }
 
