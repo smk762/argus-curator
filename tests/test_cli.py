@@ -90,7 +90,7 @@ def test_bad_singguard_thinking_mode_fails_before_scanning(dataset: Path) -> Non
     result = runner.invoke(
         app,
         ["scan", str(dataset), "--singguard-url", "http://g:1"],
-        env={"ARGUS_CURATOR_SINGGUARD_THINKING": "slow"},
+        env={"ARGUS_CURATOR_SINGGUARD_THINKING": "turbo"},
     )
     assert result.exit_code == 1, result.output
     assert "fast-slow" in result.output and "Scanning" not in result.output

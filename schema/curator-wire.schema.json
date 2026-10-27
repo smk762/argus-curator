@@ -1100,6 +1100,18 @@
         "safe": {
           "title": "Safe",
           "type": "boolean"
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking"
         }
       },
       "required": [
