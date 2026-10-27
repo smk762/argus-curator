@@ -411,11 +411,14 @@ server judges each image against a whole moderation policy and answers with a
 
 It gives **no scores**, so it complements NudeNet rather than replacing it. It
 runs a vision language model: about a second per image in `fast` mode, several
-in `fast-slow` (which also writes why a rule fired). Configure it like NudeNet:
+in `fast-slow` (which also writes why a rule fired). argus-cull's `singguard`
+service adds `slow` (the reasoning without a fast verdict ahead of it) and
+`cascade` (`fast` for every image, `slow` for what `fast` flags); other servers
+answer 400 to those. Configure it like NudeNet:
 
 ```bash
 ARGUS_CURATOR_SINGGUARD_URL=http://192.168.1.198:9150   # its origin; /api/guard/check is appended
-ARGUS_CURATOR_SINGGUARD_THINKING=fast                    # or fast-slow, for explanations
+ARGUS_CURATOR_SINGGUARD_THINKING=fast                    # or fast-slow / slow / cascade
 ARGUS_CURATOR_SINGGUARD_POLICY_FILE=/etc/curator/policy.txt  # optional: replaces the default rules
 ARGUS_CURATOR_SINGGUARD_TIMEOUT=90                       # seconds per image (default 90)
 ARGUS_CURATOR_SINGGUARD_WORKERS=2                        # concurrent requests (default 2)

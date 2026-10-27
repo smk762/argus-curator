@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-27
+
 ### Added
 
 - `ARGUS_CURATOR_SINGGUARD_CONTEXT` sends what the scan already knows about an
@@ -16,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<stem>.txt` or `<stem>.xmp` sidecar). Off by default. Measure it on
   labelled images before relying on it: a wrong age leans the verdict the
   wrong way, and the under-18 rule does not read it.
+- `ARGUS_CURATOR_SINGGUARD_THINKING` accepts `slow` and `cascade`, the
+  argus-cull `singguard` service's modes, and `GuardResult.thinking` records
+  the mode the server says it judged in. Other servers answer 400 to the new
+  modes. `scripts/guard_eval.py --thinking` takes the same modes.
 
 ### Changed
 
@@ -29,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "adult interaction"; it now passes. The exceptions live under Safe because
   SingGuard reads a bullet under a risk heading as a match for that rule, even
   one that says "is not this rule". `adult-cautious` is unchanged.
+- Requires `argus-cortex>=0.4.1` (and `argus-cortex[server]>=0.4.1` for the
+  server). `GuardResult` comes from cortex, so its new `thinking` field is in
+  the wire schema, and pinning the floor keeps the schema the same wherever
+  curator is installed.
 
 ## [0.5.1] - 2026-10-27
 
@@ -373,7 +383,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/smk762/argus-curator/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/smk762/argus-curator/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/smk762/argus-curator/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/smk762/argus-curator/compare/v0.3.0...v0.4.0
