@@ -104,7 +104,12 @@ def test_detectors_list_policies_when_singguard_is_configured(
 ) -> None:
     monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
     body = client.get("/detectors").json()
-    assert body["singguard"] is True and body["singguard_policies"] == ["default", "adult"]
+    assert body["singguard"] is True and body["singguard_policies"] == [
+        "default",
+        "adult",
+        "adult-granular",
+        "adult-cautious",
+    ]
 
 
 def test_scan_refuses_an_unknown_guard_policy(contained: tuple[TestClient, Path]) -> None:

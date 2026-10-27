@@ -1012,7 +1012,9 @@
           "default": "default",
           "enum": [
             "default",
-            "adult"
+            "adult",
+            "adult-granular",
+            "adult-cautious"
           ],
           "title": "Policy",
           "type": "string"

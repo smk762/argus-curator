@@ -434,6 +434,13 @@ the default rule B flags passes under `adult`. `default` is the policy file when
 rules. A request names a policy and never sends policy text. `GET /detectors`
 lists the names in `singguard_policies`.
 
+`adult-granular` (a letter per hard case: A minors, H non-consent, I sexual
+violence) and `adult-cautious` (doubt about age or consent counts as rule A)
+are under evaluation against `adult`; don't build on them yet.
+`scripts/guard_eval.py --url <singguard>` scores every policy on the text
+probes in `eval/guard_probes.jsonl` and on an optional folder of images
+sorted by expected verdict.
+
 Each image records `guard.safe`, the rules that fired, the explanation, the
 model and the policy: `default`, `adult`, or `custom-<sha256 prefix>` of the
 file. The CSV report has `guard_safe` and `guard_rules`.

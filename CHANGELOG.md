@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when one is set, else SingGuard's own rules. Results record `adult` as the
   policy name. `GET /detectors` lists the names in `singguard_policies`
   (empty without a SingGuard server).
+- Two adult policy variants under evaluation, `adult-granular` (a letter per
+  hard case) and `adult-cautious` (unclear age or consent counts as rule A),
+  plus `scripts/guard_eval.py` and text probes in `eval/guard_probes.jsonl`
+  to compare all policies against a SingGuard server.
 
 ## [0.4.0] - 2026-10-26
 

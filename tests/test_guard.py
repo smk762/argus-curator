@@ -213,11 +213,27 @@ def test_adult_policy_is_sent_in_full_and_recorded_by_name(
     assert results[0].guard.rules == [_CRIME, _GORE]  # the verdict is still SingGuard's
 
 
-def test_adult_policy_keeps_the_default_rule_letters() -> None:
-    letters = [line[4] for line in guard.ADULT_POLICY.splitlines() if line.startswith("### ") and line[5] == "."]
-    assert letters == list("ABCDEFG")
-    assert "under 18" in guard.ADULT_POLICY
-    assert guard.policy("adult") == ("adult", guard.ADULT_POLICY)
+def _letters(text: str) -> list[str]:
+    return [line[4] for line in text.splitlines() if line.startswith("### ") and line[5] == "."]
+
+
+@pytest.mark.parametrize(
+    ("name", "letters"),
+    [("adult", "ABCDEFG"), ("adult-cautious", "ABCDEFG"), ("adult-granular", "ABCDEFGHI")],
+)
+def test_adult_policies_keep_the_default_rule_letters(name: str, letters: str) -> None:
+    recorded, text = guard.policy(name)
+    assert recorded == name and _letters(text) == list(letters)
+    assert "under 18" in text and text.rstrip().splitlines()[-2] == "### Safe"
+    # B to G read the same under every adult policy.
+    other = guard.ADULT_POLICY[guard.ADULT_POLICY.index("### B.") : guard.ADULT_POLICY.index("### Safe")]
+    assert other in text
+
+
+def test_every_listed_policy_resolves() -> None:
+    assert set(guard.POLICIES) == set(GuardConfig.model_fields["policy"].annotation.__args__)
+    for name in guard.POLICIES:
+        guard.policy(name)
 
 
 def test_unknown_policy_name_is_rejected() -> None:
