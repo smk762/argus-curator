@@ -135,6 +135,7 @@ class ScanGate:
 def _busy_detail(active: dict[str, Any]) -> str:
     return f"A scan is already running ({active['phase']} {active['done']}/{active['total']})."
 
+
 # Default CORS origins for `--cors`: the argus-studio dev frontend. Anything
 # else must be allow-listed explicitly (or use the credential-less wildcard).
 _LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]

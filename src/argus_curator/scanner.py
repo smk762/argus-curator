@@ -78,6 +78,9 @@ def _emit_chunk(chunk: ChunkFn | None, payload: dict[str, Any]) -> None:
         chunk(payload)
 
 
+_SCAN_PHASES = {"starting", "collecting", "scoring", "faces", "scenes", "garments", "nsfw", "guard"}
+
+
 def pending_checks(phase: str, requested: list[str], *, phase_done: bool = False) -> list[str]:
     """Checks still ahead of *phase*, so a client can hold images waiting on them.
 
@@ -86,9 +89,7 @@ def pending_checks(phase: str, requested: list[str], *, phase_done: bool = False
     """
     if phase == "nsfw" and phase_done:
         phase = "guard"
-    elif phase == "guard" and phase_done:
-        return []
-    elif phase not in {"starting", "collecting", "scoring", "faces", "scenes", "garments", "nsfw", "guard"}:
+    elif (phase == "guard" and phase_done) or phase not in _SCAN_PHASES:
         return []
     if phase == "guard":
         return [name for name in requested if name == "guard"]
@@ -575,7 +576,9 @@ def scan_items(
         results,
         items,
         nsfw_cfg,
-        progress=(lambda phase_done, phase_total: _emit(progress, "nsfw", phase_done, phase_total)) if progress else None,
+        progress=(lambda phase_done, phase_total: _emit(progress, "nsfw", phase_done, phase_total))
+        if progress
+        else None,
         on_done=on_nsfw,
     )
 
@@ -599,7 +602,9 @@ def scan_items(
         results,
         items,
         guard_cfg,
-        progress=(lambda phase_done, phase_total: _emit(progress, "guard", phase_done, phase_total)) if progress else None,
+        progress=(lambda phase_done, phase_total: _emit(progress, "guard", phase_done, phase_total))
+        if progress
+        else None,
         on_done=on_guard,
     )
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from argus_curator.models import ScanSummary
@@ -78,7 +78,7 @@ class ScanStore:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            updated = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            updated = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
             rows.append(
                 {
                     "scan_id": data.get("scan_id") or path.stem,
