@@ -225,6 +225,28 @@
           "title": "Garments Uncropped",
           "type": "boolean"
         },
+        "guard_policies": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "default",
+                  "adult",
+                  "adult-granular",
+                  "adult-cautious"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard Policies"
+        },
         "guard_rules": {
           "anyOf": [
             {
@@ -1018,6 +1040,19 @@
           ],
           "title": "Policy",
           "type": "string"
+        },
+        "variants": {
+          "items": {
+            "enum": [
+              "default",
+              "adult",
+              "adult-granular",
+              "adult-cautious"
+            ],
+            "type": "string"
+          },
+          "title": "Variants",
+          "type": "array"
         }
       },
       "title": "GuardConfig",
@@ -1139,6 +1174,29 @@
             }
           ],
           "default": null
+        },
+        "guard_variants": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/GuardResult"
+              },
+              "propertyNames": {
+                "enum": [
+                  "default",
+                  "adult",
+                  "adult-granular",
+                  "adult-cautious"
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard Variants"
         },
         "height": {
           "default": 0,
@@ -1972,6 +2030,28 @@
           "default": false,
           "title": "Garments Uncropped",
           "type": "boolean"
+        },
+        "guard_policies": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "default",
+                  "adult",
+                  "adult-granular",
+                  "adult-cautious"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard Policies"
         },
         "guard_rules": {
           "anyOf": [

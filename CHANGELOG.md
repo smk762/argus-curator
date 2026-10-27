@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hard case) and `adult-cautious` (unclear age or consent counts as rule A),
   plus `scripts/guard_eval.py` and text probes in `eval/guard_probes.jsonl`
   to compare all policies against a SingGuard server.
+- Policy comparison on real scans: `GuardConfig.variants` judges every image
+  under extra policies too (`ImageResult.guard_variants`, by policy name, the
+  official verdict included; CLI `--guard-variants`), and `guard_policies` on
+  export and `/select` makes the SingGuard filters drop an image when any
+  listed verdict fails or is missing (CLI `--guard-policies`). Keep reasons
+  name the policy (`guard-unsafe:adult-granular`), and the CSV report has a
+  `guard_variants` column.
 
 ## [0.4.0] - 2026-10-26
 

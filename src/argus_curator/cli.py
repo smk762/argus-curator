@@ -171,6 +171,16 @@ def scan(
         "--guard-policy",
         help="SingGuard policy: default (the policy file, else SingGuard's rules) or adult (allows adult nudity)",
     ),
+    guard_variants: str | None = Option(
+        None,
+        "--guard-variants",
+        help="Also judge every image under these policies, comma-separated (one more SingGuard pass each)",
+    ),
+    guard_policies: str | None = Option(
+        None,
+        "--guard-policies",
+        help="Which policies' verdicts --guard-unsafe/--guard-rules read, comma-separated; any failing drops (default: the official one)",
+    ),
     guard_unsafe: bool = Option(False, "--guard-unsafe", help="Drop images SingGuard judged unsafe, under any rule"),
     guard_rules: str | None = Option(
         None, "--guard-rules", help="Drop images where one of these SingGuard rules fired, comma-separated (e.g. A,C)"
@@ -289,6 +299,7 @@ def scan(
             nsfw_label_thresholds=label_thresholds,
             guard_unsafe=guard_unsafe,
             guard_rules=_csv_list(guard_rules),
+            guard_policies=_csv_list(guard_policies),
             **({"nsfw_exposed_labels": _csv_list(nsfw_exposed_labels)} if nsfw_exposed_labels else {}),
             write_manifest=dest is not None,
         )
@@ -327,15 +338,22 @@ def scan(
         typer.echo(f"Error: NSFW thresholds need the NudeNet check, but {why}", err=True)
         raise typer.Exit(1)
 
-    if guard_policy not in guard_mod.POLICIES:
-        typer.echo(f"Error: --guard-policy must be one of {', '.join(guard_mod.POLICIES)}", err=True)
+    variant_names = _csv_list(guard_variants) or []
+    for name in (guard_policy, *variant_names):
+        if name not in guard_mod.POLICIES:
+            typer.echo(f"Error: unknown SingGuard policy {name!r} (one of {', '.join(guard_mod.POLICIES)})", err=True)
+            raise typer.Exit(1)
+    guard_cfg = GuardConfig(enabled=guard, policy=guard_policy, variants=variant_names)
+    ran = [guard_cfg.policy, *guard_cfg.variants]
+    if not_run := [name for name in export_req.guard_policies or [] if name not in ran]:
+        typer.echo(f"Error: --guard-policies {', '.join(not_run)} not judged (add them to --guard-variants)", err=True)
         raise typer.Exit(1)
-    guard_cfg = GuardConfig(enabled=guard, policy=guard_policy)
     if guard_mod.resolve_enabled(guard_cfg):
         try:
             guard_mod.endpoint()
             guard_mod.thinking()
-            guard_mod.policy(guard_cfg.policy)
+            for name in (guard_cfg.policy, *guard_cfg.variants):
+                guard_mod.policy(name)
         except Exception as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc

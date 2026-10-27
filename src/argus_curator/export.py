@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import structlog
+from argus_cortex.moderation import rule_letter
 
 from argus_curator.models import ExportRequest, ExportResult, ImageResult, ManifestRow, ScanSummary
 from argus_curator.selection import decide_selection, minor_exposed
@@ -201,6 +202,7 @@ def write_report(
         "nsfw_labels",
         "guard_safe",
         "guard_rules",
+        "guard_variants",
         "width",
         "height",
         "abs_path",
@@ -256,6 +258,11 @@ def write_report(
                     "nsfw_labels": ";".join(f"{k}:{v:.2f}" for k, v in r.nsfw.labels.items()) if r.nsfw else "",
                     "guard_safe": "" if r.guard is None else str(r.guard.safe).lower(),
                     "guard_rules": ";".join(r.guard.rules) if r.guard else "",
+                    # "policy=safe" or "policy=unsafe[A,H]" per policy that judged the image.
+                    "guard_variants": ";".join(
+                        f"{name}={'safe' if g.safe else 'unsafe[' + ','.join(rule_letter(x) for x in g.rules) + ']'}"
+                        for name, g in (r.guard_variants or {}).items()
+                    ),
                     "width": r.width,
                     "height": r.height,
                     "abs_path": r.abs_path,

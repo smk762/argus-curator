@@ -446,7 +446,8 @@ def create_app(
                 )
             try:
                 guard_mod.thinking()
-                guard_mod.policy(req.guard.policy)
+                for name in (req.guard.policy, *req.guard.variants):
+                    guard_mod.policy(name)
             except ModelUnavailable as exc:  # these name no URL or path
                 raise HTTPException(status_code=400, detail=f"SingGuard check requested but {exc}") from exc
 
