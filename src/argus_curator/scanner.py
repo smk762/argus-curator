@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import threading
 import time
 import uuid
 from collections.abc import Callable, Collection
@@ -416,11 +417,11 @@ def scan_items(
 
     When *progress* is supplied it is called with ``{phase, done, total,
     pending_checks}`` dicts as the scan advances through its ``scoring`` ->
-    ``faces`` -> ``nsfw`` -> ``scenes`` -> ``garments`` -> ``guard`` ->
-    ``identities`` -> ``clustering`` phases. Face detection publishes MiVOLO
-    ages and FairFace race first and NudeNet follows at once, so a viewer can
-    lift a blur as early as it is safe to; scenes and garments come after,
-    since nothing waits on them. Identity clustering waits until the checks
+    ``faces`` + ``nsfw`` -> ``scenes`` -> ``garments`` -> ``guard`` ->
+    ``identities`` -> ``clustering`` phases. Face detection (MiVOLO ages and
+    FairFace race) and NudeNet run at the same time and their progress events
+    interleave, so a viewer has what it needs to lift a blur as early as it is
+    safe to; scenes and garments come after, since nothing waits on them. Identity clustering waits until the checks
     finish. A caller can drive a live progress UI (see the SSE endpoint).
     *chunk* receives the images finished since the previous call, and *save*
     receives a partial summary so a scan can be reopened while it is still
@@ -452,8 +453,15 @@ def scan_items(
     def ordered() -> list[ImageResult]:
         return [results_by_rel[rel] for rel, _, _ in items if rel in results_by_rel]
 
-    def snapshot(nsfw_ran: bool, guard_ran: bool) -> ScanSummary:
+    # Whether each opt-out check actually ran, read when a snapshot is saved.
+    ran = {"nsfw": False, "guard": False}
+    # Face detection and NudeNet run side by side, so chunks, saves and the
+    # completed set are touched under one lock.
+    lock = threading.Lock()
+
+    def snapshot() -> ScanSummary:
         rows = ordered()
+        nsfw_ran, guard_ran = ran["nsfw"], ran["guard"]
         rejected = [r for r in rows if not r.passed]
         passed = [r for r in rows if r.passed]
         duplicates = [r for r in passed if r.is_duplicate]
@@ -489,32 +497,41 @@ def scan_items(
         with contextlib.suppress(Exception):  # pragma: no cover
             save(summary)
 
+    def finish(check: str) -> None:
+        with lock:
+            completed.add(check)
+
     def deliver(
         phase: str,
         done: int,
         phase_total: int,
         batch: list[ImageResult],
         *,
-        nsfw_ran: bool = False,
-        guard_ran: bool = False,
+        finished: str | None = None,
         force: bool = False,
     ) -> None:
-        if not batch and not face_clusters:
-            return
-        phase_done = phase_total > 0 and done >= phase_total
-        payload: dict[str, Any] = {
-            "scan_id": scan_id,
-            "folder": folder,
-            "phase": phase,
-            "done": done,
-            "total": phase_total,
-            "pending_checks": pending(),
-            "results": [row.model_dump(mode="json") for row in batch],
-        }
-        if face_clusters:
-            payload["face_clusters"] = [cluster.model_dump(mode="json") for cluster in face_clusters]
-        _emit_chunk(chunk, payload)
-        maybe_save(snapshot(nsfw_ran, guard_ran), force=force or phase_done)
+        """Hand *batch* to the chunk sink and save a snapshot. *finished* names
+        a check this batch completes, marked before the payload is built so the
+        chunk that carries the last result no longer lists it as pending."""
+        with lock:
+            if finished is not None:
+                completed.add(finished)
+            if not batch and not face_clusters:
+                return
+            phase_done = phase_total > 0 and done >= phase_total
+            payload: dict[str, Any] = {
+                "scan_id": scan_id,
+                "folder": folder,
+                "phase": phase,
+                "done": done,
+                "total": phase_total,
+                "pending_checks": pending(),
+                "results": [row.model_dump(mode="json") for row in batch],
+            }
+            if face_clusters:
+                payload["face_clusters"] = [cluster.model_dump(mode="json") for cluster in face_clusters]
+            _emit_chunk(chunk, payload)
+            maybe_save(snapshot(), force=force or phase_done)
 
     # Phase 1: per-image scoring. Batches land in the grid while later phases run.
     emit("scoring", 0, total)
@@ -536,10 +553,13 @@ def scan_items(
 
     results = ordered()
 
-    # Face boxes, MiVOLO age, and FairFace race. Identities are clustered after
-    # the other checks so an under-18 age is visible before that work finishes.
-    detected_faces = None
-    if faces_cfg.enabled:
+    # Face boxes, MiVOLO age, and FairFace race, on this process's CPU, and
+    # NudeNet, on its own server, run side by side: a viewer needs both the age
+    # and the exposed score before it can lift a blur, and neither waits on the
+    # other. Each delivers its own chunks under the lock. Identities are
+    # clustered after the other checks so an under-18 age is visible before
+    # that work finishes.
+    def run_faces() -> Any:
         from argus_curator import faces as faces_mod
 
         face_batch: list[ImageResult] = []
@@ -547,46 +567,55 @@ def scan_items(
         def on_face(row: ImageResult, phase_done: int, phase_total: int) -> None:
             finalize_score(row, profile, cfg, faces_known=True)
             face_batch.append(row)
-            if phase_done == phase_total:
-                completed.add("faces")
-            if phase_done == phase_total or len(face_batch) >= CHUNK_SIZE:
-                deliver("faces", phase_done, phase_total, face_batch)
+            last = phase_done == phase_total
+            if last or len(face_batch) >= CHUNK_SIZE:
+                deliver("faces", phase_done, phase_total, face_batch, finished="faces" if last else None)
                 face_batch.clear()
 
-        detected_faces = faces_mod.detect_faces(
-            results,
-            items,
-            faces_cfg,
-            progress=(lambda done, phase_total: emit("faces", done, phase_total)) if progress else None,
-            on_done=on_face,
-        )
-        # No passing image means no on_done call; the check is still over.
-        completed.add("faces")
+        try:
+            return faces_mod.detect_faces(
+                results,
+                items,
+                faces_cfg,
+                progress=(lambda done, phase_total: emit("faces", done, phase_total)) if progress else None,
+                on_done=on_face,
+            )
+        finally:
+            # No passing image means no on_done call; the check is still over.
+            finish("faces")
 
-    # NudeNet (opt-out): on whenever a NudeNet server is configured, unless
-    # this scan says otherwise. It runs straight after faces, since a viewer
-    # needs both the age and the exposed score before it can lift a blur, and
-    # nothing else waits on the scene and garment passes. The summary records
-    # whether it actually ran.
-    nsfw_batch: list[ImageResult] = []
+    # NudeNet is opt-out: on whenever a NudeNet server is configured, unless
+    # this scan says otherwise. The summary records whether it actually ran.
+    def run_nsfw() -> None:
+        nsfw_batch: list[ImageResult] = []
 
-    def on_nsfw(row: ImageResult, phase_done: int, phase_total: int) -> None:
-        nsfw_batch.append(row)
-        if phase_done == phase_total:
-            completed.add("nsfw")
-        if phase_done == phase_total or len(nsfw_batch) >= CHUNK_SIZE:
-            deliver("nsfw", phase_done, phase_total, nsfw_batch, nsfw_ran=phase_done == phase_total)
-            nsfw_batch.clear()
+        def on_nsfw(row: ImageResult, phase_done: int, phase_total: int) -> None:
+            nsfw_batch.append(row)
+            last = phase_done == phase_total
+            if last:
+                ran["nsfw"] = True
+            if last or len(nsfw_batch) >= CHUNK_SIZE:
+                deliver("nsfw", phase_done, phase_total, nsfw_batch, finished="nsfw" if last else None)
+                nsfw_batch.clear()
 
-    nsfw_ran = nsfw_mod.check_images(
-        results,
-        items,
-        nsfw_cfg,
-        progress=(lambda phase_done, phase_total: emit("nsfw", phase_done, phase_total)) if progress else None,
-        on_done=on_nsfw,
-    )
-    # Over whether it ran or not: a client must not wait for a result that will not come.
-    completed.add("nsfw")
+        try:
+            ran["nsfw"] = nsfw_mod.check_images(
+                results,
+                items,
+                nsfw_cfg,
+                progress=(lambda phase_done, phase_total: emit("nsfw", phase_done, phase_total)) if progress else None,
+                on_done=on_nsfw,
+            )
+        finally:
+            # Over whether it ran or not: a client must not wait for a result that will not come.
+            finish("nsfw")
+
+    detected_faces = None
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="faces") as side:
+        faces_future = side.submit(run_faces) if faces_cfg.enabled else None
+        run_nsfw()
+        if faces_future is not None:
+            detected_faces = faces_future.result()
 
     # Places365 scene tags (optional): whole-image, independent of faces.
     if scene_cfg.enabled:
@@ -598,7 +627,7 @@ def scan_items(
             scene_cfg,
             progress=(lambda done, phase_total: emit("scenes", done, phase_total)) if progress else None,
         )
-        deliver("scenes", total, total, results, nsfw_ran=nsfw_ran, force=True)
+        deliver("scenes", total, total, results, force=True)
 
     # Fashionpedia garments (optional): whole-image, independent of faces.
     if garment_cfg.enabled:
@@ -610,7 +639,7 @@ def scan_items(
             garment_cfg,
             progress=(lambda done, phase_total: emit("garments", done, phase_total)) if progress else None,
         )
-        deliver("garments", total, total, results, nsfw_ran=nsfw_ran, force=True)
+        deliver("garments", total, total, results, force=True)
 
     # SingGuard (opt-out), the same way as NudeNet. The slow GPU pass goes last
     # among the checks: its verdict can put a blur back, never lift one.
@@ -618,27 +647,23 @@ def scan_items(
 
     def on_guard(row: ImageResult, phase_done: int, phase_total: int) -> None:
         guard_batch.append(row)
-        if phase_done == phase_total:
-            completed.add("guard")
-        if phase_done == phase_total or len(guard_batch) >= CHUNK_SIZE:
-            deliver(
-                "guard",
-                phase_done,
-                phase_total,
-                guard_batch,
-                nsfw_ran=nsfw_ran,
-                guard_ran=phase_done == phase_total,
-            )
+        last = phase_done == phase_total
+        if last:
+            ran["guard"] = True
+        if last or len(guard_batch) >= CHUNK_SIZE:
+            deliver("guard", phase_done, phase_total, guard_batch, finished="guard" if last else None)
             guard_batch.clear()
 
-    guard_ran = guard_mod.check_images(
-        results,
-        items,
-        guard_cfg,
-        progress=(lambda phase_done, phase_total: emit("guard", phase_done, phase_total)) if progress else None,
-        on_done=on_guard,
-    )
-    completed.add("guard")
+    try:
+        ran["guard"] = guard_mod.check_images(
+            results,
+            items,
+            guard_cfg,
+            progress=(lambda phase_done, phase_total: emit("guard", phase_done, phase_total)) if progress else None,
+            on_done=on_guard,
+        )
+    finally:
+        finish("guard")
 
     if detected_faces is not None:
         from argus_curator import faces as faces_mod
@@ -646,14 +671,14 @@ def scan_items(
         emit("identities", 0, total)
         face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
         emit("identities", total, total)
-        deliver("identities", total, total, results, nsfw_ran=nsfw_ran, guard_ran=guard_ran, force=True)
+        deliver("identities", total, total, results, force=True)
 
     emit("clustering", 0, total)
     _mark_duplicates(results, cfg)
     multi = _assign_clusters(results)
     emit("clustering", total, total)
 
-    summary = snapshot(nsfw_ran, guard_ran)
+    summary = snapshot()
     summary.similar_clusters = multi
     return summary
 
