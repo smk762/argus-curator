@@ -271,6 +271,10 @@ def test_scan_runs_singguard_when_configured(singguard: type[_SingGuard]) -> Non
     assert summary.guard_config.enabled is True
     assert {r.rel_path: r.guard.safe for r in summary.results} == {"a.png": False, "b.png": True}
 
+    adult = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), guard_cfg=GuardConfig(policy="adult"))
+    assert adult.guard_config.policy == "adult"  # the summary says which policy judged it
+    assert {r.guard.policy for r in adult.results} == {"adult"}
+
     opted_out = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), guard_cfg=GuardConfig(enabled=False))
     assert opted_out.guard_config.enabled is False
     assert all(r.guard is None for r in opted_out.results)

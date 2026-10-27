@@ -445,7 +445,7 @@ def scan_items(
             scenes_config=scene_cfg,
             garments_config=garment_cfg,
             nsfw_config=NsfwConfig(enabled=nsfw_ran),
-            guard_config=GuardConfig(enabled=guard_ran),
+            guard_config=guard_cfg.model_copy(update={"enabled": guard_ran}),
             total=total,
             passed=len(passed),
             rejected=len(rejected),
