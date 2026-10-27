@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   argus-cull `singguard` service's modes, and `GuardResult.thinking` records
   the mode the server says it judged in. Other servers answer 400 to the new
   modes. `scripts/guard_eval.py --thinking` takes the same modes.
+- `POST /scan/{scan_id}/cancel` stops the running scan. The scanner reads the
+  flag before each image and between phases; the checks already with a model
+  or a remote server finish, the ones still queued are dropped, and the stream
+  ends with `event: cancelled`. The partial summary saved while it ran is
+  deleted. `GET /scans` reports `active.cancelling` meanwhile.
+- `POST /scans/purge` stops the running scan, if any, waits for it to let go,
+  and deletes every cached scan. Returns `{cancelled, deleted}`. Source images
+  are never touched.
+- `scan_folder()` / `scan_items()` take `cancelled=`, a callable the scan
+  polls; `argus_curator.runtime.ScanCancelled` is raised when it answers True.
+  `ScanStore.delete_all()`.
+- `GET /health` reports `scan_control: true`, so a client can ask for these
+  routes instead of sniffing the version.
 
 ### Changed
 

@@ -48,6 +48,9 @@ from argus_curator.models import (
     TargetCategory,
     TargetProfile,
 )
+from argus_curator.runtime import ScanCancelled
+
+__all__ = ["ScanCancelled", "collect_images", "scan_folder", "scan_items"]
 
 logger = structlog.get_logger()
 
@@ -59,6 +62,9 @@ logger = structlog.get_logger()
 ProgressFn = Callable[[dict[str, Any]], None]
 ChunkFn = Callable[[dict[str, Any]], None]
 SaveFn = Callable[[ScanSummary], None]
+# Asked between images and phases; True stops the scan. Work already handed to
+# a model or a remote server finishes, work still queued is dropped.
+CancelFn = Callable[[], bool]
 
 # How many newly finished images to hand the client at once.
 CHUNK_SIZE = 8
@@ -412,6 +418,7 @@ def scan_items(
     progress: ProgressFn | None = None,
     chunk: ChunkFn | None = None,
     save: SaveFn | None = None,
+    cancelled: CancelFn | None = None,
 ) -> ScanSummary:
     """Score, (optionally) face-cluster, and de-duplicate a batch of images.
 
@@ -426,12 +433,19 @@ def scan_items(
     *chunk* receives the images finished since the previous call, and *save*
     receives a partial summary so a scan can be reopened while it is still
     running. ``pending_checks`` names the checks (``faces``, ``nsfw``,
-    ``guard``) whose results have not all landed yet.
+    ``guard``) whose results have not all landed yet. *cancelled* is asked at
+    every progress step and between phases; once it answers True the scan
+    raises :class:`ScanCancelled` as soon as the work in flight is done.
     """
     from argus_curator import guard as guard_mod
     from argus_curator import nsfw as nsfw_mod
 
     scan_id = scan_id or uuid.uuid4().hex
+
+    def check_cancelled() -> None:
+        if cancelled is not None and cancelled():
+            raise ScanCancelled(f"scan {scan_id} was cancelled")
+
     total = len(items)
     scene_cfg = scene_cfg or SceneConfig()
     garment_cfg = garment_cfg or GarmentConfig()
@@ -444,6 +458,11 @@ def scan_items(
         return pending_checks(requested, completed)
 
     def emit(phase: str, done: int, phase_total: int) -> None:
+        # Every phase reports through here and through the per-image hooks
+        # below, so a stop is noticed within an image. The phase modules call
+        # the hooks directly and let ScanCancelled through; the pool
+        # remote.check_all holds is drained on the way out.
+        check_cancelled()
         _emit(progress, phase, done, phase_total, pending())
 
     results_by_rel: dict[str, ImageResult] = {}
@@ -513,6 +532,7 @@ def scan_items(
         """Hand *batch* to the chunk sink and save a snapshot. *finished* names
         a check this batch completes, marked before the payload is built so the
         chunk that carries the last result no longer lists it as pending."""
+        check_cancelled()
         with lock:
             if finished is not None:
                 completed.add(finished)
@@ -539,17 +559,25 @@ def scan_items(
     batch: list[ImageResult] = []
     with ThreadPoolExecutor(max_workers=max(1, cfg.max_workers)) as pool:
         futures = {pool.submit(_score_image, rel, abs_path, data, profile, cfg): rel for rel, abs_path, data in items}
-        for fut in as_completed(futures):
-            row = fut.result()
-            results_by_rel[row.rel_path] = row
-            done += 1
-            batch.append(row)
-            # Throttle: every 5 images (and the final one) is plenty for a bar.
-            if done == total or done % 5 == 0:
-                emit("scoring", done, total)
-            if done == total or len(batch) >= CHUNK_SIZE:
-                deliver("scoring", done, total, batch)
-                batch = []
+        try:
+            for fut in as_completed(futures):
+                row = fut.result()
+                results_by_rel[row.rel_path] = row
+                done += 1
+                batch.append(row)
+                # Throttle: every 5 images (and the final one) is plenty for a bar.
+                if done == total or done % 5 == 0:
+                    emit("scoring", done, total)
+                if done == total or len(batch) >= CHUNK_SIZE:
+                    deliver("scoring", done, total, batch)
+                    batch = []
+        except BaseException:
+            # Leaving the pool waits for queued work; a stopped scan should not.
+            for other in futures:
+                other.cancel()
+            raise
+
+    check_cancelled()
 
     results = ordered()
 
@@ -565,6 +593,7 @@ def scan_items(
         face_batch: list[ImageResult] = []
 
         def on_face(row: ImageResult, phase_done: int, phase_total: int) -> None:
+            check_cancelled()
             finalize_score(row, profile, cfg, faces_known=True)
             face_batch.append(row)
             last = phase_done == phase_total
@@ -590,6 +619,7 @@ def scan_items(
         nsfw_batch: list[ImageResult] = []
 
         def on_nsfw(row: ImageResult, phase_done: int, phase_total: int) -> None:
+            check_cancelled()
             nsfw_batch.append(row)
             last = phase_done == phase_total
             if last:
@@ -646,6 +676,7 @@ def scan_items(
     guard_batch: list[ImageResult] = []
 
     def on_guard(row: ImageResult, phase_done: int, phase_total: int) -> None:
+        check_cancelled()
         guard_batch.append(row)
         last = phase_done == phase_total
         if last:
@@ -665,6 +696,7 @@ def scan_items(
     finally:
         finish("guard")
 
+    check_cancelled()
     if detected_faces is not None:
         from argus_curator import faces as faces_mod
 
@@ -697,12 +729,14 @@ def scan_folder(
     progress: ProgressFn | None = None,
     chunk: ChunkFn | None = None,
     save: SaveFn | None = None,
+    cancelled: CancelFn | None = None,
 ) -> ScanSummary:
     """Recursively scan all supported images under *folder*.
 
     Pass *progress* to receive ``{phase, done, total}`` updates (used by the
     SSE endpoint to stream live scan progress to the browser). Pass *chunk*
-    to receive image batches as each phase produces them.
+    to receive image batches as each phase produces them, and *cancelled* to
+    be able to stop the scan (see :func:`scan_items`).
     """
     profile = profile or TargetProfile()
     cfg = cfg or ScanConfig()
@@ -733,4 +767,5 @@ def scan_folder(
         progress=progress,
         chunk=chunk,
         save=save,
+        cancelled=cancelled,
     )
