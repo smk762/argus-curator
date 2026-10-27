@@ -514,6 +514,9 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 | `POST /export` | Structure-preserving transfer + manifest → `ExportResult` |
 | `POST /scan/folder/stream` | Same as `/scan/folder`, streaming live progress over SSE |
 | `POST /export/stream` | Same as `/export`, streaming per-file transfer progress over SSE |
+| `GET  /scans` | Cached scans, newest first, plus `active`: the one running, with its phase, counts, `pending_checks` and `cancelling` |
+| `POST /scan/{scan_id}/cancel` | Stop the running scan (404 if that is not the one running). The stream ends with `event: cancelled`; the partial summary is dropped |
+| `POST /scans/purge` | Stop the running scan, if any, wait for it to let go, and delete every cached scan → `{cancelled, deleted}`. Source images are not touched |
 
 The `*/stream` variants emit `event: progress` frames (`{phase, done, total}`)
 while the work runs, then a single `event: complete` frame carrying the same
@@ -524,6 +527,14 @@ viewer can lift a blur as soon as both are known, and their progress events
 interleave while both run. Scan progress and `event: chunk` frames carry
 `pending_checks`, the checks among `faces`, `nsfw` and `guard` whose results
 have not all landed yet; a check that could not run is not listed.
+
+A scan stops cooperatively: `POST /scan/{id}/cancel` raises a flag the
+scanner reads before each image and between phases, the checks already with
+a model or a remote server finish, the ones still queued are dropped, and the
+slot frees. Until then `GET /scans` reports the scan as `cancelling`. In the
+library, pass `cancelled=` (a callable returning True to stop) to
+`scan_folder()`; it raises `ScanCancelled`. `GET /health` says
+`scan_control: true` on a server that has these routes.
 
 `POST /scan/folder` body:
 
@@ -632,7 +643,8 @@ for a one-click curate→caption run.
 
 Scans are cached on disk (keyed by `scan_id`, default `~/.cache/argus_curator/scans`,
 override with `CURATOR_CACHE_DIR`). This is what makes paginated `GET /scan/{id}`
-and export-by-id work without recomputing.
+and export-by-id work without recomputing. `POST /scans/purge` empties it (and
+stops a scan that is writing to it first); nothing else on disk is touched.
 
 ## Related projects
 

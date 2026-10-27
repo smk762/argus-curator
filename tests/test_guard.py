@@ -135,7 +135,7 @@ def test_thinking_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     assert guard.thinking() == "fast"
     monkeypatch.setenv(guard.THINKING_ENV, "fast-slow")
     assert guard.thinking() == "fast-slow"
-    monkeypatch.setenv(guard.THINKING_ENV, "slow")
+    monkeypatch.setenv(guard.THINKING_ENV, "slower")
     with pytest.raises(ModelUnavailable, match="fast-slow"):
         guard.thinking()
 

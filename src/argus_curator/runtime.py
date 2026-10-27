@@ -26,6 +26,14 @@ class ModelUnavailable(RuntimeError):
     """Raised when an optional model is requested but cannot be run."""
 
 
+class ScanCancelled(RuntimeError):
+    """The scan was stopped by its caller before it finished.
+
+    Raised by the scanner from inside a phase's progress or per-image hook, so
+    it crosses the check modules on its way out; they must let it through.
+    """
+
+
 def configured_path(env: str, default_name: str) -> Path:
     configured = os.environ.get(env, "").strip()
     return Path(configured).expanduser() if configured else MODEL_DIR / default_name
