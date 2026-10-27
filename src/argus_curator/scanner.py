@@ -12,7 +12,7 @@ Differences from the imogen original (intentional):
 
 Phase 1 (parallel CPU threads, no GPU):
     1. Resolution / aspect-ratio filter
-    2. Sharpness  — Laplacian-edge variance via PIL FIND_EDGES
+    2. Sharpness  — Laplacian-edge variance via PIL FIND_EDGES, long side at 1024
     3. Artifact   — JPEG 8x8 block-boundary ratio
     4. pHash      — perceptual hash for near-duplicate clustering
     5. Target-aware composite score
@@ -122,9 +122,28 @@ def pending_checks(requested: list[str], completed: Collection[str]) -> list[str
 # ---------------------------------------------------------------------------
 
 
+# Sharpness is measured with the long side at this many pixels. The 3x3 edge
+# kernel reads per-pixel contrast, which falls as resolution rises (the same
+# edge spans more pixels), so measured at native size a sharp 4800px studio
+# frame scores about a quarter of its 2048px copy and well under the default
+# blur_threshold of 100. Fixing the size gives blur_threshold and
+# sharpness_ref one meaning for every file size. Smaller images are measured
+# as they are.
+_SHARPNESS_SIDE = 1024
+
+
 def _sharpness(img: Image.Image) -> float:
-    """Variance of the Laplacian edge response — high = sharp, low = blurry."""
-    edges = img.convert("L").filter(ImageFilter.FIND_EDGES)
+    """Variance of the Laplacian edge response — high = sharp, low = blurry.
+
+    Measured with the long side scaled to :data:`_SHARPNESS_SIDE` so the value
+    does not depend on the file's resolution.
+    """
+    gray = img.convert("L")
+    w, h = gray.size
+    if max(w, h) > _SHARPNESS_SIDE:
+        scale = _SHARPNESS_SIDE / max(w, h)
+        gray = gray.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.Resampling.LANCZOS)
+    edges = gray.filter(ImageFilter.FIND_EDGES)
     return float(np.array(edges, dtype=np.float32).var())
 
 
