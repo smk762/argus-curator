@@ -7,15 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-27
+
 ### Added
 
+- `POST /scan/folder/stream` sends `event: chunk` frames as batches of images
+  finish, so a client can show results while NudeNet and SingGuard are still
+  running.
+  `GET /scans` lists the scans on disk and the one running, if any.
+- Images with an under-18 MiVOLO age on any face and any reported exposed
+  NudeNet detection are never kept (`minor-exposed`, checked before every
+  other filter, whatever the request asks for). `GET /image?scan_id=` returns
+  403 for them, and `POST /scan/{scan_id}/delete` (`rel_path` or up to 200
+  `rel_paths`) deletes them from disk and the scan; it refuses the whole
+  batch with 403 if any path is not one of them.
 - A built-in `adult` SingGuard policy, picked per scan with
   `GuardConfig.policy` (`"guard": {"policy": "adult"}`, CLI
   `--guard-policy adult`). Its rule A covers only apparent minors,
   non-consent and sexual violence, and Safe names consensual adult nudity.
   Rules B to G keep their letters and areas but are written out as text, so
-  their verdicts can differ from SingGuard's built-in wording. A request names a policy and
-  never sends its text. `default` keeps today's behaviour: the policy file
+  their verdicts can differ from SingGuard's built-in wording. A request names
+  a policy and never sends its text. `default` keeps today's behaviour: the policy file
   when one is set, else SingGuard's own rules. Results record `adult` as the
   policy name. `GET /detectors` lists the names in `singguard_policies`
   (empty without a SingGuard server).
@@ -30,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listed verdict fails or is missing (CLI `--guard-policies`). Keep reasons
   name the policy (`guard-unsafe:adult-granular`), and the CSV report has a
   `guard_variants` column.
+
+### Changed
+
+- Only one scan runs at a time: `POST /scan/folder` and its stream return 409 while another is
+  running, as does deleting from a scan that is still running.
+- MiVOLO age is recorded before identity clustering, so every face carries
+  it.
 
 ## [0.4.0] - 2026-10-26
 
@@ -315,7 +334,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/smk762/argus-curator/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/smk762/argus-curator/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/smk762/argus-curator/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/smk762/argus-curator/compare/v0.1.0...v0.2.1
