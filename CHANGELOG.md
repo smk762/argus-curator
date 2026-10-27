@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- NudeNet runs straight after face detection, ahead of the Places365 and
+  Fashionpedia passes, so a viewer has the MiVOLO ages and the exposed score
+  (everything it needs to lift a blur safely) before the scene and garment
+  work, which nothing waits on. SingGuard still follows those passes.
+- `pending_checks` on scan chunks now reports what is actually unfinished
+  rather than inferring it from the phase name, and names `faces` while face
+  detection is still running. Scan `progress` events carry the same list,
+  and `GET /scans` reads it from them. A check that could not run is dropped
+  from the list, so a client never waits for a result that will not come.
+
 ## [0.5.0] - 2026-10-27
 
 ### Added
