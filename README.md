@@ -469,7 +469,11 @@ both. They are written out as text, though, rather than left to SingGuard's
 built-in wording, so verdicts can differ: a group photo of a poker game that
 the default rule B flags passes under `adult`. `default` is the policy file when one is set, else SingGuard's own
 rules. A request names a policy and never sends policy text. `GET /detectors`
-lists the names in `singguard_policies`.
+lists the names in `singguard_policies`, and `GET /guard/policies` serves each
+one's text: its `source` (`builtin`, `file`, or `singguard` when `default`
+leaves SingGuard on its own rules and `text` is null) and the name results
+record it under (`recorded`), so a verdict can be traced to its wording. The
+policy file's text is served too, to anyone who can read from the server.
 
 `adult-granular` (a letter per hard case: A minors, H non-consent, I sexual
 violence) and `adult-cautious` (doubt about age or consent counts as rule A)
@@ -541,6 +545,7 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 |---|---|
 | `GET  /health` | Liveness |
 | `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet }` |
+| `GET  /guard/policies` | Each SingGuard policy a scan can name: `{ singguard, policies: [{ name, recorded, source, text, error }] }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |

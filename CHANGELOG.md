@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `GET /guard/policies` serves every SingGuard policy a scan can name with
+  its text, its `source` (`builtin`, `file` for the operator's policy file,
+  or `singguard` when `default` sends no text and `text` is null) and the
+  name results record it under, so a client can show the wording a verdict
+  was judged against. An unreadable policy file is listed with an `error`
+  naming the variable, not the path. `/health` reports `guard_policy_text`.
+  The policy file's text is readable by anyone who can reach the server.
+
 ## [0.7.0] - 2026-10-27
 
 ### Added
