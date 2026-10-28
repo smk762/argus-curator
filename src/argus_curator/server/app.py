@@ -407,11 +407,22 @@ def create_app(
             "scan_control": True,
             # FaceConfig.set_age: frames with no face can take the set's age (0.7 and later).
             "set_age": True,
+            # GET /guard/policies serves each policy's text (0.8 and later).
+            "guard_policy_text": True,
         }
 
     @app.get("/detectors")
     async def detectors() -> dict[str, bool | list[str]]:
         return _detectors()
+
+    @app.get("/guard/policies")
+    async def guard_policies() -> dict[str, Any]:
+        """Every SingGuard policy a scan can name, with its text and the name results record.
+
+        Listed whether or not a SingGuard server is configured: this reads
+        curator's own policies. Requests still choose a policy by name only.
+        """
+        return {"singguard": guard_mod.configured(), "policies": guard_mod.describe_policies()}
 
     @app.get("/folders")
     async def folders(

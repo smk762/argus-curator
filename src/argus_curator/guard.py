@@ -234,6 +234,26 @@ def policy(name: GuardPolicy = "default") -> tuple[str, str | None]:
     return policy_name(text), text
 
 
+def describe_policies() -> list[dict[str, str | None]]:
+    """Every policy a scan can name, with the text it sends and the name results record.
+
+    ``source`` is ``builtin``, ``file`` (``default`` reads the operator's policy
+    file) or ``singguard`` (``default`` sends no text, so SingGuard applies its
+    own rules and ``text`` is ``None``). A policy file that cannot be read is
+    listed with ``text`` ``None`` and an ``error``, as a scan naming it would fail.
+    """
+    described: list[dict[str, str | None]] = []
+    for name in POLICIES:
+        source = "builtin" if name in _POLICY_TEXT else "file" if env_value(POLICY_FILE_ENV) else "singguard"
+        try:
+            recorded, text = policy(name)
+        except ModelUnavailable as exc:  # names the env var, never the path
+            described.append({"name": name, "recorded": None, "source": source, "text": None, "error": str(exc)})
+            continue
+        described.append({"name": name, "recorded": recorded, "source": source, "text": text, "error": None})
+    return described
+
+
 def client(name: GuardPolicy = "default") -> SingGuardClient | None:
     """A client for the configured server and policy *name*, or ``None`` when SingGuard is not configured."""
     url = endpoint()

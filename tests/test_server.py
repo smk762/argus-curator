@@ -113,6 +113,48 @@ def test_detectors_list_policies_when_singguard_is_configured(
     ]
 
 
+def test_guard_policies_serve_builtin_text_and_singguard_default(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator import guard
+
+    monkeypatch.delenv("ARGUS_CURATOR_SINGGUARD_URL", raising=False)
+    monkeypatch.delenv(guard.POLICY_FILE_ENV, raising=False)
+    assert client.get("/health").json()["guard_policy_text"] is True
+    body = client.get("/guard/policies").json()
+    assert body["singguard"] is False
+    by_name = {p["name"]: p for p in body["policies"]}
+    assert list(by_name) == list(guard.POLICIES)
+    assert by_name["default"] == {
+        "name": "default",
+        "recorded": "default",
+        "source": "singguard",
+        "text": None,
+        "error": None,
+    }
+    assert by_name["adult"]["source"] == "builtin" and by_name["adult"]["recorded"] == "adult"
+    assert by_name["adult"]["text"] == guard.ADULT_POLICY
+    assert by_name["adult-granular"]["text"] == guard.ADULT_GRANULAR_POLICY
+
+
+def test_guard_policies_serve_the_operator_file(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from argus_curator import guard
+
+    policy_file = tmp_path / "policy.txt"
+    policy_file.write_text("### A. Minors\n", encoding="utf-8")
+    monkeypatch.setenv(guard.POLICY_FILE_ENV, str(policy_file))
+    default = client.get("/guard/policies").json()["policies"][0]
+    assert default["source"] == "file" and default["text"] == "### A. Minors"
+    assert default["recorded"] == guard.policy_name("### A. Minors")
+
+    policy_file.write_text("  \n", encoding="utf-8")
+    default = client.get("/guard/policies").json()["policies"][0]
+    assert default["text"] is None and default["recorded"] is None
+    assert guard.POLICY_FILE_ENV in default["error"] and str(tmp_path) not in default["error"]
+
+
 def test_scan_refuses_an_unknown_guard_policy(contained: tuple[TestClient, Path]) -> None:
     client, _exports = contained
     resp = client.post("/scan/folder", json={"folder": "", "guard": {"policy": "anything-goes"}})

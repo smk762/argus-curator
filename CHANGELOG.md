@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-28
+
+### Added
+
+- `GET /guard/policies` serves every SingGuard policy a scan can name with
+  its text, its `source` (`builtin`, `file` for the operator's policy file,
+  or `singguard` when `default` sends no text and `text` is null) and the
+  name results record it under, so a client can show the wording a verdict
+  was judged against. An unreadable policy file is listed with an `error`
+  naming the variable, not the path. `/health` reports `guard_policy_text`.
+  The policy file's text is readable by anyone who can reach the server.
+
 ## [0.7.0] - 2026-10-27
 
 ### Added
@@ -428,7 +440,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/smk762/argus-curator/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/smk762/argus-curator/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/smk762/argus-curator/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/smk762/argus-curator/compare/v0.5.1...v0.6.0
