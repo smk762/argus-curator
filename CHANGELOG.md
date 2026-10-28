@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The adult policies name SingGuard's own "Adult Content (Non-criminal)"
+  category under Safe. The model files legal adult material under that
+  category from its training and cited it as a violation under all three
+  adult policies. The "is not this rule" lines under rules A (`adult`,
+  `adult-cautious`) and C (all three) are gone: SingGuard reads a bullet under
+  a risk heading as a match for that rule, so what passes is said only under
+  Safe. Results still record the same policy names; scans made before this
+  release were judged under the old wording.
+
 ## [0.8.0] - 2026-10-28
 
 ### Added
