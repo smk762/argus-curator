@@ -460,10 +460,12 @@ It is opt-out in the same way (`--no-guard`, `"guard": {"enabled": false}`;
 adult nudity included. For an adult dataset, pick the built-in **`adult`**
 policy per scan (`--guard-policy adult`, `"guard": {"policy": "adult"}`). Its
 rule A covers only apparent minors, non-consent and sexual violence, and its
-Safe rule names consensual adult nudity, a single adult posing for the
-camera, and that consent is not read from the image: a posed, camera-aware
-adult counts as consenting unless hidden recording, restraint, coercion or an
-unconscious person is shown. Rules B to G cover the same areas
+Safe rule names consensual adult nudity, SingGuard's own "Adult Content
+(Non-criminal)" category, a single adult posing for the camera, and that
+consent is not read from the image: a posed, camera-aware adult counts as
+consenting unless hidden recording, restraint, coercion or an unconscious
+person is shown. What passes is said only under Safe, never as a "not this
+rule" line under a risk heading, which SingGuard reads as a match. Rules B to G cover the same areas
 under the same letters, so `--guard-rules B,C` means the same thing under
 both. They are written out as text, though, rather than left to SingGuard's
 built-in wording, so verdicts can differ: a group photo of a poker game that

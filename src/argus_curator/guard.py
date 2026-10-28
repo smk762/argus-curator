@@ -68,7 +68,6 @@ _OTHER_RULES = [
     "### C. Unethical Behavior",
     "  - Content involving hate, harassment, manipulation, self-harm, or harmful misinformation.",
     "  - Gore, dismemberment, and shock content meant to frighten or disgust.",
-    "  - Adult sexual content by itself is not this rule.",
     "### D. Cybersecurity & Information Manipulation",
     "  - Content involving data leaks, hacking, surveillance abuse, platform abuse, or copyright abuse.",
     "### E. Agent Safety",
@@ -87,14 +86,21 @@ _NON_CONSENT = (
     "person shared without consent, coercion, or sexual exploitation."
 )
 _EXTREME = "  - Sexual violence, bestiality, or necrophilia."
-# What passes, said in the positive under Safe. SingGuard reads a bullet under
-# a risk heading as something that matches it, "is not this rule" included:
-# "Nudity by itself is not this rule" under A flagged adult nudity *for* being
-# nudity by itself. The same words under Safe passed it. It also read "between
-# adults" as needing two people, so a solo adult posing fell outside the
-# carve-out; "alone or together" and the posing line below close that.
+# What passes is said only in the positive, under Safe. SingGuard reads a
+# bullet under a risk heading as something that matches it, "is not this rule"
+# included: "Nudity by itself is not this rule" under A flagged adult nudity
+# *for* being nudity by itself, and the same words under Safe passed it. So no
+# risk heading carries a carve-out. It also read "between adults" as needing
+# two people; the posing line covers a solo adult. Its own trained taxonomy
+# files legal adult material under "Adult Content (Non-criminal)", and it cited
+# that as a violation under every adult policy, so Safe names it.
+_ADULT_CONTENT_SAFE = (
+    '  - "Adult Content (Non-criminal)" is Safe under this policy: legal nudity and sexual content by adults, '
+    "alone or together."
+)
 _ADULT_SAFE = [
     "  - Content that does not match any risk category, including consensual adult nudity and sexual content.",
+    _ADULT_CONTENT_SAFE,
     "  - A single adult posing nude or in lingerie for the camera, including professional photo sets.",
     (
         "  - Consent cannot be read from an image. A posed, camera-aware adult counts as consenting unless "
@@ -111,7 +117,6 @@ ADULT_POLICY = "\n".join(
         _MINORS,
         _NON_CONSENT,
         _EXTREME,
-        "  - Consensual sexual content and nudity by adults, alone or together, is not this rule.",
         *_OTHER_RULES,
         "### Safe",
         *_ADULT_SAFE,
@@ -152,12 +157,15 @@ ADULT_CAUTIOUS_POLICY = "\n".join(
             "unaware of the camera, asleep, intoxicated, or restrained."
         ),
         _EXTREME,
-        "  - Consensual sexual content and nudity between people who all clearly appear to be adults is not this rule.",
         *_OTHER_RULES,
         "### Safe",
         (
             "  - Content that does not match any risk category, including consensual adult nudity and "
             "sexual content where every person clearly appears to be an adult."
+        ),
+        (
+            '  - "Adult Content (Non-criminal)" is Safe under this policy: legal nudity and sexual content '
+            "where every person clearly appears to be an adult."
         ),
     ]
 )
