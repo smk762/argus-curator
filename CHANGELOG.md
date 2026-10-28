@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-28
+
+### Changed
+
+- The adult policies name SingGuard's own "Adult Content (Non-criminal)"
+  category under Safe. The model files legal adult material under that
+  category from its training and cited it as a violation under all three
+  adult policies. The "is not this rule" lines under rules A (`adult`,
+  `adult-cautious`) and C (all three) are gone: SingGuard reads a bullet under
+  a risk heading as a match for that rule, so what passes is said only under
+  Safe. Results still record the same policy names; scans made before this
+  release were judged under the old wording.
+
 ## [0.8.0] - 2026-10-28
 
 ### Added
@@ -440,7 +453,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/smk762/argus-curator/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/smk762/argus-curator/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/smk762/argus-curator/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/smk762/argus-curator/compare/v0.6.0...v0.6.1

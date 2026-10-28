@@ -249,9 +249,18 @@ def test_adult_policies_name_solo_posing_and_consent_under_safe() -> None:
         assert "A single adult posing nude or in lingerie for the camera" in safe
         assert "Consent cannot be read from an image" in safe
         assert "between adults" not in text
-    assert "alone or together" in guard.ADULT_POLICY
     # Cautious stays the strict variant: unclear age or consent is still rule A there.
     assert "consent is unclear" in guard.ADULT_CAUTIOUS_POLICY
+
+
+@pytest.mark.parametrize("name", ["adult", "adult-granular", "adult-cautious"])
+def test_adult_policies_carve_out_only_under_safe(name: str) -> None:
+    # No risk heading carries a carve-out, and Safe names the model's own
+    # "Adult Content (Non-criminal)" category, which it otherwise cites as a violation.
+    _recorded, text = guard.policy(name)
+    risks, safe = text.split("### Safe")
+    assert "is not this rule" not in risks and "Adult Content (Non-criminal)" not in risks
+    assert '"Adult Content (Non-criminal)" is Safe under this policy' in safe
 
 
 # ---------------------------------------------------------------------------
