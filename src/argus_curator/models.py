@@ -17,6 +17,7 @@ from argus_cortex.moderation import (  # re-exported: part of curator's wire con
     NsfwResult,
     NudeNetLabel,
 )
+from argus_cortex.moderation.policies import PolicyName
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 TargetStyle = Literal["photo", "anime"]
@@ -234,8 +235,9 @@ class NsfwConfig(BaseModel):
 # "default" is the operator's policy (ARGUS_CURATOR_SINGGUARD_POLICY_FILE, else
 # SingGuard's own rules); "adult" is curator's built-in policy that allows
 # consensual adult nudity and still flags minors (see guard.ADULT_POLICY).
-# "adult-granular" and "adult-cautious" are variants under evaluation.
-GuardPolicy = Literal["default", "adult", "adult-granular", "adult-cautious"]
+# "adult-granular" and "adult-cautious" are variants under evaluation. The
+# names and texts are argus-cortex's (argus_cortex.moderation.policies).
+GuardPolicy = PolicyName
 
 
 class GuardConfig(BaseModel):
