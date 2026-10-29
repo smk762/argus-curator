@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The SingGuard policy names and texts (`default`, `adult`, `adult-granular`,
+  `adult-cautious`) now come from argus-cortex 0.4.2
+  (`argus_cortex.moderation.policies`), which shares them with argus-darkroom.
+  The texts are unchanged, so results record the same policy names and
+  verdicts are comparable with earlier scans. `guard.POLICIES`, the
+  `guard.ADULT_*_POLICY` constants and `GuardPolicy` keep their names. The
+  minimum argus-cortex is now 0.4.2.
+
 ## [0.8.1] - 2026-10-28
 
 ### Changed
