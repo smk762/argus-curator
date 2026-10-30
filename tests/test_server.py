@@ -961,7 +961,17 @@ def test_select_request_has_every_export_filter() -> None:
     """A new ExportRequest filter must be added to SelectRequest too."""
     from argus_curator.models import ExportRequest, SelectRequest
 
-    not_filters = {"scan_id", "selection", "dest", "mode", "preserve_structure", "write_manifest", "caption_url"}
+    not_filters = {
+        "scan_id",
+        "selection",
+        "dest",
+        "mode",
+        "preserve_structure",
+        "write_manifest",
+        "caption_url",
+        "write_xmp",
+        "face_names",
+    }
     trims = {"max_keep", "diversify_scenes", "diversify_outfits"}
     assert set(SelectRequest.model_fields) == set(ExportRequest.model_fields) - not_filters - trims
 
