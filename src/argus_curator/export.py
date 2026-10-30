@@ -317,21 +317,36 @@ def _source_sidecar(src: Path) -> Path | None:
 
 
 def _write_export_sidecar(src: Path, dst: Path, data: XmpData) -> None:
-    """Merge *data* into *dst*'s sidecar, starting from *src*'s when *dst* has none yet."""
+    """Merge *data* into *dst*'s sidecar, starting from *src*'s when *dst* has none yet.
+
+    The seed is copied first so lens keywords and a photo app's stars survive.
+    If the merge then fails, a sidecar we just created is removed: the export
+    must not leave a broken ``photo.jpg.xmp`` that was not there before.
+    """
     seed = _source_sidecar(src)
     target = sidecar_path(dst)
+    created = False
     if seed is not None and not target.exists():
         shutil.copyfile(seed, target)
-    write_xmp(dst, data)
+        created = True
+    try:
+        write_xmp(dst, data)
+    except Exception:
+        if created:
+            target.unlink(missing_ok=True)
+        raise
 
 
 def write_source_sidecars(results: list[ImageResult], face_names: dict[str, str] | None = None) -> int:
     """Merge curator's metadata into the sidecar beside each scanned original. Returns how many were written.
 
-    This writes into the scanned folder, so only the CLI offers it (``--xmp-sources``);
-    the server's write paths stay under the export root. Merging keeps every
-    property curator does not set. Regions are replaced as a whole, so face
-    regions drawn by hand in a photo app are lost on an image with detected faces.
+    Every result with something to record is written, including rejected and
+    below-threshold images — this is a library annotate, not an export of
+    keepers. This writes into the scanned folder, so only the CLI offers it
+    (``--xmp-sources``); the server's write paths stay under the export root.
+    Merging keeps every property curator does not set. Regions are replaced as
+    a whole, so face regions drawn by hand in a photo app are lost on an image
+    with detected faces.
     """
     written = 0
     for r in results:

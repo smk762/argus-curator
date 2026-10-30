@@ -53,6 +53,12 @@ def test_missing_model_fails_before_scanning(dataset: Path, tmp_path: Path, flag
     assert "Scanning" not in result.output
 
 
+def test_xmp_without_a_destination_fails_before_scanning(dataset: Path) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), "--xmp"])
+    assert result.exit_code == 2, result.output
+    assert "--copy-to" in result.output and "Scanning" not in result.output
+
+
 def test_nsfw_thresholds_without_nudenet_fail_before_scanning(dataset: Path) -> None:
     result = runner.invoke(app, ["scan", str(dataset), "--nsfw-threshold", "0.5"])
     assert result.exit_code == 1, result.output

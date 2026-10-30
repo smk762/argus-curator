@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sidecar is the starting point (`photo.jpg.xmp`, else Lightroom's
   `photo.xmp`), its other properties are kept, and it is never changed itself.
   Age estimates are never written. `ExportResult.xmp_written` counts the
-  sidecars. `--xmp-sources` (CLI only) merges into the originals' sidecars.
+  sidecars; a transfer can succeed while a sidecar fails. `--xmp-sources`
+  (CLI only) merges into every scanned original's sidecar, including
+  rejected images, independent of `--xmp`.
 - A content rating from NudeNet (#18): `ImageResult.content_rating` is
   `safe` / `suggestive` / `explicit` (derived on read, so cached scans have one
   too). It is filtered by `content_ratings` (`--content-ratings`) and appears
@@ -30,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   503 and `Retry-After: 1` rather than queued, because each call holds an
   image in memory. Admission is counted under a lock so a burst that hits a
   free slot cannot queue behind it.
+
+### Fixed
+
+- An unreadable source sidecar no longer leaves a broken copy beside the
+  exported file. The seed is removed if the merge fails after copying it.
 
 ### Changed
 

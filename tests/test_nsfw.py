@@ -356,4 +356,6 @@ def test_report_includes_nsfw_columns(tmp_path: Path) -> None:
     rows = {r["rel_path"]: r for r in csv.DictReader(report.open())}
     assert rows["a.jpg"]["nsfw_exposed_score"] == "0.61"
     assert rows["a.jpg"]["nsfw_labels"] == "FACE_FEMALE:0.90;BUTTOCKS_EXPOSED:0.61"
+    assert rows["a.jpg"]["content_rating"] == "explicit"
     assert rows["b.jpg"]["nsfw_exposed_score"] == "" and rows["b.jpg"]["nsfw_labels"] == ""
+    assert rows["b.jpg"]["content_rating"] == ""

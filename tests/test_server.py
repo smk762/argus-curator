@@ -1040,6 +1040,37 @@ def test_export_with_nsfw_thresholds_on_unchecked_scan_is_refused(contained: tup
         assert "NudeNet" in resp.json()["detail"]
 
 
+def test_export_with_content_ratings_on_unchecked_scan_is_refused(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    body = {"scan_id": scan["scan_id"], "dest": "out", "content_ratings": ["safe"]}
+    for endpoint in ("/export", "/export/stream"):
+        resp = client.post(endpoint, json=body)
+        assert resp.status_code == 400, endpoint
+        assert "NudeNet" in resp.json()["detail"]
+
+
+def test_export_write_xmp_stays_under_the_export_root(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_cortex.xmp import XmpData, sidecar_path
+
+    monkeypatch.setattr("argus_curator.export.xmp_data", lambda *_a, **_k: XmpData(content_rating="safe"))
+    client, exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    resp = client.post(
+        "/export",
+        json={"scan_id": scan["scan_id"], "dest": "out", "mode": "copy", "min_score": 0.0, "write_xmp": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["xmp_written"] >= 1
+    exported = resp.json()["exported_abs_paths"]
+    for abs_path in exported.values():
+        sidecar = sidecar_path(Path(abs_path))
+        assert sidecar.is_file()
+        assert exports.resolve() in sidecar.resolve().parents
+
+
 def test_scan_requiring_singguard_without_url_is_refused(contained: tuple[TestClient, Path]) -> None:
     client, _exports = contained
     for endpoint in ("/scan/folder", "/scan/folder/stream"):

@@ -709,7 +709,9 @@ class ExportResult(BaseModel):
     exported_abs_paths: dict[str, str] = Field(default_factory=dict)
     captioned: bool = False
     # Sidecars written beside exported files (write_xmp). A file with nothing
-    # to record (no faces, never checked by NudeNet) gets none.
+    # to record (no faces, never checked by NudeNet) gets none. Transfer can
+    # succeed while a sidecar fails (copied > xmp_written); the image still
+    # landed, and the failure is logged rather than undoing it.
     xmp_written: int = 0
 
 

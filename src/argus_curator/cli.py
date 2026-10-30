@@ -214,7 +214,11 @@ def scan(
     xmp_sources: bool = Option(
         False,
         "--xmp-sources",
-        help="Also merge that metadata into the sidecars beside the scanned originals (writes into the scanned folder)",
+        help=(
+            "Merge face regions, names and content rating into sidecars beside every "
+            "scanned original (including rejected ones; independent of --xmp / --copy-to). "
+            "Writes into the scanned folder"
+        ),
     ),
     face_names: str | None = Option(
         None, "--face-names", help="Person names for the sidecars by cluster, comma-separated (face_1=Ada,face_2=Bo)"

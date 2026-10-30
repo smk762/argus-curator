@@ -418,7 +418,9 @@ NudeNet's 0.2 floor), else `suggestive` when a covered intimate class was
 An unchecked image has none. It is on every result and in the CSV report, and
 `content_ratings` (`--content-ratings safe,suggestive`) keeps only those
 ratings; unchecked images are excluded (`nsfw-unchecked`), others get
-`content-rating:<rating>`.
+`content-rating:<rating>`. The rating always uses the five default exposed
+classes; `--nsfw-exposed-labels` / `--nsfw-label` can still drop an image
+the rating calls `safe` (for example a high `BELLY_EXPOSED`).
 
 ### XMP sidecars
 
@@ -435,12 +437,16 @@ The source's own sidecar (lens's captions, a photo app's stars and edits) is
 the starting point and everything curator does not set is kept; the source's
 sidecar itself is never changed. Age estimates are never written: a MiVOLO
 guess in a photo library reads as a fact. A file curator knows nothing about
-gets no sidecar; `xmp_written` counts the ones written.
+gets no sidecar; `xmp_written` counts the ones written. A transfer can succeed
+while a sidecar fails (`copied` greater than `xmp_written`); the image still
+landed, and the failure is logged rather than undoing it.
 
-`--xmp-sources` (CLI only) merges the same fields into the sidecars beside the
-scanned originals instead, which writes into the scanned folder; the server's
-write paths stay under the export root. Regions are replaced as a whole, so
-regions drawn by hand on an image with detected faces are lost.
+`--xmp-sources` (CLI only) merges the same fields into the sidecars beside
+**every scanned original** curator has something for — including rejected
+images — independent of `--xmp` / `--copy-to`. That writes into the scanned
+folder; the server's write paths stay under the export root. Regions are
+replaced as a whole, so regions drawn by hand on an image with detected faces
+are lost.
 
 ### Policy check (SingGuard)
 

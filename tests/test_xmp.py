@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.xmp import XmpData, read_xmp, sidecar_path, write_xmp
 
 from argus_curator import scan_folder
@@ -26,11 +27,17 @@ def _nsfw(**labels: float) -> NsfwResult:
     return NsfwResult(labels=labels, exposed_score=max(labels.values(), default=0.0))
 
 
-def _image(path: Path, *, nsfw: NsfwResult | None = None, faces: list[FaceDetection] | None = None) -> ImageResult:
+def _image(
+    path: Path,
+    *,
+    nsfw: NsfwResult | None = None,
+    faces: list[FaceDetection] | None = None,
+    rel: str | None = None,
+) -> ImageResult:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\x89PNG not really")
     return ImageResult(
-        rel_path=path.name,
+        rel_path=rel or path.name,
         abs_path=str(path),
         score=1.0,
         passed=True,
@@ -65,6 +72,14 @@ def _summary(tmp_path: Path, results: list[ImageResult]) -> ScanSummary:
 )
 def test_content_rating_from_detections(labels: dict[str, float], rating: str) -> None:
     assert rate_content(_nsfw(**labels)) == rating
+
+
+def test_content_rating_uses_nudenet_floor() -> None:
+    just_below = round(MIN_REPORTED_SCORE - 0.01, 2)
+    assert rate_content(_nsfw(FEMALE_BREAST_EXPOSED=just_below)) == "safe"
+    assert rate_content(_nsfw(FEMALE_BREAST_EXPOSED=MIN_REPORTED_SCORE)) == "explicit"
+    assert rate_content(_nsfw(BUTTOCKS_COVERED=just_below)) == "safe"
+    assert rate_content(_nsfw(BUTTOCKS_COVERED=MIN_REPORTED_SCORE)) == "suggestive"
 
 
 def test_content_rating_is_none_when_unchecked_and_survives_a_cached_round_trip() -> None:
@@ -163,6 +178,31 @@ def test_an_unreadable_source_sidecar_does_not_fail_the_export(tmp_path: Path) -
     )
     assert result.copied == 1 and result.xmp_written == 0
     assert sidecar_path(face.abs_path).read_text() == "<not xmp"  # never clobbered
+    assert not sidecar_path(dest / "face.png").exists()  # a failed merge must not leave the garbage copy
+
+
+def test_flattened_export_sidecar_follows_the_de_collided_name(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    a = _image(src / "a" / "img.png", nsfw=_nsfw(), rel="a/img.png")
+    b = _image(src / "b" / "img.png", nsfw=_nsfw(BUTTOCKS_COVERED=0.4), rel="b/img.png")
+    dest = tmp_path / "out"
+    result = export_selection(
+        _summary(tmp_path, [a, b]),
+        ExportRequest(scan_id="s", dest=str(dest), min_score=0.0, write_xmp=True, preserve_structure=False),
+    )
+    assert result.xmp_written == 2
+    for dest_rel in result.exported_paths.values():
+        assert sidecar_path(dest / dest_rel).is_file()
+
+
+def test_face_name_with_xml_special_characters_survives_the_sidecar(tmp_path: Path) -> None:
+    face = _image(tmp_path / "src" / "face.png", nsfw=_nsfw(), faces=[_face("face_1")])
+    dest = tmp_path / "out"
+    export_selection(
+        _summary(tmp_path, [face]),
+        ExportRequest(scan_id="s", dest=str(dest), min_score=0.0, write_xmp=True, face_names={"face_1": "Ada & <Bo>"}),
+    )
+    assert read_xmp(dest / "face.png").persons == ["Ada & <Bo>"]
 
 
 def test_write_source_sidecars_merges_beside_the_originals(tmp_path: Path) -> None:
@@ -173,6 +213,13 @@ def test_write_source_sidecars_merges_beside_the_originals(tmp_path: Path) -> No
     merged = read_xmp(face.abs_path)
     assert merged.keywords == ["portrait"] and merged.persons == ["Ada"] and merged.content_rating == "safe"
     assert not sidecar_path(plain.abs_path).exists()
+
+
+def test_write_source_sidecars_covers_rejected_images(tmp_path: Path) -> None:
+    """--xmp-sources annotates the library, including images that would not export."""
+    rejected = _image(tmp_path / "blur.png", nsfw=_nsfw()).model_copy(update={"passed": False, "reject_reason": "blur"})
+    assert write_source_sidecars([rejected]) == 1
+    assert read_xmp(rejected.abs_path).content_rating == "safe"
 
 
 def test_face_names_are_validated() -> None:
