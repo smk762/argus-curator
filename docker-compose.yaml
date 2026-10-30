@@ -27,6 +27,13 @@ services:
       - ARGUS_CURATOR_SINGGUARD_THINKING=${ARGUS_CURATOR_SINGGUARD_THINKING-fast}
       # Uncomment to permit destructive mode="move" exports.
       # - CURATOR_ALLOW_MOVE=1
+      # Share the GPU with other argus services (argus-lens) one job at a time,
+      # each starting only once the card has room (argus_cortex.gpu). Every
+      # service must name the same lock file on the same host directory: uncomment
+      # this and the matching volume below. It only applies to a [gpu] build; this
+      # image installs [faces] (CPU onnxruntime), which never takes the lease.
+      # - ARGUS_GPU_COORDINATOR=lease
+      # - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
     volumes:
       # Dataset mount the curator scans and serves /thumb from.
       - ${CURATOR_SOURCE_PATH:-./data}:/data/images
@@ -36,6 +43,8 @@ services:
       - ~/.cache/argus_curator:/root/.cache/argus_curator
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ~/.insightface:/root/.insightface
+      # The host-wide GPU lease's lock directory, shared by every argus service.
+      # - ${ARGUS_GPU_LOCK_DIR:-/tmp/argus-gpu}:/run/argus-gpu
     deploy:
       resources:
         reservations:

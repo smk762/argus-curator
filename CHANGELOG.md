@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- On CUDA, curator takes argus-cortex 0.4.3's host-wide GPU lease
+  (`argus_cortex.gpu`) around each image's model run (faces with MiVOLO and
+  FairFace, Places365 batches, garments) and around each model load. It is off
+  unless `ARGUS_GPU_COORDINATOR=lease`, and never taken on CPU. With `[gpu]`
+  (now including `argus-cortex[gpu]`, for NVML) it also waits for free VRAM
+  across the card. A scan that cannot get the GPU in time fails instead of
+  skipping images. `POST /faces` waits at most 30 s, then answers 503 with
+  `Retry-After: 5`. `GET /health` reports `gpu_coordinator`. The minimum
+  argus-cortex is now 0.4.3.
+
 ## [0.9.0] - 2026-10-30
 
 ### Added

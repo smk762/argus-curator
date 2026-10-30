@@ -1428,3 +1428,29 @@ async def test_faces_burst_does_not_queue_past_a_free_slot(tmp_path: Path, monke
         rest = await asyncio.gather(holder, *racers)
     assert [r.status_code for r in rest].count(200) == 2
     assert [r.status_code for r in rest].count(503) == 7
+
+
+def test_faces_503_with_retry_after_when_the_gpu_is_busy(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No GPU slot within the wait is "try again", never "no faces"."""
+    from argus_cortex.gpu import GpuLeaseTimeout
+
+    waits: list[float | None] = []
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        waits.append(kwargs.get("lease_wait_s"))
+        raise GpuLeaseTimeout("GPU 0 had 900 MB free, argus-curator:faces:run needs 512 MB")
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    resp = client.post("/faces", content=_png_bytes())
+    assert resp.status_code == 503 and resp.headers["retry-after"] == "5"
+    assert resp.json()["detail"].startswith("GPU busy:")
+    assert waits == [30.0]
+
+
+def test_health_reports_the_gpu_coordinator(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_cortex.gpu import NullCoordinator
+
+    monkeypatch.setattr("argus_curator.runtime._coordinator", NullCoordinator())
+    assert client.get("/health").json()["gpu_coordinator"] == "none"

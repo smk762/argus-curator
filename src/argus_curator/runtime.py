@@ -8,11 +8,13 @@ never a request field: a model path is a file the server would load.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from pathlib import Path
 
 import numpy as np
+from argus_cortex.gpu import GpuCoordinator, LeaseCoordinator, coordinator_from_env
 
 MODEL_DIR = Path.home() / ".cache" / "argus_curator" / "models"
 
@@ -68,6 +70,53 @@ def providers(device: str) -> list[str]:
     if "CUDAExecutionProvider" in available:
         return ["CUDAExecutionProvider", "CPUExecutionProvider"]
     return ["CPUExecutionProvider"]
+
+
+# Rough VRAM, in MB, a GPU lease asks to be free before curator runs a model:
+# "load" for building the model (weights plus the CUDA context and arena), "run"
+# for one image (or one Places365 batch) once it is resident.
+VRAM_MB: dict[str, dict[str, int]] = {
+    "faces": {"load": 1500, "run": 512},  # InsightFace buffalo_l, plus MiVOLO and FairFace
+    "scenes": {"load": 400, "run": 512},
+    "garments": {"load": 600, "run": 512},
+}
+
+_coordinator_lock = threading.Lock()
+_coordinator: GpuCoordinator | None = None
+
+
+def gpu_coordinator() -> GpuCoordinator:
+    """The host-wide GPU lease from ``ARGUS_GPU_*`` (argus-cortex), built once. ``none`` unless configured."""
+    global _coordinator
+    with _coordinator_lock:
+        if _coordinator is None:
+            _coordinator = coordinator_from_env()
+        return _coordinator
+
+
+def gpu_lease(
+    device: str, model: str, phase: str = "run", *, wait_s: float | None = None
+) -> contextlib.AbstractContextManager[None]:
+    """Hold the host's GPU lease while curator runs *model* on CUDA; a no-op on CPU.
+
+    Every argus process on the host shares the lease (``ARGUS_GPU_LEASE_PATH`` on
+    a shared volume), and it waits for ``VRAM_MB[model][phase]`` free across the
+    card, so ComfyUI or Ollama on the same GPU are counted. *wait_s* caps the wait
+    below the configured timeout, for a caller someone is waiting on (``POST
+    /faces``). Raises :class:`argus_cortex.gpu.GpuLeaseTimeout`.
+    """
+    if "CUDAExecutionProvider" not in providers(device):
+        return contextlib.nullcontext()
+    coordinator = gpu_coordinator()
+    if wait_s is not None and isinstance(coordinator, LeaseCoordinator) and wait_s < coordinator.timeout_s:
+        coordinator = LeaseCoordinator(
+            lock_path=coordinator.lock_path,
+            timeout_s=wait_s,
+            poll_s=coordinator.poll_s,
+            device=coordinator.device,
+            probe=coordinator.probe,
+        )
+    return coordinator.lease(caller=f"argus-curator:{model}:{phase}", min_vram_mb=VRAM_MB[model][phase])
 
 
 def load_session(path: Path, providers: list[str], *, missing_hint: str, extra: str = "faces"):

@@ -39,6 +39,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
+from argus_cortex.gpu import GpuLeaseTimeout
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -61,7 +62,7 @@ from argus_curator.models import (
     SelectResult,
     SelectRow,
 )
-from argus_curator.runtime import ModelUnavailable
+from argus_curator.runtime import ModelUnavailable, gpu_coordinator
 from argus_curator.scenes import scenes_available
 from argus_curator.selection import (
     decide_selection,
@@ -291,6 +292,9 @@ _FACES_MAX_BYTES = 64 * 1024 * 1024
 # POST /faces calls in flight at once. Each buffers and decodes up to
 # _FACES_MAX_BYTES; past this a call is refused (503, Retry-After) instead of queued.
 _FACES_CONCURRENCY = 2
+# Longest a POST /faces call waits for the host's GPU lease. A scan takes the
+# lease per image, so this is a few images' worth, not the whole scan.
+_FACES_LEASE_WAIT_S = 30.0
 
 
 def _faces_from_bytes(data: bytes) -> dict[str, Any]:
@@ -317,7 +321,15 @@ def _faces_from_bytes(data: bytes) -> dict[str, Any]:
     result = ImageResult(rel_path="image", abs_path="", passed=True)
     try:
         # strict: a detector that fails must not read as "no faces" (HTTP 200, []).
-        detect_faces([result], [("image", "", data)], FaceConfig(enabled=True, mivolo=True), strict=True)
+        detect_faces(
+            [result],
+            [("image", "", data)],
+            FaceConfig(enabled=True, mivolo=True),
+            strict=True,
+            lease_wait_s=_FACES_LEASE_WAIT_S,
+        )
+    except GpuLeaseTimeout as exc:
+        raise HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"}) from exc
     except (FacesUnavailable, ModelUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -462,6 +474,8 @@ def create_app(
             # POST /faces is up when InsightFace and MiVOLO can run (darkroom probes this).
             # Off the event loop: the first probe imports the whole InsightFace stack.
             "faces": await asyncio.to_thread(lambda: faces_available() and mivolo_available()),
+            # The host-wide GPU lease curator takes on CUDA: "none" or "lease" (ARGUS_GPU_COORDINATOR).
+            "gpu_coordinator": gpu_coordinator().name,
         }
 
     @app.get("/detectors")

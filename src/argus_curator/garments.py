@@ -23,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 import structlog
+from argus_cortex.gpu import GpuLeaseTimeout
 from PIL import Image
 
 from argus_curator.models import GARMENT_LABELS, GarmentConfig, GarmentDetection, ImageResult
@@ -31,6 +32,7 @@ from argus_curator.runtime import (
     IMAGENET_STD,
     ModelUnavailable,
     configured_path,
+    gpu_lease,
     load_session,
     onnxruntime_available,
     providers,
@@ -171,7 +173,8 @@ def detect_images(
     """Set ``garments`` on every passing result (``[]`` when none were found)."""
     if not cfg.enabled:
         return
-    session = get_session(providers(cfg.device))
+    with gpu_lease(cfg.device, "garments", "load"):
+        session = get_session(providers(cfg.device))
     data_by_rel = {rel: data for rel, _abs, data in items}
     pending = [r for r in results if r.passed and data_by_rel.get(r.rel_path) is not None]
     total = len(pending)
@@ -182,7 +185,10 @@ def detect_images(
         if progress is not None and i % step == 0:
             progress(i, total)
         try:
-            r.garments = detect(session, Image.open(io.BytesIO(data_by_rel[r.rel_path])), cfg.min_conf)
+            with gpu_lease(cfg.device, "garments"):
+                r.garments = detect(session, Image.open(io.BytesIO(data_by_rel[r.rel_path])), cfg.min_conf)
+        except GpuLeaseTimeout:
+            raise  # no GPU slot is not a bad image: fail the scan, do not skip it
         except Exception as exc:
             logger.warning("garment_detect_failed", rel_path=r.rel_path, error=str(exc))
     if progress is not None:
