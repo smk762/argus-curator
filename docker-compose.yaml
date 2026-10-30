@@ -29,7 +29,10 @@ services:
       # SingGuard policy check, off unless .env sets a URL (no server is bundled:
       # it runs a vision language model). Opt-out once set, like NudeNet.
       - ARGUS_CURATOR_SINGGUARD_URL=${ARGUS_CURATOR_SINGGUARD_URL-}
-      - ARGUS_CURATOR_SINGGUARD_THINKING=${ARGUS_CURATOR_SINGGUARD_THINKING-fast}
+      # cascade: fast on every frame, slow only on what fast flags (slow's verdict stands).
+      - ARGUS_CURATOR_SINGGUARD_THINKING=${ARGUS_CURATOR_SINGGUARD_THINKING-cascade}
+      # What the scan already knows, sent as recorded context. Empty sends the image alone.
+      - ARGUS_CURATOR_SINGGUARD_CONTEXT=${ARGUS_CURATOR_SINGGUARD_CONTEXT-age,folder,caption,scene}
       # Uncomment to permit destructive mode="move" exports.
       # - CURATOR_ALLOW_MOVE=1
       # Share the GPU with other argus services (argus-lens) one job at a time,

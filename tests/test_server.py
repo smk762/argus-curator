@@ -93,6 +93,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "onnxruntime",
         "fairface",
         "mivolo",
+        "bodies",
         "places365",
         "garments",
         "nudenet",
@@ -1515,8 +1516,10 @@ def test_faces_body_query_asks_mivolo_for_bodies(client: TestClient, monkeypatch
     monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
     monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
     monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
-    plain = client.post("/faces", content=_png_bytes()).json()["faces"][0]
-    with_body = client.post("/faces?body=true", content=_png_bytes()).json()["faces"][0]
+    plain_resp = client.post("/faces", content=_png_bytes()).json()
+    body_resp = client.post("/faces?body=true", content=_png_bytes()).json()
     assert asked == [False, True]
-    assert "age_body" not in plain  # unchanged for callers that do not ask
-    assert with_body["age_body"] is True and with_body["age_estimate_years"] == 34.2
+    assert "age_body" not in plain_resp["faces"][0]  # unchanged for callers that do not ask
+    assert "people" not in plain_resp
+    assert body_resp["faces"][0]["age_body"] is True and body_resp["faces"][0]["age_estimate_years"] == 34.2
+    assert body_resp["people"] == []

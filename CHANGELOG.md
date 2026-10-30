@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Person boxes from `--mivolo-body` are recorded on `results[].people` (bbox,
+  matched `face_index`, age). A person with no face still gets a body-only
+  MiVOLO age. NudeNet detections are assigned to the overlapping person (else
+  face); `minor-exposed` uses that pairing and fails closed on unassigned
+  exposure. `POST /faces?body=true` returns `people`.
+- SingGuard context kinds `scene`, `nsfw`, and `garments` send Places365,
+  the NudeNet content rating, and Fashionpedia tags with the image. `age`
+  includes body-only estimates. Compose defaults
+  `ARGUS_CURATOR_SINGGUARD_CONTEXT` to `age,folder,caption,scene`.
+  `adult-granular` and `adult-cautious` stay available for comparison.
+
 - MiVOLO can read each face's body as well as its face:
   `FaceConfig.mivolo_body` (`--mivolo-body`, `POST /faces?body=true`). Bodies
   come from InsightFace 2.1's person detector, the one model of the
@@ -46,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picks CUDA.
 
 ### Changed
+
+- SingGuard thinking defaults to `cascade` (`fast` on every image, `slow` on
+  what `fast` flags), including `docker-compose.yaml`.
 
 - InsightFace is pinned to 2.x (`>=2.1,<3`; it had no upper bound, and a GPU
   image build had picked up 2.1 unasked), with `scikit-image<2.2`, whose 2.2

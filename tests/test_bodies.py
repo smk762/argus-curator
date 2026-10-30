@@ -148,6 +148,8 @@ def test_detect_faces_gives_mivolo_the_bodies_it_found(monkeypatch: pytest.Monke
     assert [f.attributes.age_years for f in r.faces] == [30.0, 50.0]
     persons = session.batches[0][:, 3:]
     assert not np.allclose(persons[0], mivolo._ABSENT) and np.allclose(persons[1], mivolo._ABSENT)
+    assert len(r.people) == 1 and r.people[0].face_index == 0 and r.people[0].age_years == 30.0
+    assert r.faces[0].person_index == 0 and r.faces[1].person_index is None
 
 
 def test_without_mivolo_body_no_body_is_detected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,3 +166,64 @@ def test_a_failed_body_detection_leaves_faces_face_only(monkeypatch: pytest.Monk
     r, _session = _scan(monkeypatch, FaceConfig(mivolo_body=True), _Broken([]))
     assert [f.attributes.age_body for f in r.faces] == [False, False]
     assert [f.attributes.age_years for f in r.faces] == [30.0, 50.0]  # ages still read, face-only
+    assert r.people == []
+
+
+def test_unmatched_body_gets_a_body_only_age(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A person box far from both faces; MiVOLO runs with absent face channels.
+    detector = _Detector([[50, 50, 250, 400, 0.9], [0, 300, 80, 399, 0.85]])
+    session = _Session([_mv_row(True, 30.0), _mv_row(False, 50.0), _mv_row(True, 22.0)], (6, 384, 384))
+    app = _App({400: [_Face([100, 100, 200, 200], [1, 0, 0]), _Face([250, 20, 280, 50], [0, 1, 0])]})
+    monkeypatch.setattr(faces, "_get_app", lambda cfg, **kw: app)
+    monkeypatch.setattr(mivolo, "get_session", lambda providers: session)
+    monkeypatch.setattr(fairface, "get_session", lambda providers: pytest.fail("FairFace was not asked for"))
+    monkeypatch.setattr(bodies, "get_detector", lambda cfg: detector)
+    r = ImageResult(rel_path="x.png", abs_path="/d/x.png", passed=True)
+    faces.detect_faces([r], [("x.png", "/d/x.png", _png(400))], FaceConfig(mivolo_body=True))
+    unmatched = [p for p in r.people if p.face_index is None]
+    assert len(unmatched) == 1 and unmatched[0].age_years == 22.0 and unmatched[0].age_body is True
+    assert len(session.batches) == 2  # faces, then body-only
+
+
+def test_associate_nsfw_gives_each_detection_to_the_overlapping_person() -> None:
+    from argus_cortex.moderation import NsfwDetection, NsfwResult
+
+    from argus_curator.models import PersonDetection
+    from argus_curator.selection import minor_exposed
+
+    young = PersonDetection(bbox=[0, 0, 100, 200], det_score=0.9, age_years=16.0, age_source="mivolo", age_body=True)
+    adult = PersonDetection(bbox=[200, 0, 100, 200], det_score=0.8, age_years=32.0, age_source="mivolo", age_body=True)
+    r = ImageResult(
+        rel_path="x.png",
+        abs_path="/d/x.png",
+        passed=True,
+        people=[young, adult],
+        nsfw=NsfwResult(
+            detections=[
+                NsfwDetection(label="FEMALE_BREAST_EXPOSED", score=0.8, bbox=[210, 80, 40, 40]),
+                NsfwDetection(label="FACE_FEMALE", score=0.9, bbox=[10, 10, 30, 30]),
+            ],
+            labels={"FEMALE_BREAST_EXPOSED": 0.8, "FACE_FEMALE": 0.9},
+            exposed_score=0.8,
+        ),
+    )
+    bodies.associate_nsfw([r])
+    assert r.people[1].exposed_score == 0.8 and r.people[0].exposed_score == 0.0
+    assert "FACE_FEMALE" in r.people[0].nsfw_labels
+    # Exposed is on the adult; the younger person does not overlap it.
+    assert minor_exposed(r) is False
+    r.people[0].exposed_score = 0.8
+    assert minor_exposed(r) is True
+
+    # An exposed box that overlaps nobody still flags any young age (fail closed).
+    r.people[0].exposed_score = 0.0
+    r.people[0].nsfw_labels = {}
+    r.people[1].exposed_score = 0.0
+    r.people[1].nsfw_labels = {}
+    r.nsfw = NsfwResult(
+        detections=[NsfwDetection(label="FEMALE_BREAST_EXPOSED", score=0.8, bbox=[900, 900, 20, 20])],
+        labels={"FEMALE_BREAST_EXPOSED": 0.8},
+        exposed_score=0.8,
+    )
+    bodies.associate_nsfw([r])
+    assert minor_exposed(r) is True

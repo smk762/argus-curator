@@ -12,11 +12,13 @@ apparent minors. Requests choose a policy by name, never by text.
 
 SingGuard gives no scores, so its filters are by verdict and by rule. It runs
 a vision language model: expect about a second per image in ``fast`` mode and
-several with ``fast-slow``, which also writes why the rule fired.
+several with ``fast-slow`` or ``slow``. The default is ``cascade`` (``fast``
+for every image, ``slow`` only for what ``fast`` flags).
 
 ``ARGUS_CURATOR_SINGGUARD_CONTEXT`` sends what the scan already knows about an
-image (its MiVOLO age, its folder, its caption sidecar) as the request text,
-framed as recorded context rather than a request; see :mod:`guard_context`.
+image (its MiVOLO age, its folder, its caption sidecar, and optionally scene,
+NudeNet, garments) as the request text, framed as recorded context rather than
+a request; see :mod:`guard_context`.
 
 Configured by environment only, like NudeNet (see :mod:`argus_curator.remote`).
 The HTTP client is argus-cortex's :class:`~argus_cortex.moderation.SingGuardClient`,
@@ -95,7 +97,7 @@ def resolve_enabled(cfg: GuardConfig) -> bool:
 
 
 def thinking() -> str:
-    mode = env_value(THINKING_ENV) or "fast"
+    mode = env_value(THINKING_ENV) or "cascade"
     if mode not in THINKING_MODES:
         raise ModelUnavailable(f"{THINKING_ENV} must be one of {', '.join(THINKING_MODES)}, got {mode!r}")
     return mode

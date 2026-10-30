@@ -85,9 +85,10 @@ filters are available over HTTP (`POST /scan/folder`, `GET /scan/{scan_id}`,
   and borderline images.
 - **Age and demographics are model estimates from appearance**, not facts
   about anyone. Age estimates are typically off by a few years, more so from
-  the face alone (MiVOLO runs face-only here), so filter with a margin above
-  any legal threshold (`--min-age 25` rather than 18) and send borderline
-  images to a person.
+  the face alone (the default). `--mivolo-body` adds each face's body from
+  InsightFace's person detector; a person with no face still gets a body-only
+  estimate. Filter with a margin above any legal threshold (`--min-age 25`
+  rather than 18) and send borderline images to a person.
 - Only the **primary** face of each image is filtered on; other faces are
   recorded per face (`faces[].attributes`) but do not exclude the image.
 - Scene and garment models make mistakes too; see the measured accuracy in
@@ -231,6 +232,11 @@ detector, the one model of the `cheetah_l` pack (30 MB; fetched to
   they do in MiVOLO. The thresholds are request fields beside `mivolo_body`,
   so a cached scan records the ones its ages were read with.
 - `faces[].attributes.age_body` says whether an age was read with a body.
+- Person boxes land on `results[].people` (bbox, the matched `face_index`, the
+  age). A person with no face still gets a body-only MiVOLO age (absent face
+  channels). NudeNet detections are assigned to the overlapping person, else
+  face, so `minor-exposed` can tell a younger person from an adult in the
+  same frame.
 
 `scripts/age_eval.py labels.csv` compares the two modes on images of known
 age: mean and median error, share within 5 years, and how many subjects under
@@ -492,28 +498,31 @@ server judges each image against a whole moderation policy and answers with a
 
 It gives **no scores**, so it complements NudeNet rather than replacing it. It
 runs a vision language model: about a second per image in `fast` mode, several
-in `fast-slow` (which also writes why a rule fired). argus-cull's `singguard`
-service adds `slow` (the reasoning without a fast verdict ahead of it) and
-`cascade` (`fast` for every image, `slow` for what `fast` flags); other servers
-answer 400 to those. Configure it like NudeNet:
+in `fast-slow` (which also writes why a rule fired). The default is `cascade`
+(`fast` for every image, `slow` for what `fast` flags). argus-cull's `singguard`
+service also accepts `slow` on its own; other servers answer 400 to those.
+Configure it like NudeNet:
 
 ```bash
 ARGUS_CURATOR_SINGGUARD_URL=http://192.168.1.198:9150   # its origin; /api/guard/check is appended
-ARGUS_CURATOR_SINGGUARD_THINKING=fast                    # or fast-slow / slow / cascade
+ARGUS_CURATOR_SINGGUARD_THINKING=cascade                 # or fast / fast-slow / slow
 ARGUS_CURATOR_SINGGUARD_POLICY_FILE=/etc/curator/policy.txt  # optional: replaces the default rules
 ARGUS_CURATOR_SINGGUARD_TIMEOUT=90                       # seconds per image (default 90)
 ARGUS_CURATOR_SINGGUARD_WORKERS=2                        # concurrent requests (default 2)
-ARGUS_CURATOR_SINGGUARD_CONTEXT=age,folder,caption       # optional: what the scan knows, sent as request text
+ARGUS_CURATOR_SINGGUARD_CONTEXT=age,folder,caption,scene # optional: what the scan knows, sent as request text
 ```
 
 By default SingGuard sees the image alone, and under the adult policies it
 then reasons about an age and a consent it cannot see. `ARGUS_CURATOR_SINGGUARD_CONTEXT`
 sends what the scan already knows as the request text, opening with a line
 that says it is recorded context and not a request (SingGuard reads a bare
-description as a request to produce it): `age` is each face's MiVOLO estimate,
-named as an estimate; `folder` is the image's folder under the scanned root,
-which usually names the set; `caption` is an argus-lens `<stem>.txt` or XMP
-sidecar (`photo.jpg.xmp`, else Lightroom's `photo.xmp`), cut to 600 characters. It is off by default. A wrong
+description as a request to produce it): `age` is each face's MiVOLO estimate
+(and a body-only estimate when no face matched); `folder` is the image's folder
+under the scanned root; `caption` is an argus-lens `<stem>.txt` or XMP sidecar
+(`photo.jpg.xmp`, else Lightroom's `photo.xmp`), cut to 600 characters;
+`scene` is Places365; `nsfw` is the NudeNet content rating; `garments` is
+Fashionpedia. Compose defaults to `age,folder,caption,scene`. The library
+sends nothing until the variable is set. A wrong
 age leans the verdict the wrong way, so measure it on labelled images
 (`scripts/guard_eval.py --images`) before relying on it. The under-18 rule
 (`minor-exposed`) does not read this text.

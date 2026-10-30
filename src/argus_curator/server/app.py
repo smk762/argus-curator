@@ -47,6 +47,7 @@ from argus_curator import __version__, export, scanner
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator.attributes import fairface_available, mivolo_available
+from argus_curator.bodies import bodies_available
 from argus_curator.faces import faces_available
 from argus_curator.garments import garments_available
 from argus_curator.models import (
@@ -197,6 +198,7 @@ def _detectors() -> dict[str, bool | list[str]]:
         "onnxruntime": find_spec("onnxruntime") is not None or find_spec("onnxruntime_gpu") is not None,
         "fairface": fairface_available(),
         "mivolo": mivolo_available(),
+        "bodies": bodies_available(),
         "places365": scenes_available(),
         "garments": garments_available(),
         # A NudeNet server URL is configured; reachability is not probed here.
@@ -346,8 +348,22 @@ def _faces_from_bytes(data: bytes, body: bool = False) -> dict[str, Any]:
         row: dict[str, Any] = {"age_estimate_years": float(years), "bbox": list(face.bbox)}
         if body:
             row["age_body"] = bool(face.attributes.age_body)
+            if face.person_index is not None:
+                row["person_index"] = face.person_index
         faces.append(row)
-    return {"source": "mivolo", "faces": faces}
+    out: dict[str, Any] = {"source": "mivolo", "faces": faces}
+    if body:
+        out["people"] = [
+            {
+                "bbox": list(person.bbox),
+                "det_score": person.det_score,
+                "face_index": person.face_index,
+                "age_estimate_years": person.age_years,
+                "age_body": person.age_body,
+            }
+            for person in result.people
+        ]
+    return out
 
 
 def create_app(

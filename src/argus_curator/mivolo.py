@@ -139,6 +139,23 @@ def predict(
     return out
 
 
+def predict_bodies(session, body_crops: list[Image.Image]) -> list[tuple[np.ndarray, float]]:
+    """Per body-only crop: ``(gender_probs, age_years)``, face channels absent.
+
+    Upstream's missing-face stand-in is the same black image used for a missing
+    person. A frame that shows a body and no face still gets an age.
+    """
+    if not body_crops:
+        return []
+    faces = np.broadcast_to(_ABSENT, (len(body_crops), *_ABSENT.shape))
+    persons = np.stack([_channels(crop) for crop in body_crops])
+    batch = np.concatenate([faces, persons], axis=1).astype(np.float32)
+    input_name = session.get_inputs()[0].name
+    (raw,) = session.run(None, {input_name: batch})
+    gender, age = decode(raw)
+    return [(gender[i], float(age[i])) for i in range(len(body_crops))]
+
+
 def fetch_weights() -> Path:
     """Download the pinned checkpoint from the Hugging Face Hub (cached there)."""
     try:

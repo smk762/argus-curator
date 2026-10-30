@@ -981,6 +981,52 @@
           "title": "Det Score",
           "type": "number"
         },
+        "exposed_score": {
+          "default": 0.0,
+          "title": "Exposed Score",
+          "type": "number"
+        },
+        "nsfw_labels": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "propertyNames": {
+            "enum": [
+              "FEMALE_GENITALIA_COVERED",
+              "FACE_FEMALE",
+              "BUTTOCKS_EXPOSED",
+              "FEMALE_BREAST_EXPOSED",
+              "FEMALE_GENITALIA_EXPOSED",
+              "MALE_BREAST_EXPOSED",
+              "ANUS_EXPOSED",
+              "FEET_EXPOSED",
+              "BELLY_COVERED",
+              "FEET_COVERED",
+              "ARMPITS_COVERED",
+              "ARMPITS_EXPOSED",
+              "FACE_MALE",
+              "BELLY_EXPOSED",
+              "MALE_GENITALIA_EXPOSED",
+              "ANUS_COVERED",
+              "FEMALE_BREAST_COVERED",
+              "BUTTOCKS_COVERED"
+            ]
+          },
+          "title": "Nsfw Labels",
+          "type": "object"
+        },
+        "person_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Person Index"
+        },
         "pitch": {
           "anyOf": [
             {
@@ -1377,6 +1423,13 @@
           "title": "Passed",
           "type": "boolean"
         },
+        "people": {
+          "items": {
+            "$ref": "#/$defs/PersonDetection"
+          },
+          "title": "People",
+          "type": "array"
+        },
         "phash": {
           "default": "",
           "title": "Phash",
@@ -1700,6 +1753,117 @@
         }
       },
       "title": "NsfwResult",
+      "type": "object"
+    },
+    "PersonDetection": {
+      "description": "One person box from InsightFace's Cheetah detector (FaceConfig.mivolo_body).\n\n``face_index`` is the face it was given, or ``None`` when no face matched\n(a body-only crop; MiVOLO then runs with an absent face). ``nsfw_labels``\nare NudeNet detections whose box overlaps this person.",
+      "properties": {
+        "age_body": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Body"
+        },
+        "age_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "fairface",
+                "mivolo"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Source"
+        },
+        "age_years": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Years"
+        },
+        "bbox": {
+          "description": "[x, y, w, h]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Bbox",
+          "type": "array"
+        },
+        "det_score": {
+          "title": "Det Score",
+          "type": "number"
+        },
+        "exposed_score": {
+          "default": 0.0,
+          "title": "Exposed Score",
+          "type": "number"
+        },
+        "face_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Index"
+        },
+        "nsfw_labels": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "propertyNames": {
+            "enum": [
+              "FEMALE_GENITALIA_COVERED",
+              "FACE_FEMALE",
+              "BUTTOCKS_EXPOSED",
+              "FEMALE_BREAST_EXPOSED",
+              "FEMALE_GENITALIA_EXPOSED",
+              "MALE_BREAST_EXPOSED",
+              "ANUS_EXPOSED",
+              "FEET_EXPOSED",
+              "BELLY_COVERED",
+              "FEET_COVERED",
+              "ARMPITS_COVERED",
+              "ARMPITS_EXPOSED",
+              "FACE_MALE",
+              "BELLY_EXPOSED",
+              "MALE_GENITALIA_EXPOSED",
+              "ANUS_COVERED",
+              "FEMALE_BREAST_COVERED",
+              "BUTTOCKS_COVERED"
+            ]
+          },
+          "title": "Nsfw Labels",
+          "type": "object"
+        }
+      },
+      "required": [
+        "bbox",
+        "det_score"
+      ],
+      "title": "PersonDetection",
       "type": "object"
     },
     "ScanConfig": {

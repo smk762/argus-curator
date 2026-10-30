@@ -136,6 +136,8 @@ def test_opt_out_semantics(monkeypatch: pytest.MonkeyPatch, url, enabled, expect
 
 
 def test_thinking_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert guard.thinking() == "cascade"
+    monkeypatch.setenv(guard.THINKING_ENV, "fast")
     assert guard.thinking() == "fast"
     monkeypatch.setenv(guard.THINKING_ENV, "fast-slow")
     assert guard.thinking() == "fast-slow"
@@ -191,7 +193,7 @@ def test_check_images_posts_each_image_and_records_results(singguard: type[_Sing
     assert seen[0] == (0, 6) and seen[-1] == (6, 6)
 
     assert {s["path"] for s in singguard.seen} == {"/api/guard/check"}
-    assert {s["input"] for s in singguard.seen} == {""} and {s["thinking"] for s in singguard.seen} == {"fast"}
+    assert {s["input"] for s in singguard.seen} == {""} and {s["thinking"] for s in singguard.seen} == {"cascade"}
     assert all("policy" not in s for s in singguard.seen)  # default rules
 
 
@@ -294,7 +296,9 @@ def test_context_kinds_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(guard.CONTEXT_ENV, " age, Folder ,caption ")
     assert guard.context_kinds() == {"age", "folder", "caption"}
     monkeypatch.setenv(guard.CONTEXT_ENV, "age,nsfw")
-    with pytest.raises(ModelUnavailable, match="nsfw"):
+    assert guard.context_kinds() == {"age", "nsfw"}
+    monkeypatch.setenv(guard.CONTEXT_ENV, "age,bogus")
+    with pytest.raises(ModelUnavailable, match="bogus"):
         guard.context_kinds()
 
 
@@ -360,6 +364,27 @@ def test_image_context_lines(tmp_path: Path) -> None:
     (tmp_path / "c.xmp").unlink()
     long = guard_context.image_context(_aged("c.jpg", abs_path=str(image)), frozenset({"caption"}))
     assert len(long.splitlines()[-1]) < 700 and long.endswith("…")
+
+    from argus_cortex.moderation import NsfwResult
+
+    from argus_curator.models import GarmentDetection, PersonDetection, SceneLabel, SceneTags
+
+    tagged = _aged("a.jpg", 24.0)
+    tagged.scene = SceneTags(
+        categories=[SceneLabel(label="studio", conf=0.81), SceneLabel(label="art_studio", conf=0.1)],
+        environment="indoor",
+        environment_conf=0.9,
+    )
+    tagged.nsfw = NsfwResult(detections=[], labels={"FEMALE_BREAST_EXPOSED": 0.7}, exposed_score=0.7)
+    tagged.garments = [GarmentDetection(label="shirt_blouse", conf=0.9, bbox=[0, 0, 10, 10], color="#aabbcc")]
+    tagged.people = [
+        PersonDetection(bbox=[0, 0, 50, 100], det_score=0.9, age_years=27.4, age_source="mivolo", age_body=True)
+    ]
+    extra = guard_context.image_context(tagged, frozenset({"scene", "nsfw", "garments", "age"}))
+    assert "Places365 scene: studio (0.81), art_studio (0.10); indoor." in extra
+    assert "NudeNet content rating: explicit (FEMALE_BREAST_EXPOSED 0.70)." in extra
+    assert "Fashionpedia garments: shirt_blouse." in extra
+    assert "a person with no visible face: 27 years (MiVOLO body-only estimate" in extra
 
 
 def test_context_is_sent_only_when_configured(singguard: type[_SingGuard], monkeypatch: pytest.MonkeyPatch) -> None:

@@ -4,8 +4,9 @@ SingGuard judges the image together with the request text (``input``). The
 curator sends none by default, so the model sees a nude adult with no account
 of who they are or why the photo exists, and under the adult policies it
 reasons about consent and age it cannot see. The scan has some of that: a
-MiVOLO age for each face, the folder the image came from, and any caption an
-earlier tool left beside it. ``ARGUS_CURATOR_SINGGUARD_CONTEXT`` names which
+MiVOLO age for each face, the folder the image came from, any caption an
+earlier tool left beside it, and (when asked) Places365, NudeNet, and
+Fashionpedia tags. ``ARGUS_CURATOR_SINGGUARD_CONTEXT`` names which
 to send, as a comma list of :data:`CONTEXT_KINDS`.
 
 SingGuard reads a bare description as a request: told "a nude adult", it
@@ -26,7 +27,7 @@ from argus_cortex.xmp import parse_xmp as _parse_sidecar
 
 from argus_curator.models import FaceAttributes, ImageResult
 
-CONTEXT_KINDS = frozenset({"age", "folder", "caption"})
+CONTEXT_KINDS = frozenset({"age", "folder", "caption", "scene", "nsfw", "garments"})
 # A sidecar is a caption, not a document. Keep what fits a prompt.
 MAX_SIDECAR_BYTES = 64 * 1024
 MAX_CAPTION_CHARS = 600
@@ -49,20 +50,34 @@ def mivolo_ages(result: ImageResult) -> list[float]:
     return ages
 
 
+def body_only_ages(result: ImageResult) -> list[float]:
+    """MiVOLO ages from people with no matched face (absent-face + body crop)."""
+    return [p.age_years for p in result.people if p.face_index is None and p.age_years is not None]
+
+
 def age_line(result: ImageResult) -> str | None:
     ages = mivolo_ages(result)
-    if not ages:
-        if result.set_age is None:
-            return None
-        # No face to read. What the rest of the set says about its one subject.
-        return (
-            f"No face is visible in this frame. The other frames of this set show one person, "
-            f"estimated at {round(result.set_age.years)} years (MiVOLO estimate over {result.set_age.faces} faces; "
-            f"it can be off by several years)."
+    bodies = body_only_ages(result)
+    parts: list[str] = []
+    if ages:
+        years = ", ".join(f"{round(age)}" for age in ages)
+        faces = "the one visible face" if len(ages) == 1 else f"the {len(ages)} visible faces"
+        parts.append(f"Apparent age of {faces}: {years} years (MiVOLO estimate; it can be off by several years).")
+    if bodies:
+        years = ", ".join(f"{round(age)}" for age in bodies)
+        who = "a person with no visible face" if len(bodies) == 1 else f"{len(bodies)} people with no visible face"
+        parts.append(
+            f"Apparent age of {who}: {years} years (MiVOLO body-only estimate; it can be off by several years)."
         )
-    years = ", ".join(f"{round(age)}" for age in ages)
-    faces = "the one visible face" if len(ages) == 1 else f"the {len(ages)} visible faces"
-    return f"Apparent age of {faces}: {years} years (MiVOLO estimate; it can be off by several years)."
+    if parts:
+        return " ".join(parts)
+    if result.set_age is None:
+        return None
+    return (
+        f"No face is visible in this frame. The other frames of this set show one person, "
+        f"estimated at {round(result.set_age.years)} years (MiVOLO estimate over {result.set_age.faces} faces; "
+        f"it can be off by several years)."
+    )
 
 
 def folder_line(result: ImageResult) -> str | None:
@@ -120,6 +135,42 @@ def caption_line(abs_path: str) -> str | None:
     return f"Caption written by an earlier captioning tool: {text}"
 
 
+def scene_line(result: ImageResult) -> str | None:
+    """Places365 top categories and indoor/outdoor, when the scan tagged the image."""
+    scene = result.scene
+    if scene is None or not scene.categories:
+        return None
+    top = ", ".join(f"{c.label} ({c.conf:.2f})" for c in scene.categories[:3])
+    return f"Places365 scene: {top}; {scene.environment}."
+
+
+def nsfw_line(result: ImageResult) -> str | None:
+    """NudeNet content rating and the exposed classes that scored, when checked."""
+    if result.nsfw is None:
+        return None
+    from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS
+
+    rating = result.content_rating or "safe"
+    named = [
+        f"{label} {result.nsfw.labels[label]:.2f}" for label in DEFAULT_EXPOSED_LABELS if label in result.nsfw.labels
+    ]
+    extra = f" ({', '.join(named)})" if named else ""
+    return f"NudeNet content rating: {rating}{extra}."
+
+
+def garments_line(result: ImageResult) -> str | None:
+    """Fashionpedia garment types, when the scan detected clothing."""
+    if not result.garments:
+        return None
+    seen: list[str] = []
+    for g in result.garments:
+        if g.label not in seen:
+            seen.append(g.label)
+        if len(seen) == 6:
+            break
+    return f"Fashionpedia garments: {', '.join(seen)}."
+
+
 def image_context(result: ImageResult, kinds: frozenset[str]) -> str:
     """The ``input`` text for *result*, or ``""`` when nothing asked for is known."""
     lines: list[str] = []
@@ -128,6 +179,12 @@ def image_context(result: ImageResult, kinds: frozenset[str]) -> str:
     if "folder" in kinds and (line := folder_line(result)):
         lines.append(line)
     if "caption" in kinds and (line := caption_line(result.abs_path)):
+        lines.append(line)
+    if "scene" in kinds and (line := scene_line(result)):
+        lines.append(line)
+    if "nsfw" in kinds and (line := nsfw_line(result)):
+        lines.append(line)
+    if "garments" in kinds and (line := garments_line(result)):
         lines.append(line)
     if not lines:
         return ""

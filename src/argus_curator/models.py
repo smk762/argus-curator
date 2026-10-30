@@ -341,6 +341,30 @@ class FaceDetection(BaseModel):
     pitch: float | None = None
     pose: FacePose | None = None
     attributes: FaceAttributes | None = None
+    # Index into ImageResult.people when FaceConfig.mivolo_body matched this face
+    # to a person box; NudeNet detections assigned to that person live there.
+    person_index: int | None = None
+    # NudeNet classes assigned to this face's box when no person list was recorded.
+    nsfw_labels: dict[NudeNetLabel, float] = Field(default_factory=dict)
+    exposed_score: float = 0.0
+
+
+class PersonDetection(BaseModel):
+    """One person box from InsightFace's Cheetah detector (FaceConfig.mivolo_body).
+
+    ``face_index`` is the face it was given, or ``None`` when no face matched
+    (a body-only crop; MiVOLO then runs with an absent face). ``nsfw_labels``
+    are NudeNet detections whose box overlaps this person.
+    """
+
+    bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
+    det_score: float
+    face_index: int | None = None
+    age_years: float | None = None
+    age_source: AttributeSource | None = None
+    age_body: bool | None = None
+    nsfw_labels: dict[NudeNetLabel, float] = Field(default_factory=dict)
+    exposed_score: float = 0.0
 
 
 class SceneLabel(BaseModel):
@@ -430,6 +454,9 @@ class ImageResult(BaseModel):
     # Faces (M2)
     faces: list[FaceDetection] = Field(default_factory=list)
     face_count: int = 0
+    # Person boxes from Cheetah when FaceConfig.mivolo_body ran. Empty means it
+    # was not asked, or it found none — unlike garments, this is never None.
+    people: list[PersonDetection] = Field(default_factory=list)
     primary_face_cluster: str | None = None
     # Orientation of the primary face (for pose-balanced subset selection).
     primary_face_pose: FacePose | None = None
