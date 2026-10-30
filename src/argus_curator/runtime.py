@@ -55,6 +55,7 @@ def onnxruntime_available() -> bool:
 
 _CUDA = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 _cuda_preloaded = False
+_cuda_preload_lock = threading.Lock()
 
 
 def _preload_cuda(ort: object) -> None:
@@ -66,18 +67,24 @@ def _preload_cuda(ort: object) -> None:
     instead, or with an onnxruntime too old to have ``preload_dlls``.
     """
     global _cuda_preloaded
-    if _cuda_preloaded:
-        return
-    _cuda_preloaded = True
-    preload = getattr(ort, "preload_dlls", None)
-    if preload is not None:
-        # A failure leaves system CUDA, if any, to serve the provider.
-        with contextlib.suppress(Exception):
-            preload()
+    with _cuda_preload_lock:
+        if _cuda_preloaded:
+            return
+        _cuda_preloaded = True
+        preload = getattr(ort, "preload_dlls", None)
+        if preload is not None:
+            # A failure leaves system CUDA, if any, to serve the provider.
+            with contextlib.suppress(Exception):
+                preload()
 
 
 def providers(device: str) -> list[str]:
-    """onnxruntime execution providers for a device hint ("auto" | "cpu" | "cuda")."""
+    """onnxruntime execution providers for a device hint ("auto" | "cpu" | "cuda").
+
+    CUDA is listed only when onnxruntime actually has ``CUDAExecutionProvider``.
+    ``device="cuda"`` on a CPU-only install used to still name CUDA (and take
+    the host GPU lease) while sessions fell back to CPU.
+    """
     dev = (device or "auto").lower()
     if dev == "cpu":
         return ["CPUExecutionProvider"]
@@ -86,9 +93,8 @@ def providers(device: str) -> list[str]:
 
         available = set(ort.get_available_providers())
     except Exception:
-        return list(_CUDA) if dev == "cuda" else ["CPUExecutionProvider"]
-    # auto: prefer CUDA when present.
-    if dev == "cuda" or "CUDAExecutionProvider" in available:
+        return ["CPUExecutionProvider"]
+    if "CUDAExecutionProvider" in available:
         _preload_cuda(ort)
         return list(_CUDA)
     return ["CPUExecutionProvider"]
@@ -99,7 +105,7 @@ def providers(device: str) -> list[str]:
 # for one image (or one Places365 batch) once it is resident.
 VRAM_MB: dict[str, dict[str, int]] = {
     "faces": {"load": 1500, "run": 512},  # InsightFace buffalo_l, plus MiVOLO and FairFace
-    "scenes": {"load": 400, "run": 512},
+    "scenes": {"load": 400, "run": 512},  # one Places365 batch (up to 16); NVML is a snapshot
     "garments": {"load": 600, "run": 512},
 }
 

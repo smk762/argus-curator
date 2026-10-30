@@ -15,8 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unless `ARGUS_GPU_COORDINATOR=lease`, and never taken on CPU. With `[gpu]`
   (now including `argus-cortex[gpu]`, for NVML) it also waits for free VRAM
   across the card. A scan that cannot get the GPU in time fails instead of
-  skipping images. `POST /faces` waits at most 30 s, then answers 503 with
-  `Retry-After: 5`. `GET /health` reports `gpu_coordinator`. The minimum
+  skipping images; the server answers 503 with `Retry-After: 5` (and a
+  streaming scan drops any partial cache). `POST /faces` waits at most 30 s,
+  then answers the same 503. `GET /health` reports `gpu_coordinator`. The
+  lease is not taken when CUDA was requested but onnxruntime has no CUDA
+  provider. InsightFace's pack download is off the load lease. The minimum
   argus-cortex is now 0.4.3.
 - A CUDA image: `ghcr.io/smk762/argus-curator:<version>-gpu` (and
   `latest-gpu`) beside the CPU image, built with `GPU=1`. It installs `[gpu]`

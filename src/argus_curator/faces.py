@@ -50,26 +50,30 @@ def faces_available() -> bool:
         return False
 
 
-def _get_app(cfg: FaceConfig):
+def _get_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
     """Build (and cache) an InsightFace ``FaceAnalysis`` app for the model."""
     key = f"{cfg.model}:{cfg.device}"
     if key in _APP_CACHE:
         return _APP_CACHE[key]
     with _APP_LOCK:
         if key not in _APP_CACHE:
-            _APP_CACHE[key] = _build_app(cfg)
+            _APP_CACHE[key] = _build_app(cfg, lease_wait_s=lease_wait_s)
         return _APP_CACHE[key]
 
 
-def _build_app(cfg: FaceConfig):
+def _build_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
     try:
         from insightface.app import FaceAnalysis
     except Exception as exc:  # pragma: no cover - exercised only without deps
         raise FacesUnavailable("Face detection requires: pip install argus-curator[faces]  (or [gpu])") from exc
 
-    app = FaceAnalysis(name=cfg.model, providers=providers(cfg.device))
-    ctx_id = 0 if "CUDAExecutionProvider" in providers(cfg.device) else -1
-    app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+    provs = providers(cfg.device)
+    # FaceAnalysis() fetches the pack to disk; prepare() builds CUDA sessions.
+    # Keep the download off the GPU lease so a cold start does not block lens.
+    app = FaceAnalysis(name=cfg.model, providers=provs)
+    ctx_id = 0 if "CUDAExecutionProvider" in provs else -1
+    with gpu_lease(cfg.device, "faces", "load", wait_s=lease_wait_s):
+        app.prepare(ctx_id=ctx_id, det_size=(640, 640))
     return app
 
 
@@ -278,8 +282,8 @@ def detect_faces(
     if not cfg.enabled:
         return empty
 
+    app = _get_app(cfg, lease_wait_s=lease_wait_s)
     with gpu_lease(cfg.device, "faces", "load", wait_s=lease_wait_s):
-        app = _get_app(cfg)
         sessions = _attribute_sessions(cfg)
     data_by_rel = {rel: data for rel, _abs, data in items}
     result_by_rel = {r.rel_path: r for r in results}

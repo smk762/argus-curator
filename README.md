@@ -681,8 +681,10 @@ around each image it runs a model on: InsightFace with MiVOLO and FairFace,
 Places365 (per batch) and Fashionpedia, plus a larger ask when a model loads.
 It is what the GPU image (`:<version>-gpu`, the compose default) runs.
 The lease is taken per image, so argus-lens, or a `POST /faces` from
-argus-darkroom, can use the card between a scan's images. On a CPU build it is
-never taken.
+argus-darkroom, can use the card between a scan's images. It is never taken on
+CPU, or when `device="cuda"` but onnxruntime has no CUDA provider (sessions
+would only run on CPU anyway). InsightFace's pack download happens before the
+load lease, so a cold start does not hold the GPU while weights hit the disk.
 
 - `ARGUS_GPU_COORDINATOR=lease` turns it on (`none`, the default, gates nothing).
   Every argus process on the host must name the same `ARGUS_GPU_LEASE_PATH` on a
@@ -693,9 +695,14 @@ never taken.
   ComfyUI or an Ollama-backed SingGuard on the same GPU are included. The
   amounts are rough, per model (`runtime.VRAM_MB`).
 - `ARGUS_GPU_LEASE_TIMEOUT_S` (300) caps the wait. A scan that cannot get the GPU
-  in time fails, rather than skipping an image's faces. `POST /faces` waits at
-  most 30 s and then answers 503 with `Retry-After: 5`. `GET /health` reports
-  `gpu_coordinator`.
+  in time fails, rather than skipping an image's faces, and the server answers
+  503 with `Retry-After: 5` (the streaming scan drops any partial cache).
+  `POST /faces` waits at most 30 s and then answers the same 503. `GET /health`
+  reports `gpu_coordinator`.
+- `pip install "argus-curator[gpu]"` can still pull CPU `onnxruntime` via
+  InsightFace. If `CUDAExecutionProvider` is missing, uninstall `onnxruntime`
+  and reinstall `onnxruntime-gpu` (the GPU image does this and fails the build
+  if CUDA is still absent).
 
 ## Handoff to argus-lens
 

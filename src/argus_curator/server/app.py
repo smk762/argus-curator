@@ -673,6 +673,8 @@ def create_app(
             return summary
         except scanner.ScanCancelled as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except GpuLeaseTimeout as exc:
+            raise HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"}) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
         finally:
@@ -731,6 +733,9 @@ def create_app(
                 # The snapshots saved while it ran are not a result.
                 store.delete(scan_id)
                 events.put(("cancelled", {"scan_id": scan_id}))
+            except GpuLeaseTimeout as exc:
+                store.delete(scan_id)
+                events.put(("error", {"detail": f"GPU busy: {exc}", "retry_after": 5}))
             except Exception as exc:  # surface as a stream error, not a 500
                 events.put(("error", {"detail": f"scan failed: {exc}"}))
             finally:

@@ -9,8 +9,8 @@ import pytest
 from argus_cortex.gpu import GpuLeaseTimeout, LeaseCoordinator, NullCoordinator
 from test_attributes import _App, _Face, _png
 
-from argus_curator import faces, runtime
-from argus_curator.models import FaceConfig, ImageResult
+from argus_curator import faces, garments, runtime, scenes
+from argus_curator.models import FaceConfig, GarmentConfig, ImageResult, SceneConfig
 
 _CUDA = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
@@ -41,6 +41,38 @@ def test_no_lease_on_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime, "providers", lambda device: ["CPUExecutionProvider"])
     monkeypatch.setattr(runtime, "gpu_coordinator", lambda: pytest.fail("a CPU run took the GPU lease"))
     with runtime.gpu_lease("auto", "faces"):
+        pass
+
+
+def test_no_lease_when_cuda_was_asked_but_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """device=cuda with only the CPU EP must not serialize the host GPU."""
+    import sys
+    import types
+
+    fake = types.ModuleType("onnxruntime")
+    fake.get_available_providers = lambda: ["CPUExecutionProvider"]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    monkeypatch.setattr(runtime, "_cuda_preloaded", False)
+    monkeypatch.setattr(runtime, "gpu_coordinator", lambda: pytest.fail("took the GPU lease without CUDA"))
+    assert runtime.providers("cuda") == ["CPUExecutionProvider"]
+    with runtime.gpu_lease("cuda", "faces"):
+        pass
+
+
+def test_no_lease_when_onnxruntime_cannot_be_probed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    import types
+
+    fake = types.ModuleType("onnxruntime")
+
+    def _boom() -> list[str]:
+        raise RuntimeError("ort broken")
+
+    fake.get_available_providers = _boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    monkeypatch.setattr(runtime, "gpu_coordinator", lambda: pytest.fail("took the GPU lease without CUDA"))
+    assert runtime.providers("cuda") == ["CPUExecutionProvider"]
+    with runtime.gpu_lease("cuda", "faces"):
         pass
 
 
@@ -88,7 +120,7 @@ def _items(*widths: int) -> tuple[list[ImageResult], list[tuple[str, str, bytes]
 
 def test_detect_faces_takes_the_lease_per_image(on_cuda: _Recorder, monkeypatch: pytest.MonkeyPatch) -> None:
     app = _App({400: [_Face([100, 100, 300, 300], [1, 0, 0])], 401: []})
-    monkeypatch.setattr(faces, "_get_app", lambda cfg: app)
+    monkeypatch.setattr(faces, "_get_app", lambda cfg, **_k: app)
     monkeypatch.setattr(faces, "_attribute_sessions", lambda cfg: (None, None))
     results, items = _items(400, 401)
     faces.detect_faces(results, items, FaceConfig(enabled=True, device="cuda"))
@@ -111,11 +143,67 @@ def test_a_lease_timeout_fails_a_scan_rather_than_skipping_faces(monkeypatch: py
             yield
 
     monkeypatch.setattr(runtime, "_coordinator", _Busy())
-    monkeypatch.setattr(faces, "_get_app", lambda cfg: _App({400: []}))
+    monkeypatch.setattr(faces, "_get_app", lambda cfg, **_k: _App({400: []}))
     monkeypatch.setattr(faces, "_attribute_sessions", lambda cfg: (None, None))
     results, items = _items(400)
     with pytest.raises(GpuLeaseTimeout):
         faces.detect_faces(results, items, FaceConfig(enabled=True, device="cuda"))  # strict=False, a scan
+
+
+def test_a_load_lease_timeout_fails_a_scan_rather_than_skipping_faces(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runtime, "providers", lambda device: _CUDA)
+
+    class _BusyLoad(_Recorder):
+        @contextlib.contextmanager
+        def lease(self, *, caller: str, min_vram_mb: int):  # noqa: ANN201
+            if caller.endswith(":load"):
+                raise GpuLeaseTimeout("busy")
+            yield
+
+    monkeypatch.setattr(runtime, "_coordinator", _BusyLoad())
+    monkeypatch.setattr(faces, "_get_app", lambda cfg, **_k: _App({400: []}))
+    monkeypatch.setattr(faces, "_attribute_sessions", lambda cfg: (None, None))
+    results, items = _items(400)
+    with pytest.raises(GpuLeaseTimeout):
+        faces.detect_faces(results, items, FaceConfig(enabled=True, device="cuda"))
+
+
+def test_scene_lease_timeout_fails_the_scan_rather_than_skipping_a_batch(
+    on_cuda: _Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scenes, "get_session", lambda provs: object())
+
+    class _BusyRun(_Recorder):
+        @contextlib.contextmanager
+        def lease(self, *, caller: str, min_vram_mb: int):  # noqa: ANN201
+            if caller.endswith(":run"):
+                raise GpuLeaseTimeout("busy")
+            yield
+
+    monkeypatch.setattr(runtime, "_coordinator", _BusyRun())
+    results, items = _items(400)
+    with pytest.raises(GpuLeaseTimeout):
+        scenes.tag_images(results, items, SceneConfig(enabled=True, device="cuda"))
+    assert results[0].scene is None
+
+
+def test_garment_lease_timeout_fails_the_scan_rather_than_skipping_an_image(
+    on_cuda: _Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(garments, "get_session", lambda provs: object())
+
+    class _BusyRun(_Recorder):
+        @contextlib.contextmanager
+        def lease(self, *, caller: str, min_vram_mb: int):  # noqa: ANN201
+            if caller.endswith(":run"):
+                raise GpuLeaseTimeout("busy")
+            yield
+
+    monkeypatch.setattr(runtime, "_coordinator", _BusyRun())
+    results, items = _items(400)
+    with pytest.raises(GpuLeaseTimeout):
+        garments.detect_images(results, items, GarmentConfig(enabled=True, device="cuda"))
+    assert results[0].garments is None
 
 
 def test_cuda_libraries_are_preloaded_once_and_only_for_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -133,4 +221,4 @@ def test_cuda_libraries_are_preloaded_once_and_only_for_cuda(monkeypatch: pytest
     assert runtime.providers("auto") == _CUDA and runtime.providers("cuda") == _CUDA
     assert calls == [1]
     fake.get_available_providers = lambda: ["CPUExecutionProvider"]  # type: ignore[attr-defined]
-    assert runtime.providers("auto") == ["CPUExecutionProvider"]
+    assert runtime.providers("auto") == runtime.providers("cuda") == ["CPUExecutionProvider"]
