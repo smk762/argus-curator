@@ -42,7 +42,7 @@ from argus_cortex.moderation import (
     SingGuardClient,
     policy_name,
     rule_letter,  # noqa: F401 - re-exported for the CLI
-    rule_matches,  # noqa: F401 - re-exported for selection
+    rule_matches,  # noqa: F401 - re-exported
 )
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import (
