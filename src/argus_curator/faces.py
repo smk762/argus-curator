@@ -14,6 +14,7 @@ actually enabled (``pip install argus-curator[faces]`` or ``[gpu]``).
 from __future__ import annotations
 
 import io
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -27,6 +28,8 @@ from argus_curator.runtime import providers
 logger = structlog.get_logger()
 
 _APP_CACHE: dict[str, object] = {}
+# A scan thread and POST /faces can ask for the same app at once; build it once.
+_APP_LOCK = threading.Lock()
 
 
 class FacesUnavailable(RuntimeError):
@@ -48,6 +51,13 @@ def _get_app(cfg: FaceConfig):
     key = f"{cfg.model}:{cfg.device}"
     if key in _APP_CACHE:
         return _APP_CACHE[key]
+    with _APP_LOCK:
+        if key not in _APP_CACHE:
+            _APP_CACHE[key] = _build_app(cfg)
+        return _APP_CACHE[key]
+
+
+def _build_app(cfg: FaceConfig):
     try:
         from insightface.app import FaceAnalysis
     except Exception as exc:  # pragma: no cover - exercised only without deps
@@ -56,7 +66,6 @@ def _get_app(cfg: FaceConfig):
     app = FaceAnalysis(name=cfg.model, providers=providers(cfg.device))
     ctx_id = 0 if "CUDAExecutionProvider" in providers(cfg.device) else -1
     app.prepare(ctx_id=ctx_id, det_size=(640, 640))
-    _APP_CACHE[key] = app
     return app
 
 

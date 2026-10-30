@@ -288,6 +288,9 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
 # Largest body POST /faces will buffer. It is held in memory and decoded, so an
 # unbounded body is a memory-exhaustion lever on any client that can reach it.
 _FACES_MAX_BYTES = 64 * 1024 * 1024
+# POST /faces calls in flight at once. Each buffers and decodes up to
+# _FACES_MAX_BYTES; past this a call is refused (503, Retry-After) instead of queued.
+_FACES_CONCURRENCY = 2
 
 
 def _faces_from_bytes(data: bytes) -> dict[str, Any]:
@@ -465,6 +468,8 @@ def create_app(
     async def detectors() -> dict[str, bool | list[str]]:
         return _detectors()
 
+    faces_slots = asyncio.Semaphore(_FACES_CONCURRENCY)
+
     @app.post("/faces")
     async def faces(request: Request) -> dict[str, Any]:
         """Age estimates for one image, from memory. Nothing is written.
@@ -472,6 +477,12 @@ def create_app(
         Raw image bytes, or a multipart file. Darkroom and other suite clients
         POST a buffer; this is not a scan and does not need a source root.
         """
+        if faces_slots.locked():
+            raise HTTPException(status_code=503, detail="busy: try again", headers={"Retry-After": "1"})
+        async with faces_slots:
+            return await _faces(request)
+
+    async def _faces(request: Request) -> dict[str, Any]:
         too_large = HTTPException(status_code=413, detail=f"image larger than {_FACES_MAX_BYTES} bytes")
         try:
             declared = int(request.headers.get("content-length") or 0)

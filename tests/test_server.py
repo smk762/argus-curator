@@ -1283,3 +1283,27 @@ def test_faces_413_when_the_body_is_too_large(client: TestClient, monkeypatch: p
     monkeypatch.setattr("argus_curator.server.app._FACES_MAX_BYTES", 16)
     resp = client.post("/faces", content=_png_bytes())
     assert resp.status_code == 413
+
+
+def test_faces_503_with_retry_after_when_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the in-flight limit a call is refused at once, not queued: each one buffers an image."""
+    entered, release = threading.Event(), threading.Event()
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr("argus_curator.server.app._FACES_CONCURRENCY", 1)
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    with TestClient(create_app(cache_dir=str(tmp_path / "cache"))) as client:
+        first: list = []
+        worker = threading.Thread(target=lambda: first.append(client.post("/faces", content=_png_bytes())))
+        worker.start()
+        assert entered.wait(5)
+        busy = client.post("/faces", content=_png_bytes())
+        release.set()
+        worker.join(5)
+    assert busy.status_code == 503 and busy.headers["retry-after"] == "1"
+    assert first[0].status_code == 200
