@@ -212,8 +212,29 @@ def test_associate_nsfw_gives_each_detection_to_the_overlapping_person() -> None
     assert "FACE_FEMALE" in r.people[0].nsfw_labels
     # Exposed is on the adult; the younger person does not overlap it.
     assert minor_exposed(r) is False
-    r.people[0].exposed_score = 0.8
+    on_young = NsfwDetection(label="FEMALE_BREAST_EXPOSED", score=0.8, bbox=[20, 80, 40, 40])
+    r.nsfw.detections.append(on_young)
     assert minor_exposed(r) is True
+    r.nsfw.detections.remove(on_young)
+
+    # Exposure in the overlap of a young and an adult box goes to one of them, but flags.
+    overlapping = r.model_copy(deep=True)
+    overlapping.people[0].bbox = [150, 0, 200, 250]
+    bodies.associate_nsfw([overlapping])
+    assert overlapping.people[1].exposed_score == 0.8 and minor_exposed(overlapping) is True
+
+    # A young face with no person box: its body is not located, so exposure fails closed.
+    from argus_curator.models import FaceAttributes, FaceDetection
+
+    faceless_body = r.model_copy(deep=True)
+    faceless_body.people = [faceless_body.people[1]]
+    faceless_body.faces = [
+        FaceDetection(
+            bbox=[400, 10, 30, 30], det_score=0.9, attributes=FaceAttributes(age_years=15.0, age_source="mivolo")
+        )
+    ]
+    bodies.associate_nsfw([faceless_body])
+    assert minor_exposed(faceless_body) is True
 
     # An exposed box that overlaps nobody still flags any young age (fail closed).
     r.people[0].exposed_score = 0.0

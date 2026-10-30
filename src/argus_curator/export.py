@@ -222,6 +222,7 @@ def write_report(
         "age_years",
         "gender_source",
         "age_source",
+        "age_body",
     )
     ordered = sorted(results, key=lambda r: (r.similar_group, -r.score))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -250,9 +251,6 @@ def write_report(
                     "primary_face_pose": r.primary_face_pose or "",
                     "primary_face_yaw": "" if r.primary_face_yaw is None else round(r.primary_face_yaw, 1),
                     **{f"primary_face_{k}": _blank(getattr(r.primary_face_attributes, k, None)) for k in attr_fields},
-                    "primary_face_age_body": _blank(
-                        getattr(r.primary_face_attributes, "age_body", None) if r.primary_face_attributes else None
-                    ),
                     "people_count": len(r.people),
                     "body_ages": ";".join(
                         f"{p.age_years:.1f}" for p in r.people if p.face_index is None and p.age_years is not None

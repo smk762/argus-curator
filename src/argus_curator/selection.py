@@ -129,37 +129,35 @@ def minor_exposed(result: ImageResult) -> bool:
 
     0.2 is the lowest score NudeNet reports. Covered parts, faces, belly, feet,
     and chest do not count. Ages come from every face and from unmatched people
-    (body-only MiVOLO). When person or face boxes are present, an exposed
-    detection assigned to an adult does not flag a younger person who does not
-    overlap it; an unassigned exposed detection still flags any young age.
+    (body-only MiVOLO). With person boxes (else face boxes), an exposed
+    detection flags the image when it overlaps a young box or overlaps no box at
+    all; one that overlaps only adults does not. It fails closed: a young face
+    with no person box, or a young age with no box to place it, flags any
+    exposure.
     """
     if result.nsfw is None or exposed_score(result.nsfw.labels) < MIN_REPORTED_SCORE:
         return False
-    years = [_mivolo_years(face.attributes) for face in result.faces]
-    years.append(_mivolo_years(result.primary_face_attributes))
+    face_years = [_mivolo_years(face.attributes) for face in result.faces]
+    years = [*face_years, _mivolo_years(result.primary_face_attributes)]
     years.extend(person.age_years for person in result.people)
     if not any(_young_mivolo(age) for age in years):
         return False
-    boxes = result.people or result.faces
-    if not boxes or not result.nsfw.detections:
-        return True
-    young_people = [p for p in result.people if _young_mivolo(p.age_years)]
-    young_faces = [f for f in result.faces if _young_mivolo(_mivolo_years(f.attributes))]
     if result.people:
-        if any(p.exposed_score >= MIN_REPORTED_SCORE for p in young_people):
-            return True
-    elif any(f.exposed_score >= MIN_REPORTED_SCORE for f in young_faces):
-        return True
-    if not any(box.nsfw_labels for box in boxes):
-        return True
-    from argus_curator.bodies import _iou_xywh
+        if any(
+            _young_mivolo(age) and face.person_index is None for face, age in zip(result.faces, face_years, strict=True)
+        ):
+            return True  # a young face whose body was not found: any exposure may be theirs
+        boxes = [p.bbox for p in result.people]
+        young = [p.bbox for p in result.people if _young_mivolo(p.age_years)]
+    else:
+        boxes = [f.bbox for f in result.faces]
+        young = [f.bbox for f, age in zip(result.faces, face_years, strict=True) if _young_mivolo(age)]
+    exposed = [d for d in result.nsfw.detections if d.label in DEFAULT_EXPOSED_LABELS and d.score >= MIN_REPORTED_SCORE]
+    if not young or not exposed:
+        return True  # the young age (or the exposure) has no box to compare
+    from argus_curator.bodies import overlaps
 
-    for det in result.nsfw.detections:
-        if det.label not in DEFAULT_EXPOSED_LABELS:
-            continue
-        if all(_iou_xywh(det.bbox, box.bbox) <= 0.0 for box in boxes):
-            return True
-    return False
+    return any(any(overlaps(d.bbox, b) for b in young) or not any(overlaps(d.bbox, b) for b in boxes) for d in exposed)
 
 
 def _attribute_exclusion(r: ImageResult, req: ExportRequest) -> str | None:

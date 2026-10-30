@@ -171,17 +171,6 @@ def body_crop(
     return Image.fromarray(crop)
 
 
-def crops_for_faces(
-    image: Image.Image, bodies: np.ndarray, faces_xywh: list[list[float]], cfg: FaceConfig
-) -> list[Image.Image | None]:
-    """Per face, its masked body crop, or ``None`` when it has no usable body."""
-    matched = assign(bodies, faces_xywh, cfg.body_face_match)
-    return [
-        None if b is None else body_crop(image, bodies, b, faces_xywh, cfg.body_min_size, cfg.body_min_visible)
-        for b in matched
-    ]
-
-
 def to_people(boxes_xyxy: np.ndarray, scores: np.ndarray, matched: list[int | None]) -> list[PersonDetection]:
     """Person boxes in face-box convention, with ``face_index`` filled in."""
     face_of_body = {body: face for face, body in enumerate(matched) if body is not None}
@@ -192,15 +181,17 @@ def to_people(boxes_xyxy: np.ndarray, scores: np.ndarray, matched: list[int | No
 
 
 def _iou_xywh(a: list[float], b: list[float]) -> float:
-    ax, ay, aw, ah = a
-    bx, by, bw, bh = b
-    x1, y1 = max(ax, bx), max(ay, by)
-    x2, y2 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    ab, bb = _xyxy(a), _xyxy(b)
+    inter = _intersection(ab, bb)
     if inter == 0.0:
         return 0.0
-    union = aw * ah + bw * bh - inter
+    union = _area(ab) + _area(bb) - inter
     return inter / union if union else 0.0
+
+
+def overlaps(a: list[float], b: list[float]) -> bool:
+    """Whether two ``[x, y, w, h]`` boxes share any area."""
+    return _intersection(_xyxy(a), _xyxy(b)) > 0.0
 
 
 def associate_nsfw(results: list[ImageResult]) -> None:

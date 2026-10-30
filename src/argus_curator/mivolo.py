@@ -122,7 +122,7 @@ def predict(
 ) -> list[tuple[np.ndarray, float] | None]:
     """Per face: ``(gender_probs, age_years)``, or ``None`` for a degenerate box.
 
-    *body_crops*, one per box, are the faces' masked bodies (:func:`bodies.crops_for_faces`);
+    *body_crops*, one per box, are the faces' masked bodies (:func:`bodies.body_crop`);
     ``None`` for a face, or for all of them, runs that face face-only.
     """
     crops = [face_crop(image, b) for b in bboxes]

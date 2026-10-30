@@ -203,7 +203,7 @@ def _body_detector(cfg: FaceConfig) -> object | None:
 
 def _face_attributes(
     sessions: tuple[object | None, object | None],
-    bgr: np.ndarray,
+    image: object,
     kps_by_face: list[np.ndarray | None],
     bboxes: list[list[float]],
     rel: str,
@@ -219,9 +219,6 @@ def _face_attributes(
     ff_session, mv_session = sessions
     if (ff_session is None and mv_session is None) or not bboxes:
         return raws
-    from PIL import Image
-
-    image = Image.fromarray(bgr[:, :, ::-1])
     if ff_session is not None:
         from argus_curator import fairface
 
@@ -258,21 +255,23 @@ def _record_people(
     """Detect people, match them to *face_bboxes*, return people, per-face crops, and xyxy boxes."""
     from argus_curator import bodies
 
+    # Matching and cropping fail like detection does: the faces run face-only.
     try:
         boxes, scores = bodies.detect(body_detector, bgr, cfg.body_min_score)
+        matched = bodies.assign(boxes, face_bboxes, cfg.body_face_match)
+        crops = [
+            (
+                None
+                if body is None
+                else bodies.body_crop(image, boxes, body, face_bboxes, cfg.body_min_size, cfg.body_min_visible)
+            )
+            for body in matched
+        ]
+        people = bodies.to_people(boxes, scores, matched)
     except Exception as exc:
         logger.warning("body_detect_failed", rel_path=rel, error=str(exc))
         return [], None, None
-    matched = bodies.assign(boxes, face_bboxes, cfg.body_face_match)
-    crops = [
-        (
-            None
-            if body is None
-            else bodies.body_crop(image, boxes, body, face_bboxes, cfg.body_min_size, cfg.body_min_visible)
-        )
-        for body in matched
-    ]
-    return bodies.to_people(boxes, scores, matched), crops, boxes
+    return people, crops, boxes
 
 
 def _link_people(
@@ -300,18 +299,17 @@ def _link_people(
         return
     from argus_curator import mivolo
 
-    unmatched: list[tuple[int, object]] = []
-    for i, person in enumerate(r.people):
-        if person.face_index is not None:
-            continue
-        crop = bodies.body_crop(
-            image, boxes_xyxy, i, [f.bbox for f in r.faces], cfg.body_min_size, cfg.body_min_visible
-        )
-        if crop is not None:
-            unmatched.append((i, crop))
-    if not unmatched:
-        return
+    face_bboxes = [f.bbox for f in r.faces]
     try:
+        unmatched: list[tuple[int, object]] = []
+        for i, person in enumerate(r.people):
+            if person.face_index is not None:
+                continue
+            crop = bodies.body_crop(image, boxes_xyxy, i, face_bboxes, cfg.body_min_size, cfg.body_min_visible)
+            if crop is not None:
+                unmatched.append((i, crop))
+        if not unmatched:
+            return
         preds = mivolo.predict_bodies(mv_session, [crop for _, crop in unmatched])
     except Exception as exc:
         logger.warning("mivolo_body_only_failed", rel_path=rel, error=str(exc))
@@ -472,7 +470,7 @@ def _detect_one(
         r.people, body_crops, boxes_xyxy = _record_people(
             body_detector, bgr, image, [f.bbox for f in r.faces], cfg, rel
         )
-    raws = _face_attributes(sessions, bgr, kps_by_face, [f.bbox for f in r.faces], rel, body_crops=body_crops)
+    raws = _face_attributes(sessions, image, kps_by_face, [f.bbox for f in r.faces], rel, body_crops=body_crops)
     for f, raw in zip(r.faces, raws, strict=True):
         f.attributes = to_attributes(raw)
     found.raws.extend(raws)
