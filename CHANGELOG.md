@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `POST /faces` judges one image from memory (raw bytes or a multipart file)
+  and returns MiVOLO `age_estimate_years` plus `bbox` per face. It writes
+  nothing, so a caller that must not persist a buffer (argus-darkroom) can
+  use it. `GET /health` reports `faces` when InsightFace and MiVOLO can run.
+  A missing model, or a detected face with no estimate, is HTTP 503.
+
 ### Changed
 
 - The SingGuard policy names and texts (`default`, `adult`, `adult-granular`,

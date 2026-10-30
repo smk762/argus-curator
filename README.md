@@ -545,8 +545,9 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 
 | Route | Description |
 |---|---|
-| `GET  /health` | Liveness |
+| `GET  /health` | Liveness. `faces` is true when `POST /faces` can run (InsightFace and MiVOLO). |
 | `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet }` |
+| `POST /faces` | One image in memory (raw bytes or multipart). `{ source: mivolo, faces: [{ age_estimate_years, bbox }] }`. Writes nothing. |
 | `GET  /guard/policies` | Each SingGuard policy a scan can name: `{ singguard, policies: [{ name, recorded, source, text, error }] }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |

@@ -4,6 +4,7 @@ Routes (section 4 of the brief):
 
     GET  /health
     GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet, singguard }
+    POST /faces            -> { source, faces: [{age_estimate_years, bbox}] }  (memory only)
     POST /scan/folder      -> ScanSummary
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
@@ -33,7 +34,7 @@ try:
     # same actionable message rather than a bare ModuleNotFoundError naming a package
     # the user never installed directly.
     from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
-    from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+    from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
     from fastapi.responses import FileResponse, Response, StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
@@ -52,6 +53,8 @@ from argus_curator.models import (
     SUPPORTED_EXTS,
     ExportRequest,
     ExportResult,
+    FaceConfig,
+    ImageResult,
     ScanRequest,
     ScanSummary,
     SelectRequest,
@@ -282,6 +285,40 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
     }
 
 
+def _faces_from_bytes(data: bytes) -> dict[str, Any]:
+    """MiVOLO estimates for every face in *data*. Writes nothing.
+
+    Raises :class:`HTTPException`: 400 if the bytes are not an image, 503 if
+    InsightFace or MiVOLO cannot run or a detected face has no estimate.
+    """
+    if not data:
+        raise HTTPException(status_code=400, detail="no image")
+    try:
+        Image.open(io.BytesIO(data)).load()
+    except Exception:
+        raise HTTPException(status_code=400, detail="undecodable image") from None
+    if not faces_available():
+        raise HTTPException(status_code=503, detail="InsightFace is not installed")
+    if not mivolo_available():
+        raise HTTPException(
+            status_code=503,
+            detail="the MiVOLO model is missing (run `argus-curator mivolo-convert`)",
+        )
+    from argus_curator.faces import detect_faces
+
+    result = ImageResult(rel_path="image", abs_path="", passed=True)
+    detect_faces([result], [("image", "", data)], FaceConfig(enabled=True, mivolo=True))
+    faces: list[dict[str, Any]] = []
+    for face in result.faces:
+        attrs = face.attributes
+        years = attrs.age_years if attrs is not None and attrs.age_source in (None, "mivolo") else None
+        if years is None:
+            raise HTTPException(status_code=503, detail="MiVOLO gave no age for a detected face")
+        x, y, w, h = face.bbox
+        faces.append({"age_estimate_years": float(years), "bbox": [x, y, w, h]})
+    return {"source": "mivolo", "faces": faces}
+
+
 def create_app(
     cors: bool = False,
     cors_origins: list[str] | None = None,
@@ -409,11 +446,31 @@ def create_app(
             "set_age": True,
             # GET /guard/policies serves each policy's text (0.8 and later).
             "guard_policy_text": True,
+            # POST /faces is up when InsightFace and MiVOLO can run (darkroom probes this).
+            "faces": faces_available() and mivolo_available(),
         }
 
     @app.get("/detectors")
     async def detectors() -> dict[str, bool | list[str]]:
         return _detectors()
+
+    @app.post("/faces")
+    async def faces(request: Request) -> dict[str, Any]:
+        """Age estimates for one image, from memory. Nothing is written.
+
+        Raw image bytes, or a multipart file. Darkroom and other suite clients
+        POST a buffer; this is not a scan and does not need a source root.
+        """
+        content_type = (request.headers.get("content-type") or "").lower()
+        if content_type.startswith("multipart/"):
+            form = await request.form()
+            upload = next((v for v in form.values() if hasattr(v, "read")), None)
+            if upload is None:
+                raise HTTPException(status_code=400, detail="no image")
+            data = await upload.read()  # type: ignore[union-attr]
+        else:
+            data = await request.body()
+        return await asyncio.to_thread(_faces_from_bytes, data)
 
     @app.get("/guard/policies")
     async def guard_policies() -> dict[str, Any]:
