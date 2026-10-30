@@ -500,3 +500,84 @@ def test_set_age_is_withheld_when_the_scan_is_not_one_subject() -> None:
     # The thresholds are the caller's to set.
     age, why = faces.infer_set_age(few, _clusters(("face_1", 3)), FaceConfig(set_age=True, set_age_min_faces=3))
     assert why is None and age is not None and age.faces == 3
+
+
+def _race(fn, n: int = 8) -> list:
+    """Call *fn* from *n* threads released together; return what each got."""
+    import threading
+
+    start, out = threading.Barrier(n), []
+
+    def run() -> None:
+        start.wait()
+        out.append(fn())
+
+    threads = [threading.Thread(target=run) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return out
+
+
+def test_concurrent_callers_build_a_model_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A scan thread and POST /faces asking at once must not load two copies of a model."""
+    import time
+
+    builds: list[str] = []
+
+    def slow_build(*args, **kwargs) -> object:  # noqa: ANN002, ANN003
+        builds.append("built")
+        time.sleep(0.05)  # widen the window two unlocked callers would both pass the cache check in
+        return object()
+
+    monkeypatch.setattr(runtime, "_SESSION_CACHE", {})
+    monkeypatch.setattr(runtime, "_build_session", slow_build)
+    sessions = _race(lambda: runtime.load_session(tmp_path / "m.onnx", ["CPUExecutionProvider"], missing_hint=""))
+    assert len(builds) == 1 and len({id(s) for s in sessions}) == 1
+
+    builds.clear()
+    monkeypatch.setattr(faces, "_APP_CACHE", {})
+    monkeypatch.setattr(faces, "_build_app", slow_build)
+    apps = _race(lambda: faces._get_app(FaceConfig(enabled=True)))
+    assert len(builds) == 1 and len({id(a) for a in apps}) == 1
+
+
+def test_insightface_get_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scan thread and POST /faces must not call FaceAnalysis.get at the same time.
+
+    InsightFace is not thread-safe there; concurrent get() has mixed bboxes.
+    """
+    import threading
+    import time
+
+    overlapping = threading.Event()
+    inside = 0
+    guard = threading.Lock()
+
+    class App:
+        def get(self, bgr):  # noqa: ANN001, ARG002
+            nonlocal inside
+            with guard:
+                if inside:
+                    overlapping.set()
+                inside += 1
+            time.sleep(0.05)
+            with guard:
+                inside -= 1
+            return []
+
+    monkeypatch.setattr(faces, "_get_app", lambda cfg: App())
+    png = _png(400)
+    cfg = FaceConfig(enabled=True)
+
+    def one(rel: str) -> None:
+        result = ImageResult(rel_path=rel, abs_path=f"/{rel}", passed=True)
+        faces.detect_faces([result], [(rel, f"/{rel}", png)], cfg)
+
+    threads = [threading.Thread(target=one, args=(f"{i}.png",)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not overlapping.is_set()
