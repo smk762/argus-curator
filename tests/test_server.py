@@ -1194,7 +1194,7 @@ def _face(years: float | None, source: str | None = "mivolo"):
 
 
 def _stub_detect(monkeypatch: pytest.MonkeyPatch, faces: list) -> None:
-    def detect(results, items, cfg) -> None:  # noqa: ANN001
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
         results[0].faces.extend(faces)
 
     monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
@@ -1261,3 +1261,25 @@ def test_faces_without_origin_works(client: TestClient, monkeypatch: pytest.Monk
     """Server-to-server (darkroom) sends no Origin."""
     _stub_detect(monkeypatch, [])
     assert client.post("/faces", content=_png_bytes()).status_code == 200
+
+
+def test_faces_503_when_the_detector_fails(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A detector error must not come back as 200 with no faces (fail-open age check)."""
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        assert kwargs.get("strict") is True
+        raise RuntimeError("onnx exploded")
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    resp = client.post("/faces", content=_png_bytes())
+    assert resp.status_code == 503
+    assert "face detection failed" in resp.json()["detail"]
+
+
+def test_faces_413_when_the_body_is_too_large(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_detect(monkeypatch, [])
+    monkeypatch.setattr("argus_curator.server.app._FACES_MAX_BYTES", 16)
+    resp = client.post("/faces", content=_png_bytes())
+    assert resp.status_code == 413
