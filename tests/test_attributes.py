@@ -277,7 +277,7 @@ def _sweep(monkeypatch: pytest.MonkeyPatch, cfg: FaceConfig, ff_rows=None, mv_ro
     )
     ff_session = _Session(ff_rows or [], (3, 224, 224))
     mv_session = _Session(mv_rows or [], (6, 384, 384))
-    monkeypatch.setattr(faces, "_get_app", lambda cfg: app)
+    monkeypatch.setattr(faces, "_get_app", lambda cfg, **_k: app)
     monkeypatch.setattr(fairface, "get_session", lambda providers: ff_session)
     monkeypatch.setattr(mivolo, "get_session", lambda providers: mv_session)
 
@@ -320,7 +320,7 @@ def test_sweep_without_attributes_leaves_them_unset(monkeypatch: pytest.MonkeyPa
     def _no_session(providers):  # pragma: no cover - must not be reached
         raise AssertionError("attribute model loaded although none was enabled")
 
-    monkeypatch.setattr(faces, "_get_app", lambda cfg: _App({400: [_Face([100, 100, 300, 300], [1, 0, 0])]}))
+    monkeypatch.setattr(faces, "_get_app", lambda cfg, **_k: _App({400: [_Face([100, 100, 300, 300], [1, 0, 0])]}))
     monkeypatch.setattr(fairface, "get_session", _no_session)
     monkeypatch.setattr(mivolo, "get_session", _no_session)
     items = [("x.png", "/d/x.png", _png(400))]
@@ -567,7 +567,7 @@ def test_insightface_get_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
                 inside -= 1
             return []
 
-    monkeypatch.setattr(faces, "_get_app", lambda cfg: App())
+    monkeypatch.setattr(faces, "_get_app", lambda cfg, **_k: App())
     png = _png(400)
     cfg = FaceConfig(enabled=True)
 

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- On CUDA, curator takes argus-cortex 0.4.3's host-wide GPU lease
+  (`argus_cortex.gpu`) around each image's model run (faces with MiVOLO and
+  FairFace, Places365 batches, garments) and around each model load. It is off
+  unless `ARGUS_GPU_COORDINATOR=lease`, and never taken on CPU. With `[gpu]`
+  (now including `argus-cortex[gpu]`, for NVML) it also waits for free VRAM
+  across the card. A scan that cannot get the GPU in time fails instead of
+  skipping images; the server answers 503 with `Retry-After: 5` (and a
+  streaming scan drops any partial cache). `POST /faces` waits at most 30 s,
+  then answers the same 503. `GET /health` reports `gpu_coordinator`. The
+  lease is not taken when CUDA was requested but onnxruntime has no CUDA
+  provider. InsightFace's pack download is off the load lease. The minimum
+  argus-cortex is now 0.4.3.
+- A CUDA image: `ghcr.io/smk762/argus-curator:<version>-gpu` (and
+  `latest-gpu`) beside the CPU image, built with `GPU=1`. It installs `[gpu]`
+  plus `onnxruntime-gpu[cuda,cudnn]`, removing the CPU `onnxruntime` that
+  insightface pulls in (it shadows the GPU build), and the build fails if the
+  CUDA provider is missing. `docker compose` now builds this variant by default
+  (`CURATOR_GPU=0` for CPU).
+
+### Fixed
+
+- On a `[gpu]` install whose CUDA libraries came from NVIDIA's pip wheels,
+  every model silently ran on CPU: those libraries are off the loader's path.
+  `runtime.providers()` now calls onnxruntime's `preload_dlls()` once when it
+  picks CUDA.
+
 ## [0.9.0] - 2026-10-30
 
 ### Added

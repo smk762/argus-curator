@@ -23,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 import structlog
+from argus_cortex.gpu import GpuLeaseTimeout
 from PIL import Image
 
 from argus_curator._places365_labels import CATEGORIES, OUTDOOR
@@ -33,6 +34,7 @@ from argus_curator.runtime import (
     MODEL_DIR,
     ModelUnavailable,
     configured_path,
+    gpu_lease,
     load_session,
     onnxruntime_available,
     providers,
@@ -130,7 +132,8 @@ def tag_images(
     """Set ``scene`` on every passing result, in batches of :data:`BATCH`."""
     if not cfg.enabled:
         return
-    session = get_session(providers(cfg.device))
+    with gpu_lease(cfg.device, "scenes", "load"):
+        session = get_session(providers(cfg.device))
     data_by_rel = {rel: data for rel, _abs, data in items}
     pending = [r for r in results if r.passed and data_by_rel.get(r.rel_path) is not None]
     total = len(pending)
@@ -147,7 +150,10 @@ def tag_images(
                 logger.warning("scene_decode_failed", rel_path=r.rel_path, error=str(exc))
         if batch:
             try:
-                probs = predict(session, [im for _r, im in batch])
+                with gpu_lease(cfg.device, "scenes"):
+                    probs = predict(session, [im for _r, im in batch])
+            except GpuLeaseTimeout:
+                raise  # no GPU slot is not a bad batch: fail the scan, do not skip the images
             except Exception as exc:
                 logger.warning("scene_batch_failed", first=batch[0][0].rel_path, error=str(exc))
             else:

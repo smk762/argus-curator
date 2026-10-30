@@ -23,7 +23,7 @@ import structlog
 
 from argus_curator.attributes import RawAttributes, pool, to_attributes
 from argus_curator.models import FaceCluster, FaceConfig, FaceDetection, ImageResult, SetAge
-from argus_curator.runtime import providers
+from argus_curator.runtime import gpu_lease, providers
 
 logger = structlog.get_logger()
 
@@ -50,26 +50,30 @@ def faces_available() -> bool:
         return False
 
 
-def _get_app(cfg: FaceConfig):
+def _get_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
     """Build (and cache) an InsightFace ``FaceAnalysis`` app for the model."""
     key = f"{cfg.model}:{cfg.device}"
     if key in _APP_CACHE:
         return _APP_CACHE[key]
     with _APP_LOCK:
         if key not in _APP_CACHE:
-            _APP_CACHE[key] = _build_app(cfg)
+            _APP_CACHE[key] = _build_app(cfg, lease_wait_s=lease_wait_s)
         return _APP_CACHE[key]
 
 
-def _build_app(cfg: FaceConfig):
+def _build_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
     try:
         from insightface.app import FaceAnalysis
     except Exception as exc:  # pragma: no cover - exercised only without deps
         raise FacesUnavailable("Face detection requires: pip install argus-curator[faces]  (or [gpu])") from exc
 
-    app = FaceAnalysis(name=cfg.model, providers=providers(cfg.device))
-    ctx_id = 0 if "CUDAExecutionProvider" in providers(cfg.device) else -1
-    app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+    provs = providers(cfg.device)
+    # FaceAnalysis() fetches the pack to disk; prepare() builds CUDA sessions.
+    # Keep the download off the GPU lease so a cold start does not block lens.
+    app = FaceAnalysis(name=cfg.model, providers=provs)
+    ctx_id = 0 if "CUDAExecutionProvider" in provs else -1
+    with gpu_lease(cfg.device, "faces", "load", wait_s=lease_wait_s):
+        app.prepare(ctx_id=ctx_id, det_size=(640, 640))
     return app
 
 
@@ -256,6 +260,7 @@ def detect_faces(
     progress: Callable[[int, int], None] | None = None,
     on_done: Callable[[ImageResult, int, int], None] | None = None,
     strict: bool = False,
+    lease_wait_s: float | None = None,
 ) -> DetectedFaces:
     """Detect faces and run MiVOLO and FairFace. Identity clustering is separate.
 
@@ -266,13 +271,20 @@ def detect_faces(
     A scan logs and skips an image the detector cannot read. With *strict* that
     raises instead, so a single-image caller (``POST /faces``) cannot mistake a
     failed detection for "no faces".
+
+    On CUDA each image runs under the host's GPU lease (:func:`runtime.gpu_lease`),
+    taken per image so another argus process can use the card between them.
+    *lease_wait_s* caps each wait. A lease that times out raises
+    :class:`~argus_cortex.gpu.GpuLeaseTimeout`, failing the call rather than
+    reading as an image with no faces.
     """
     empty = DetectedFaces([], [], [])
     if not cfg.enabled:
         return empty
 
-    app = _get_app(cfg)
-    sessions = _attribute_sessions(cfg)
+    app = _get_app(cfg, lease_wait_s=lease_wait_s)
+    with gpu_lease(cfg.device, "faces", "load", wait_s=lease_wait_s):
+        sessions = _attribute_sessions(cfg)
     data_by_rel = {rel: data for rel, _abs, data in items}
     result_by_rel = {r.rel_path: r for r in results}
     found = DetectedFaces([], [], [])
@@ -290,57 +302,73 @@ def detect_faces(
         if bgr is None and strict:
             raise ValueError(f"cannot decode {rel} for face detection")
         if bgr is not None:
-            try:
-                with _INFER_LOCK:
-                    detections = app.get(bgr)
-            except Exception as exc:
-                if strict:
-                    raise
-                logger.warning("face_detect_failed", rel_path=rel, error=str(exc))
-                detections = None
-            if detections is not None:
-                h, w = bgr.shape[:2]
-                kept = 0
-                kps_by_face: list[np.ndarray | None] = []
-                for face in detections:
-                    det_score = float(getattr(face, "det_score", 0.0))
-                    if det_score < cfg.min_det_score:
-                        continue
-                    x1, y1, x2, y2 = (float(v) for v in face.bbox)
-                    bbox = [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)]
-                    emb = getattr(face, "normed_embedding", None)
-                    if emb is None:
-                        emb = getattr(face, "embedding", None)
-                        if emb is None:
-                            continue
-                        emb = emb / (np.linalg.norm(emb) + 1e-9)
-                    area = bbox[2] * bbox[3]
-                    yaw, pitch = _extract_pose(face)
-                    found.embeddings.append(np.asarray(emb, dtype=np.float32))
-                    found.meta.append((rel, kept, bbox, det_score, _centrality(bbox, w, h), area))
-                    r.faces.append(
-                        FaceDetection(
-                            bbox=bbox,
-                            det_score=round(det_score, 4),
-                            yaw=round(yaw, 2) if yaw is not None else None,
-                            pitch=round(pitch, 2) if pitch is not None else None,
-                            pose=classify_pose(yaw, cfg),
-                        )
-                    )
-                    kps_by_face.append(getattr(face, "kps", None))
-                    kept += 1
-                r.face_count = kept
-                raws = _face_attributes(sessions, bgr, kps_by_face, [f.bbox for f in r.faces], rel)
-                for f, raw in zip(r.faces, raws, strict=True):
-                    f.attributes = to_attributes(raw)
-                found.raws.extend(raws)
-                _assign_primary(r)
+            with gpu_lease(cfg.device, "faces", wait_s=lease_wait_s):
+                _detect_one(app, sessions, bgr, rel, r, cfg, found, strict)
         if on_done is not None:
             on_done(r, i + 1, total)
 
     if progress is not None:
         progress(total, total)
     return found
+
+
+def _detect_one(
+    app: object,
+    sessions: tuple[object | None, object | None],
+    bgr: np.ndarray,
+    rel: str,
+    r: ImageResult,
+    cfg: FaceConfig,
+    found: DetectedFaces,
+    strict: bool,
+) -> None:
+    """Faces, embeddings and attributes for one decoded image, recorded on *r* and *found*."""
+    try:
+        with _INFER_LOCK:
+            detections = app.get(bgr)  # type: ignore[attr-defined]
+    except Exception as exc:
+        if strict:
+            raise
+        logger.warning("face_detect_failed", rel_path=rel, error=str(exc))
+        detections = None
+    if detections is None:
+        return
+    h, w = bgr.shape[:2]
+    kept = 0
+    kps_by_face: list[np.ndarray | None] = []
+    for face in detections:
+        det_score = float(getattr(face, "det_score", 0.0))
+        if det_score < cfg.min_det_score:
+            continue
+        x1, y1, x2, y2 = (float(v) for v in face.bbox)
+        bbox = [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)]
+        emb = getattr(face, "normed_embedding", None)
+        if emb is None:
+            emb = getattr(face, "embedding", None)
+            if emb is None:
+                continue
+            emb = emb / (np.linalg.norm(emb) + 1e-9)
+        area = bbox[2] * bbox[3]
+        yaw, pitch = _extract_pose(face)
+        found.embeddings.append(np.asarray(emb, dtype=np.float32))
+        found.meta.append((rel, kept, bbox, det_score, _centrality(bbox, w, h), area))
+        r.faces.append(
+            FaceDetection(
+                bbox=bbox,
+                det_score=round(det_score, 4),
+                yaw=round(yaw, 2) if yaw is not None else None,
+                pitch=round(pitch, 2) if pitch is not None else None,
+                pose=classify_pose(yaw, cfg),
+            )
+        )
+        kps_by_face.append(getattr(face, "kps", None))
+        kept += 1
+    r.face_count = kept
+    raws = _face_attributes(sessions, bgr, kps_by_face, [f.bbox for f in r.faces], rel)
+    for f, raw in zip(r.faces, raws, strict=True):
+        f.attributes = to_attributes(raw)
+    found.raws.extend(raws)
+    _assign_primary(r)
 
 
 def cluster_identities(

@@ -1428,3 +1428,75 @@ async def test_faces_burst_does_not_queue_past_a_free_slot(tmp_path: Path, monke
         rest = await asyncio.gather(holder, *racers)
     assert [r.status_code for r in rest].count(200) == 2
     assert [r.status_code for r in rest].count(503) == 7
+
+
+def test_faces_503_with_retry_after_when_the_gpu_is_busy(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No GPU slot within the wait is "try again", never "no faces"."""
+    from argus_cortex.gpu import GpuLeaseTimeout
+
+    waits: list[float | None] = []
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        waits.append(kwargs.get("lease_wait_s"))
+        raise GpuLeaseTimeout("GPU 0 had 900 MB free, argus-curator:faces:run needs 512 MB")
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    resp = client.post("/faces", content=_png_bytes())
+    assert resp.status_code == 503 and resp.headers["retry-after"] == "5"
+    assert resp.json()["detail"].startswith("GPU busy:")
+    assert waits == [30.0]
+
+
+def test_health_reports_the_gpu_coordinator(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_cortex.gpu import NullCoordinator
+
+    monkeypatch.setattr("argus_curator.runtime._coordinator", NullCoordinator())
+    assert client.get("/health").json()["gpu_coordinator"] == "none"
+
+
+def test_health_reports_lease_when_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("argus_curator.runtime._coordinator", None)
+    monkeypatch.setenv("ARGUS_GPU_COORDINATOR", "lease")
+    monkeypatch.setenv("ARGUS_GPU_LEASE_PATH", str(tmp_path / "gpu.lock"))
+    assert client.get("/health").json()["gpu_coordinator"] == "lease"
+
+
+def test_scan_503_when_the_gpu_is_busy(contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_cortex.gpu import GpuLeaseTimeout
+
+    from argus_curator.server import app as app_mod
+
+    def boom(*_a, **_k):  # noqa: ANN002, ANN003
+        raise GpuLeaseTimeout("busy")
+
+    monkeypatch.setattr(app_mod.scanner, "scan_folder", boom)
+    client, _exports = contained
+    resp = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}})
+    assert resp.status_code == 503 and resp.headers["retry-after"] == "5"
+    assert resp.json()["detail"].startswith("GPU busy:")
+
+
+def test_scan_stream_drops_a_partial_cache_when_the_gpu_is_busy(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_cortex.gpu import GpuLeaseTimeout
+
+    from argus_curator.server import app as app_mod
+
+    def fake_scan_folder(folder, profile, cfg, faces_cfg, *, scan_id, progress, cancelled, save=None, **_):  # noqa: ANN001, ANN003
+        if save is not None:
+            save(_summary(scan_id, str(folder), total=3))
+        raise GpuLeaseTimeout("busy")
+
+    monkeypatch.setattr(app_mod.scanner, "scan_folder", fake_scan_folder)
+    client, _exports = contained
+    resp = client.post("/scan/folder/stream", json={"folder": "", "faces": {"enabled": False}})
+    events = _parse_sse(resp.text)
+    assert events[-1][0] == "error"
+    assert events[-1][1]["detail"].startswith("GPU busy:")
+    assert events[-1][1]["retry_after"] == 5
+    assert client.get("/scans").json()["scans"] == []
