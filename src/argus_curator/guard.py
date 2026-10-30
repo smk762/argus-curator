@@ -29,9 +29,11 @@ which also downscales images over 1536 px before sending.
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
+import structlog
 from argus_cortex.moderation import (
     THINKING_MODES,
     GuardCheckFailed,  # noqa: F401 - re-exported
@@ -158,13 +160,68 @@ def describe_policies() -> list[dict[str, str | None]]:
     return described
 
 
-def client(name: GuardPolicy = "default") -> SingGuardClient | None:
+logger = structlog.get_logger()
+
+# Modes only some servers take (argus-cull's and agent-composer's singguard);
+# a stock SingGuard server answers HTTP 400 to them.
+EXTENDED_MODES = frozenset({"slow", "cascade"})
+FALLBACK_THINKING = "fast"
+
+
+class FallbackClient:
+    """A SingGuard client that asks for an extended mode and drops to ``fast`` when the server refuses it.
+
+    On HTTP 400 the same check is retried in ``fast``; only if that succeeds is the
+    server taken not to know the mode, and every later check goes straight to
+    ``fast``. A 400 that ``fast`` also gets (a bad image, a refused policy) is
+    raised as it came, and the mode is kept. A verdict judged in the fallback says
+    ``thinking: "fast"``, so a scan records the mode that actually judged it.
+    """
+
+    def __init__(self, url: str, timeout: float, mode: str, policy_text: str | None) -> None:
+        self.primary = SingGuardClient(url, timeout=timeout, thinking=mode, policy=policy_text)
+        self.fallback = (
+            SingGuardClient(url, timeout=timeout, thinking=FALLBACK_THINKING, policy=policy_text)
+            if mode in EXTENDED_MODES
+            else None
+        )
+        self.fell_back = False
+        self._lock = threading.Lock()
+
+    @property
+    def thinking(self) -> str:
+        return FALLBACK_THINKING if self.fell_back else self.primary.thinking
+
+    def check(self, data: bytes, text: str = "") -> GuardResult:
+        if self.fell_back and self.fallback is not None:
+            return self._fallback_check(data, text)
+        try:
+            return self.primary.check(data, text=text)
+        except GuardCheckFailed as exc:
+            if self.fallback is None or "HTTP 400" not in str(exc):
+                raise
+            try:
+                result = self._fallback_check(data, text)
+            except GuardCheckFailed:
+                raise exc from None
+            with self._lock:
+                if not self.fell_back:
+                    self.fell_back = True
+                    logger.warning("singguard_mode_unsupported", asked=self.primary.thinking, using=FALLBACK_THINKING)
+            return result
+
+    def _fallback_check(self, data: bytes, text: str) -> GuardResult:
+        result = self.fallback.check(data, text=text)  # type: ignore[union-attr]
+        return result if result.thinking else result.model_copy(update={"thinking": FALLBACK_THINKING})
+
+
+def client(name: GuardPolicy = "default") -> FallbackClient | None:
     """A client for the configured server and policy *name*, or ``None`` when SingGuard is not configured."""
     url = endpoint()
     if url is None:
         return None
     _recorded, text = policy(name)
-    return SingGuardClient(url, timeout=float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT), thinking=thinking(), policy=text)
+    return FallbackClient(url, float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT), thinking(), text)
 
 
 def check_images(

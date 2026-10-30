@@ -616,3 +616,59 @@ def test_report_includes_guard_columns(tmp_path: Path) -> None:
     rows = {r["rel_path"]: r for r in csv.DictReader(report.open())}
     assert rows["granular-only.jpg"]["guard_variants"] == "adult=safe;adult-granular=unsafe[H]"
     assert rows["granular-missing.jpg"]["guard_variants"] == "adult=safe"
+
+
+class _Stub:
+    """A SingGuardClient stand-in: answers from *answers*, raising the ones that are errors."""
+
+    def __init__(self, thinking: str, answers: list) -> None:
+        self.thinking, self.answers, self.calls = thinking, list(answers), 0
+
+    def check(self, data: bytes, text: str = "") -> GuardResult:
+        self.calls += 1
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _fallback(primary: list, fallback: list | None, mode: str = "cascade") -> guard.FallbackClient:
+    client = guard.FallbackClient("http://guard:9150", 5.0, mode, None)
+    client.primary = _Stub(mode, primary)  # type: ignore[assignment]
+    client.fallback = _Stub("fast", fallback) if fallback is not None else None  # type: ignore[assignment]
+    return client
+
+
+def test_a_server_without_cascade_falls_back_to_fast_once() -> None:
+    """A stock SingGuard server answers 400 to cascade/slow; curator judges in fast and says so."""
+    from argus_cortex.moderation import GuardCheckFailed
+
+    refused = GuardCheckFailed("SingGuard returned HTTP 400")
+    client = _fallback([refused], [GuardResult(safe=True)])
+    first, second = client.check(b"x"), client.check(b"y")
+    assert first.thinking == second.thinking == "fast" and client.fell_back and client.thinking == "fast"
+    assert client.primary.calls == 1 and client.fallback.calls == 2  # the extended mode is not asked again
+
+
+def test_a_400_that_fast_also_gets_is_raised_and_keeps_the_mode() -> None:
+    from argus_cortex.moderation import GuardCheckFailed
+
+    bad_image = GuardCheckFailed("SingGuard returned HTTP 400")
+    client = _fallback([bad_image], [GuardCheckFailed("SingGuard returned HTTP 400")])
+    with pytest.raises(GuardCheckFailed) as exc:
+        client.check(b"x")
+    assert exc.value is bad_image and not client.fell_back and client.thinking == "cascade"
+
+
+def test_other_failures_and_plain_modes_never_fall_back() -> None:
+    from argus_cortex.moderation import GuardCheckFailed
+
+    timeout = GuardCheckFailed("SingGuard request failed: timed out")
+    client = _fallback([timeout], [GuardResult(safe=True)])
+    with pytest.raises(GuardCheckFailed, match="timed out"):
+        client.check(b"x")
+    assert client.fallback.calls == 0
+    assert guard.FallbackClient("http://guard:9150", 5.0, "fast", None).fallback is None
+    assert guard.FallbackClient("http://guard:9150", 5.0, "fast-slow", None).fallback is None
+    verdict = GuardResult(safe=True, thinking="slow")  # a server that says which mode it used is believed
+    assert _fallback([GuardCheckFailed("HTTP 400")], [verdict]).check(b"x").thinking == "slow"

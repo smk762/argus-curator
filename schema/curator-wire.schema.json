@@ -1430,6 +1430,35 @@
           "title": "People",
           "type": "array"
         },
+        "people_check": {
+          "anyOf": [
+            {
+              "enum": [
+                "ok",
+                "detection_failed",
+                "body_ages_failed"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "People Check"
+        },
+        "people_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "People Error"
+        },
         "phash": {
           "default": "",
           "title": "Phash",

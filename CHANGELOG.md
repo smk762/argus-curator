@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matched `face_index`, age). A person with no face still gets a body-only
   MiVOLO age. NudeNet detections are assigned to the overlapping person (else
   face); `minor-exposed` uses that pairing and fails closed on unassigned
-  exposure. `POST /faces?body=true` returns `people`.
+  exposure. `POST /faces?body=true` returns `people`. `people_check` (`ok`,
+  `detection_failed` or `body_ages_failed`, with `people_error`) says how the
+  person check went, on each result and in the `/faces` response, so an empty
+  `people` reads as "none found" only when it is `ok`.
 - SingGuard context kinds `scene`, `nsfw`, and `garments` send Places365,
   the NudeNet content rating, and Fashionpedia tags with the image. `age`
   includes body-only estimates. Compose defaults
@@ -59,7 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - SingGuard thinking defaults to `cascade` (`fast` on every image, `slow` on
-  what `fast` flags), including `docker-compose.yaml`.
+  what `fast` flags), including `docker-compose.yaml`. A server without the
+  mode (stock SingGuard answers 400 to `cascade` and `slow`) is retried in
+  `fast`; once `fast` works there, the rest of the run is judged in `fast`,
+  `singguard_mode_unsupported` is logged once, and each such verdict records
+  `thinking: "fast"`. A 400 that `fast` also gets is raised as it came.
 
 - InsightFace is pinned to 2.x (`>=2.1,<3`; it had no upper bound, and a GPU
   image build had picked up 2.1 unasked), with `scikit-image<2.2`, whose 2.2

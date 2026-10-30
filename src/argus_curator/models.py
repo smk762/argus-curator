@@ -349,6 +349,9 @@ class FaceDetection(BaseModel):
     exposed_score: float = 0.0
 
 
+PeopleCheck = Literal["ok", "detection_failed", "body_ages_failed"]
+
+
 class PersonDetection(BaseModel):
     """One person box from InsightFace's Cheetah detector (FaceConfig.mivolo_body).
 
@@ -457,6 +460,13 @@ class ImageResult(BaseModel):
     # Person boxes from Cheetah when FaceConfig.mivolo_body ran. Empty means it
     # was not asked, or it found none — unlike garments, this is never None.
     people: list[PersonDetection] = Field(default_factory=list)
+    # How the person check went (FaceConfig.mivolo_body): None = not asked for,
+    # or face detection on the image failed before it;
+    # "ok"; "detection_failed" = the person detector failed, so `people` is empty
+    # and the faces ran face-only; "body_ages_failed" = people were found but
+    # MiVOLO's body-only ages failed. An empty `people` with "ok" means none found.
+    people_check: PeopleCheck | None = None
+    people_error: str | None = None
     primary_face_cluster: str | None = None
     # Orientation of the primary face (for pose-balanced subset selection).
     primary_face_pose: FacePose | None = None

@@ -244,6 +244,10 @@ def _face_attributes(
     return raws
 
 
+class _PeopleCheckFailed(RuntimeError):
+    """The person detector, matching or cropping failed; the faces run face-only."""
+
+
 def _record_people(
     body_detector: object,
     bgr: np.ndarray,
@@ -252,7 +256,11 @@ def _record_people(
     cfg: FaceConfig,
     rel: str,
 ) -> tuple[list[PersonDetection], list[object] | None, object]:
-    """Detect people, match them to *face_bboxes*, return people, per-face crops, and xyxy boxes."""
+    """Detect people, match them to *face_bboxes*, return people, per-face crops, and xyxy boxes.
+
+    Raises :class:`_PeopleCheckFailed` when any step fails, so the caller records
+    ``people_check = "detection_failed"`` rather than an empty list that reads as none found.
+    """
     from argus_curator import bodies
 
     # Matching and cropping fail like detection does: the faces run face-only.
@@ -270,7 +278,7 @@ def _record_people(
         people = bodies.to_people(boxes, scores, matched)
     except Exception as exc:
         logger.warning("body_detect_failed", rel_path=rel, error=str(exc))
-        return [], None, None
+        raise _PeopleCheckFailed(str(exc)) from exc
     return people, crops, boxes
 
 
@@ -313,6 +321,7 @@ def _link_people(
         preds = mivolo.predict_bodies(mv_session, [crop for _, crop in unmatched])
     except Exception as exc:
         logger.warning("mivolo_body_only_failed", rel_path=rel, error=str(exc))
+        r.people_check, r.people_error = "body_ages_failed", str(exc)[:300]
         return
     for (i, _crop), pred in zip(unmatched, preds, strict=True):
         _gender, years = pred
@@ -467,9 +476,13 @@ def _detect_one(
     body_crops = None
     boxes_xyxy = None
     if body_detector is not None:
-        r.people, body_crops, boxes_xyxy = _record_people(
-            body_detector, bgr, image, [f.bbox for f in r.faces], cfg, rel
-        )
+        try:
+            r.people, body_crops, boxes_xyxy = _record_people(
+                body_detector, bgr, image, [f.bbox for f in r.faces], cfg, rel
+            )
+            r.people_check = "ok"
+        except _PeopleCheckFailed as exc:
+            r.people, r.people_check, r.people_error = [], "detection_failed", str(exc)[:300]
     raws = _face_attributes(sessions, image, kps_by_face, [f.bbox for f in r.faces], rel, body_crops=body_crops)
     for f, raw in zip(r.faces, raws, strict=True):
         f.attributes = to_attributes(raw)

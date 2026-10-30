@@ -353,6 +353,9 @@ def _faces_from_bytes(data: bytes, body: bool = False) -> dict[str, Any]:
         faces.append(row)
     out: dict[str, Any] = {"source": "mivolo", "faces": faces}
     if body:
+        # Says whether an empty or age-less `people` means "none found" or "the check failed".
+        out["people_check"] = result.people_check
+        out["people_error"] = result.people_error
         out["people"] = [
             {
                 "bbox": list(person.bbox),
