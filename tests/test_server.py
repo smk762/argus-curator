@@ -1500,3 +1500,23 @@ def test_scan_stream_drops_a_partial_cache_when_the_gpu_is_busy(
     assert events[-1][1]["detail"].startswith("GPU busy:")
     assert events[-1][1]["retry_after"] == 5
     assert client.get("/scans").json()["scans"] == []
+
+
+def test_faces_body_query_asks_mivolo_for_bodies(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.models import FaceAttributes, FaceDetection
+
+    asked: list[bool] = []
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        asked.append(cfg.mivolo_body)
+        attrs = FaceAttributes(age_years=34.2, age_source="mivolo", age_body=cfg.mivolo_body)
+        results[0].faces.append(FaceDetection(bbox=[10.0, 20.0, 30.0, 40.0], det_score=0.9, attributes=attrs))
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    plain = client.post("/faces", content=_png_bytes()).json()["faces"][0]
+    with_body = client.post("/faces?body=true", content=_png_bytes()).json()["faces"][0]
+    assert asked == [False, True]
+    assert "age_body" not in plain  # unchanged for callers that do not ask
+    assert with_body["age_body"] is True and with_body["age_estimate_years"] == 34.2

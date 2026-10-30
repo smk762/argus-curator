@@ -60,6 +60,7 @@ class RawAttributes:
     fairface: np.ndarray | None = None  # (18,) per-head probabilities
     mivolo_gender: np.ndarray | None = None  # (2,) [male, female]
     mivolo_age: float | None = None
+    mivolo_body: bool = False  # the age was read with a body crop
 
     def empty(self) -> bool:
         return self.fairface is None and self.mivolo_gender is None
@@ -84,6 +85,7 @@ def to_attributes(raw: RawAttributes) -> FaceAttributes | None:
         out.age_years = round(raw.mivolo_age, 1)
         # A regression has no probability; the bracket is derived, not scored.
         out.age, out.age_conf, out.age_source = age_bracket(raw.mivolo_age), None, "mivolo"
+        out.age_body = raw.mivolo_body
     return out
 
 
@@ -96,10 +98,13 @@ def pool(raws: list[RawAttributes]) -> FaceAttributes | None:
     ff = [r.fairface for r in raws if r.fairface is not None]
     mg = [r.mivolo_gender for r in raws if r.mivolo_gender is not None]
     ma = [r.mivolo_age for r in raws if r.mivolo_age is not None]
-    return to_attributes(
+    pooled = to_attributes(
         RawAttributes(
             fairface=np.mean(np.vstack(ff), axis=0) if ff else None,
             mivolo_gender=np.mean(np.vstack(mg), axis=0) if mg else None,
             mivolo_age=statistics.median(ma) if ma else None,
         )
     )
+    if pooled is not None:
+        pooled.age_body = None  # a median over faces, read with a body or not
+    return pooled

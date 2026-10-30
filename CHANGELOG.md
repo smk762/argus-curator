@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MiVOLO can read each face's body as well as its face:
+  `FaceConfig.mivolo_body` (`--mivolo-body`, `POST /faces?body=true`). Bodies
+  come from InsightFace 2.1's person detector, the one model of the
+  `cheetah_l` pack, loaded alone. Faces get bodies by one-to-one assignment
+  and body crops are masked as MiVOLO masks them, with MiVOLO's thresholds as
+  request fields (`body_min_score`, `body_min_size`, `body_min_visible`,
+  `body_face_match`). `FaceAttributes.age_body` records whether a body was
+  used. Off by default while it is evaluated: `scripts/age_eval.py` compares
+  face-only and face+body ages on labelled images, including how many minors
+  each reads as adults.
 - On CUDA, curator takes argus-cortex 0.4.3's host-wide GPU lease
   (`argus_cortex.gpu`) around each image's model run (faces with MiVOLO and
   FairFace, Places365 batches, garments) and around each model load. It is off
@@ -34,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every model silently ran on CPU: those libraries are off the loader's path.
   `runtime.providers()` now calls onnxruntime's `preload_dlls()` once when it
   picks CUDA.
+
+### Changed
+
+- InsightFace is pinned to 2.x (`>=2.1,<3`; it had no upper bound, and a GPU
+  image build had picked up 2.1 unasked), with `scikit-image<2.2`, whose 2.2
+  removes a call InsightFace's face alignment makes.
+- InsightFace loads only detection, recognition and the 3D-68 landmarks. The
+  pack's gender/age model (MiVOLO replaces it) and its 2D-106 landmarks were
+  loaded and never read: about 28% less time per image on CPU, with identical
+  embeddings and pose.
 
 ## [0.9.0] - 2026-10-30
 

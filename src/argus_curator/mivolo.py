@@ -2,10 +2,11 @@
 
 MiVOLO (Kuprashevich & Tolstykh, 2023; ``iitolstykh/mivolo_v2``, Apache-2.0)
 is a VOLO transformer that reads a face crop and a person crop side by side.
-We have no person detector, so every face runs face-only — the person channels
-carry the same "absent" image upstream feeds when ``body_crops`` is ``None``
-(zeros, then normalised). That is a supported mode, at some cost in accuracy
-against the face+body numbers MiVOLO publishes.
+With ``FaceConfig.mivolo_body`` each face is given its body from InsightFace's
+person detector (see :mod:`bodies`); otherwise, or for a face with no usable
+body, the person channels carry the "absent" image upstream feeds when
+``body_crops`` is ``None`` (zeros, then normalised). Face-only is a supported
+mode, at some cost in accuracy against the face+body numbers MiVOLO publishes.
 
 Output is ``[gender logit x2, normalised age]``; age in years is
 ``raw * (max_age - min_age) + avg_age`` from the checkpoint's config. Age is a
@@ -91,11 +92,17 @@ def face_crop(image: Image.Image, bbox_xywh: list[float]) -> Image.Image | None:
     return image.crop((x1, y1, x2, y2))
 
 
-def preprocess(crops: list[Image.Image]) -> np.ndarray:
-    """``(N, 6, 384, 384)``: normalised face channels + absent-person channels."""
-    faces = np.stack([np.asarray(letterbox(c), dtype=np.float32) / 255.0 for c in crops])
-    faces = ((faces - IMAGENET_MEAN) / IMAGENET_STD).transpose(0, 3, 1, 2)
-    persons = np.broadcast_to(_ABSENT, faces.shape)
+def _channels(crop: Image.Image) -> np.ndarray:
+    """``(3, 384, 384)``: *crop* letterboxed and normalised as MiVOLO was trained."""
+    pixels = np.asarray(letterbox(crop), dtype=np.float32) / 255.0
+    return ((pixels - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1)
+
+
+def preprocess(crops: list[Image.Image], bodies: list[Image.Image | None] | None = None) -> np.ndarray:
+    """``(N, 6, 384, 384)``: normalised face channels + person channels (absent when no body)."""
+    bodies = bodies if bodies is not None else [None] * len(crops)
+    faces = np.stack([_channels(c) for c in crops])
+    persons = np.stack([_ABSENT if b is None else _channels(b) for b in bodies])
     return np.concatenate([faces, persons], axis=1).astype(np.float32)
 
 
@@ -107,14 +114,23 @@ def decode(output: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return gender, np.clip(age, _MIN_AGE, _MAX_AGE)
 
 
-def predict(session, image: Image.Image, bboxes: list[list[float]]) -> list[tuple[np.ndarray, float] | None]:
-    """Per face: ``(gender_probs, age_years)``, or ``None`` for a degenerate box."""
+def predict(
+    session,
+    image: Image.Image,
+    bboxes: list[list[float]],
+    body_crops: list[Image.Image | None] | None = None,
+) -> list[tuple[np.ndarray, float] | None]:
+    """Per face: ``(gender_probs, age_years)``, or ``None`` for a degenerate box.
+
+    *body_crops*, one per box, are the faces' masked bodies (:func:`bodies.crops_for_faces`);
+    ``None`` for a face, or for all of them, runs that face face-only.
+    """
     crops = [face_crop(image, b) for b in bboxes]
     idx = [i for i, c in enumerate(crops) if c is not None]
     out: list[tuple[np.ndarray, float] | None] = [None] * len(bboxes)
     if not idx:
         return out
-    batch = preprocess([crops[i] for i in idx])
+    batch = preprocess([crops[i] for i in idx], [body_crops[i] for i in idx] if body_crops is not None else None)
     input_name = session.get_inputs()[0].name
     (raw,) = session.run(None, {input_name: batch})
     gender, age = decode(raw)

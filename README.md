@@ -197,7 +197,7 @@ Two optional models read each detected face; either switch implies `--faces`.
 |---|---|---|
 | Predicts | race (7), gender, age bracket | age in **years**, gender |
 | Confidence | softmax probability per label | gender probability; age is a regression (none) |
-| Input | 224 px chip aligned on the 5 face keypoints | 384 px face box, letterboxed; face-only |
+| Input | 224 px chip aligned on the 5 face keypoints | 384 px face box, letterboxed; plus the body with `--mivolo-body` |
 | Weights | CC BY 4.0, Google Drive | Apache-2.0, Hugging Face |
 
 Race labels: white, black, latino_hispanic, east_asian, southeast_asian,
@@ -212,9 +212,35 @@ pooled per identity cluster (`face_clusters[].attributes`): probabilities are
 averaged and ages take the median over every member face, so one odd frame
 cannot flip or drag an identity's label.
 
-MiVOLO is built to read a face *and* a person crop; there is no person
-detector here, so it runs face-only (a supported mode, slightly less accurate
-than MiVOLO's published face+body numbers).
+MiVOLO is built to read a face *and* a person crop, and its published accuracy
+is for the pair. By default it runs face-only (a supported mode, slightly less
+accurate). `--mivolo-body` (`"faces": {"mivolo_body": true}`; `POST
+/faces?body=true`) gives each face its body from InsightFace 2.1's person
+detector, the one model of the `cheetah_l` pack (30 MB; fetched to
+`~/.insightface` on first use). Under evaluation, so off by default.
+
+- Faces get bodies by one-to-one assignment, scoring each pair as the mean of
+  their IoU and the share of the face inside the body (`body_face_match`,
+  0.0001).
+- As MiVOLO does, the body crop has every face on it blacked out (its own too:
+  the face channel carries that) and every other person on it, with a masked
+  person edge within 30% of the crop's edge stretched to it.
+- A body under `body_min_score` (0.5) or `body_min_size` (50 px), or with less
+  than `body_min_visible` (40%) left after masking, is not used, and that face
+  runs face-only. In a packed group photo most bodies fail that last test, as
+  they do in MiVOLO. The thresholds are request fields beside `mivolo_body`,
+  so a cached scan records the ones its ages were read with.
+- `faces[].attributes.age_body` says whether an age was read with a body.
+
+`scripts/age_eval.py labels.csv` compares the two modes on images of known
+age: mean and median error, share within 5 years, and how many subjects under
+18 were read as 18 or over.
+
+InsightFace loads only the models curator reads: detection, recognition, and
+the 3D-68 landmarks behind head pose. The pack's own gender/age model (MiVOLO
+replaces it) and its 106-point landmarks are skipped, about 28% less time per
+image on CPU with identical embeddings and pose. The Cheetah models carry
+InsightFace's non-commercial licence, like `buffalo_l`.
 
 These are a model's guess from appearance, not facts about anyone; expect
 errors on ambiguous faces, mixed heritage, heavy makeup or poor lighting, and
