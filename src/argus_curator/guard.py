@@ -13,7 +13,8 @@ apparent minors. Requests choose a policy by name, never by text.
 SingGuard gives no scores, so its filters are by verdict and by rule. It runs
 a vision language model: expect about a second per image in ``fast`` mode and
 several with ``fast-slow`` or ``slow``. The default is ``cascade`` (``fast``
-for every image, ``slow`` only for what ``fast`` flags).
+for every image, ``slow`` for what ``fast`` flags and for a MiVOLO age under
+18 with an exposed NudeNet score of at least 0.2).
 
 ``ARGUS_CURATOR_SINGGUARD_CONTEXT`` sends what the scan already knows about an
 image (its MiVOLO age, its folder, its caption sidecar, and optionally scene,
@@ -41,8 +42,9 @@ from argus_cortex.moderation import (
     SingGuardClient,
     policy_name,
     rule_letter,  # noqa: F401 - re-exported for the CLI
-    rule_matches,  # noqa: F401 - re-exported for selection
+    rule_matches,  # noqa: F401 - re-exported
 )
+from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import (
     ADULT_CAUTIOUS_POLICY,
     ADULT_GRANULAR_POLICY,
@@ -50,10 +52,12 @@ from argus_cortex.moderation.policies import (
     POLICIES,
 )
 
-from argus_curator.guard_context import CONTEXT_KINDS, image_context
+from argus_curator.guard_context import CONTEXT_KINDS, body_only_ages, image_context, mivolo_ages
 from argus_curator.models import GuardConfig, GuardPolicy, GuardResult, ImageResult
+from argus_curator.nsfw import exposed_score
 from argus_curator.remote import check_all, env_set, env_value, float_env
 from argus_curator.runtime import ModelUnavailable
+from argus_curator.selection import minor_exposed
 
 URL_ENV = "ARGUS_CURATOR_SINGGUARD_URL"
 TIMEOUT_ENV = "ARGUS_CURATOR_SINGGUARD_TIMEOUT"
@@ -215,13 +219,39 @@ class FallbackClient:
         return result if result.thinking else result.model_copy(update={"thinking": FALLBACK_THINKING})
 
 
-def client(name: GuardPolicy = "default") -> FallbackClient | None:
-    """A client for the configured server and policy *name*, or ``None`` when SingGuard is not configured."""
+def client(name: GuardPolicy = "default", *, mode: str | None = None) -> FallbackClient | None:
+    """A client for the configured server and policy *name*, or ``None`` when SingGuard is not configured.
+
+    *mode* overrides :func:`thinking` for one client: cascade sends most frames
+    in ``cascade``, and the under-18 + exposure pairing in ``slow``.
+    """
     url = endpoint()
     if url is None:
         return None
     _recorded, text = policy(name)
-    return FallbackClient(url, float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT), thinking(), text)
+    return FallbackClient(url, float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT), mode or thinking(), text)
+
+
+def force_slow(result: ImageResult, mode: str) -> bool:
+    """Under cascade, skip the fast screen when a young age shares the frame with exposure.
+
+    Fast is only there to save work. A MiVOLO age under 18 with an exposed
+    NudeNet score of at least 0.2 already holds and deletes the frame, so it
+    is cheap to send it to slow. Measured faces and body-only ages go through
+    :func:`minor_exposed`. A faceless frame that took the set's age uses the
+    same pairing.
+    """
+    if mode != "cascade":
+        return False
+    if minor_exposed(result):
+        return True
+    if mivolo_ages(result) or body_only_ages(result):
+        return False
+    if result.set_age is None or result.set_age.years >= 18:
+        return False
+    if result.nsfw is None:
+        return False
+    return exposed_score(result.nsfw.labels) >= MIN_REPORTED_SCORE
 
 
 def check_images(
@@ -244,6 +274,10 @@ def check_images(
     clients = {name: client(name) for name in names}
     if clients[cfg.policy] is None:
         raise ModelUnavailable(f"SingGuard check requested but {URL_ENV} is not set")
+    mode = thinking()
+    # Cascade's fast pass is a screen. Under-18 + exposure skips it and is judged slow.
+    slow_clients = {name: client(name, mode="slow") for name in names} if mode == "cascade" else {}
+    by_rel = {r.rel_path: r for r in results}
     workers = int(float_env(WORKERS_ENV, DEFAULT_WORKERS))
     has_data = {rel for rel, _abs, data in items if data is not None}
     pending = sum(1 for r in results if r.rel_path in has_data)
@@ -254,6 +288,7 @@ def check_images(
 
     for offset, name in enumerate(names):
         guard = clients[name]
+        slow = slow_clients.get(name)
         # The client names a policy by its text's hash; record the name asked for.
         recorded, _text = policy(name)
         official = name == cfg.policy
@@ -265,12 +300,23 @@ def check_images(
             if cfg.variants:
                 r.guard_variants = {**(r.guard_variants or {}), name: value}
 
+        def check(
+            data: bytes,
+            rel: str,
+            guard: FallbackClient | None = guard,
+            slow: FallbackClient | None = slow,
+            recorded: str = recorded,
+            mode: str = mode,
+        ) -> GuardResult:
+            row = by_rel.get(rel)
+            chosen = slow if slow is not None and row is not None and force_slow(row, mode) else guard
+            assert chosen is not None
+            return chosen.check(data, text=contexts.get(rel, "")).model_copy(update={"policy": recorded})
+
         check_all(
             results,
             items,
-            lambda data, rel, guard=guard, recorded=recorded: guard.check(data, text=contexts.get(rel, "")).model_copy(
-                update={"policy": recorded}
-            ),
+            check,
             "guard" if official else f"guard:{name}",
             workers,
             (lambda done, _total, base=base: progress(base + done, grand_total)) if progress else None,

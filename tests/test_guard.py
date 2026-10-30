@@ -31,6 +31,7 @@ from argus_curator.models import (
     GuardConfig,
     GuardResult,
     ImageResult,
+    NsfwResult,
     ScanConfig,
     ScanSummary,
     SetAge,
@@ -195,6 +196,56 @@ def test_check_images_posts_each_image_and_records_results(singguard: type[_Sing
     assert {s["path"] for s in singguard.seen} == {"/api/guard/check"}
     assert {s["input"] for s in singguard.seen} == {""} and {s["thinking"] for s in singguard.seen} == {"cascade"}
     assert all("policy" not in s for s in singguard.seen)  # default rules
+
+
+def _young_exposed(rel: str, years: float = 16.0) -> ImageResult:
+    """A frame the under-18 + exposure pairing holds on: cascade should judge it slow."""
+    return ImageResult(
+        rel_path=rel,
+        abs_path=f"/d/{rel}",
+        passed=True,
+        faces=[
+            FaceDetection(
+                bbox=[0, 0, 10, 10],
+                det_score=0.9,
+                primary=True,
+                attributes=FaceAttributes(age_years=years, age_source="mivolo"),
+            )
+        ],
+        primary_face_attributes=FaceAttributes(age_years=years, age_source="mivolo"),
+        nsfw=NsfwResult(detections=[], labels={"FEMALE_BREAST_EXPOSED": 0.5}, exposed_score=0.5),
+    )
+
+
+def test_force_slow_is_the_under_18_exposed_pairing() -> None:
+    young = _young_exposed("young.png")
+    adult = _young_exposed("adult.png", years=22.0)
+    covered = _young_exposed("covered.png")
+    covered.nsfw = NsfwResult(detections=[], labels={"FEMALE_BREAST_COVERED": 0.9}, exposed_score=0.0)
+    faceless = ImageResult(
+        rel_path="body.png",
+        abs_path="/d/body.png",
+        passed=True,
+        set_age=SetAge(years=16.2, cluster_id="face_1", faces=12, share=0.96),
+        nsfw=NsfwResult(detections=[], labels={"BUTTOCKS_EXPOSED": 0.3}, exposed_score=0.3),
+    )
+    assert guard.force_slow(young, "cascade") is True
+    assert guard.force_slow(adult, "cascade") is False
+    assert guard.force_slow(covered, "cascade") is False
+    assert guard.force_slow(young, "fast") is False
+    assert guard.force_slow(young, "fast-slow") is False
+    assert guard.force_slow(young, "slow") is False
+    assert guard.force_slow(faceless, "cascade") is True
+    adult_set = faceless.model_copy(update={"set_age": SetAge(years=24.0, cluster_id="face_1", faces=12, share=0.96)})
+    assert guard.force_slow(adult_set, "cascade") is False
+
+
+def test_cascade_sends_minor_exposed_to_slow(singguard: type[_SingGuard]) -> None:
+    young = _young_exposed("young.png")
+    other = ImageResult(rel_path="other.png", abs_path="/d/other.png", passed=True)
+    items = [(young.rel_path, young.abs_path, _png(10)), (other.rel_path, other.abs_path, _png(10))]
+    assert guard.check_images([young, other], items, GuardConfig())
+    assert sorted(s["thinking"] for s in singguard.seen) == ["cascade", "slow"]
 
 
 def test_policy_file_is_sent_and_recorded(
