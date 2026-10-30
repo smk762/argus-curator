@@ -116,3 +116,21 @@ def test_a_lease_timeout_fails_a_scan_rather_than_skipping_faces(monkeypatch: py
     results, items = _items(400)
     with pytest.raises(GpuLeaseTimeout):
         faces.detect_faces(results, items, FaceConfig(enabled=True, device="cuda"))  # strict=False, a scan
+
+
+def test_cuda_libraries_are_preloaded_once_and_only_for_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    """onnxruntime-gpu's pip-wheel CUDA libraries are off the loader path; without the preload, CPU fallback."""
+    import sys
+    import types
+
+    calls: list[int] = []
+    fake = types.ModuleType("onnxruntime")
+    fake.get_available_providers = lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]  # type: ignore[attr-defined]
+    fake.preload_dlls = lambda: calls.append(1)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    monkeypatch.setattr(runtime, "_cuda_preloaded", False)
+    assert runtime.providers("cpu") == ["CPUExecutionProvider"] and calls == []
+    assert runtime.providers("auto") == _CUDA and runtime.providers("cuda") == _CUDA
+    assert calls == [1]
+    fake.get_available_providers = lambda: ["CPUExecutionProvider"]  # type: ignore[attr-defined]
+    assert runtime.providers("auto") == ["CPUExecutionProvider"]

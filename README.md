@@ -662,6 +662,13 @@ library, pass `cancelled=` (a callable returning True to stop) to
 docker compose up --build
 ```
 
+Builds the CUDA image and gives it the GPU (it needs the NVIDIA container
+runtime). `CURATOR_GPU=0` in `.env` builds the CPU image instead. Releases
+publish both: `ghcr.io/smk762/argus-curator:<version>` (CPU) and
+`:<version>-gpu` / `:latest-gpu`. The GPU image installs `[gpu]`, with the CUDA
+13 and cuDNN 9 libraries as NVIDIA's pip wheels on the python-slim base, so the
+host driver must support CUDA 13. It is about 5.5 GB, against 1.6 GB for CPU.
+
 Bind-mounts a dataset into `/data/images`, an output dir into `/data/out`, and
 persists the scan cache + InsightFace model downloads across rebuilds. A
 converted FairFace / MiVOLO model under `~/.cache/argus_curator/models/` is
@@ -672,6 +679,7 @@ picked up through the same cache mount.
 On CUDA, curator takes argus-cortex's host-wide GPU lease (`argus_cortex.gpu`)
 around each image it runs a model on: InsightFace with MiVOLO and FairFace,
 Places365 (per batch) and Fashionpedia, plus a larger ask when a model loads.
+It is what the GPU image (`:<version>-gpu`, the compose default) runs.
 The lease is taken per image, so argus-lens, or a `POST /faces` from
 argus-darkroom, can use the card between a scan's images. On a CPU build it is
 never taken.

@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipping images. `POST /faces` waits at most 30 s, then answers 503 with
   `Retry-After: 5`. `GET /health` reports `gpu_coordinator`. The minimum
   argus-cortex is now 0.4.3.
+- A CUDA image: `ghcr.io/smk762/argus-curator:<version>-gpu` (and
+  `latest-gpu`) beside the CPU image, built with `GPU=1`. It installs `[gpu]`
+  plus `onnxruntime-gpu[cuda,cudnn]`, removing the CPU `onnxruntime` that
+  insightface pulls in (it shadows the GPU build), and the build fails if the
+  CUDA provider is missing. `docker compose` now builds this variant by default
+  (`CURATOR_GPU=0` for CPU).
+
+### Fixed
+
+- On a `[gpu]` install whose CUDA libraries came from NVIDIA's pip wheels,
+  every model silently ran on CPU: those libraries are off the loader's path.
+  `runtime.providers()` now calls onnxruntime's `preload_dlls()` once when it
+  picks CUDA.
 
 ## [0.9.0] - 2026-10-30
 

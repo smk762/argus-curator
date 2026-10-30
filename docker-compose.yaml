@@ -1,6 +1,11 @@
 services:
   argus-curator:
-    build: .
+    build:
+      context: .
+      args:
+        # The CUDA image (the services below reserve the GPU for it). CURATOR_GPU=0
+        # in .env builds the CPU image instead, for a host with no NVIDIA runtime.
+        GPU: ${CURATOR_GPU:-1}
     ports:
       - "${CURATOR_PORT:-8101}:8101"
     environment:
@@ -30,8 +35,8 @@ services:
       # Share the GPU with other argus services (argus-lens) one job at a time,
       # each starting only once the card has room (argus_cortex.gpu). Every
       # service must name the same lock file on the same host directory: uncomment
-      # this and the matching volume below. It only applies to a [gpu] build; this
-      # image installs [faces] (CPU onnxruntime), which never takes the lease.
+      # this and the matching volume below. A CPU build (CURATOR_GPU=0) never
+      # takes the lease.
       # - ARGUS_GPU_COORDINATOR=lease
       # - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
     volumes:

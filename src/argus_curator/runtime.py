@@ -53,6 +53,29 @@ def onnxruntime_available() -> bool:
         return False
 
 
+_CUDA = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+_cuda_preloaded = False
+
+
+def _preload_cuda(ort: object) -> None:
+    """Load the CUDA and cuDNN libraries from NVIDIA's pip wheels, once.
+
+    onnxruntime-gpu[cuda,cudnn] installs them under site-packages, off the
+    loader's path, and without this the CUDA provider fails to load and every
+    session silently falls back to CPU. A no-op when they come from the system
+    instead, or with an onnxruntime too old to have ``preload_dlls``.
+    """
+    global _cuda_preloaded
+    if _cuda_preloaded:
+        return
+    _cuda_preloaded = True
+    preload = getattr(ort, "preload_dlls", None)
+    if preload is not None:
+        # A failure leaves system CUDA, if any, to serve the provider.
+        with contextlib.suppress(Exception):
+            preload()
+
+
 def providers(device: str) -> list[str]:
     """onnxruntime execution providers for a device hint ("auto" | "cpu" | "cuda")."""
     dev = (device or "auto").lower()
@@ -63,12 +86,11 @@ def providers(device: str) -> list[str]:
 
         available = set(ort.get_available_providers())
     except Exception:
-        available = set()
-    if dev == "cuda":
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        return list(_CUDA) if dev == "cuda" else ["CPUExecutionProvider"]
     # auto: prefer CUDA when present.
-    if "CUDAExecutionProvider" in available:
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    if dev == "cuda" or "CUDAExecutionProvider" in available:
+        _preload_cuda(ort)
+        return list(_CUDA)
     return ["CPUExecutionProvider"]
 
 
