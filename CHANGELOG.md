@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   use it. `GET /health` reports `faces` when InsightFace and MiVOLO can run.
   A missing model, a detector that fails, or a detected face with no estimate
   is HTTP 503. A body over 64 MiB is HTTP 413.
+  At most two calls run at once; a third is refused straight away with HTTP
+  503 and `Retry-After: 1` rather than queued, because each call holds an
+  image in memory. Admission is counted under a lock so a burst that hits a
+  free slot cannot queue behind it.
 
 ### Changed
 
@@ -33,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   finds argus-lens's sidecars: it looked only for `photo.xmp`, while lens
   writes `photo.jpg.xmp`, so lens captions never reached it. A sidecar that is
   not valid XMP is now no caption rather than a best-effort regex read.
+- The InsightFace app and the onnxruntime sessions (MiVOLO, FairFace,
+  Places365, garments) are built under a lock. A scan and a `POST /faces`
+  asking for the same model at once used to be able to load it twice.
+  InsightFace `app.get` is also serialized: the cached app is shared, and
+  concurrent `get()` has mixed bboxes across images.
 - The SingGuard policy names and texts (`default`, `adult`, `adult-granular`,
   `adult-cautious`) now come from argus-cortex 0.4.2
   (`argus_cortex.moderation.policies`), which shares them with argus-darkroom.

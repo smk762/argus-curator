@@ -9,6 +9,7 @@ never a request field: a model path is a file the server would load.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,8 @@ import numpy as np
 MODEL_DIR = Path.home() / ".cache" / "argus_curator" / "models"
 
 _SESSION_CACHE: dict[str, object] = {}
+# Threads (a scan, POST /faces) can ask for the same session at once; build it once.
+_SESSION_LOCK = threading.Lock()
 
 # Every model here was trained on ImageNet-normalised RGB in [0, 1].
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -72,15 +75,20 @@ def load_session(path: Path, providers: list[str], *, missing_hint: str, extra: 
     key = f"{path}:{','.join(providers)}"
     if key in _SESSION_CACHE:
         return _SESSION_CACHE[key]
+    with _SESSION_LOCK:
+        if key not in _SESSION_CACHE:
+            _SESSION_CACHE[key] = _build_session(path, providers, missing_hint=missing_hint, extra=extra)
+        return _SESSION_CACHE[key]
+
+
+def _build_session(path: Path, providers: list[str], *, missing_hint: str, extra: str):
     try:
         import onnxruntime as ort
     except Exception as exc:  # pragma: no cover - exercised only without deps
         raise ModelUnavailable(f"This model requires onnxruntime: pip install argus-curator[{extra}]") from exc
     if not path.is_file():
         raise ModelUnavailable(f"Model not found at {path}. {missing_hint}")
-    session = ort.InferenceSession(str(path), providers=providers)
-    _SESSION_CACHE[key] = session
-    return session
+    return ort.InferenceSession(str(path), providers=providers)
 
 
 def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:

@@ -1293,3 +1293,107 @@ def test_faces_413_when_the_body_is_too_large(client: TestClient, monkeypatch: p
     monkeypatch.setattr("argus_curator.server.app._FACES_MAX_BYTES", 16)
     resp = client.post("/faces", content=_png_bytes())
     assert resp.status_code == 413
+
+
+def test_faces_503_with_retry_after_when_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the in-flight limit a call is refused at once, not queued: each one buffers an image."""
+    entered, release = threading.Event(), threading.Event()
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr("argus_curator.server.app._FACES_CONCURRENCY", 1)
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    with TestClient(create_app(cache_dir=str(tmp_path / "cache"))) as client:
+        first: list = []
+        worker = threading.Thread(target=lambda: first.append(client.post("/faces", content=_png_bytes())))
+        worker.start()
+        assert entered.wait(5)
+        busy = client.post("/faces", content=_png_bytes())
+        release.set()
+        worker.join(5)
+    assert busy.status_code == 503 and busy.headers["retry-after"] == "1"
+    assert first[0].status_code == 200
+
+
+def test_faces_third_call_503_at_default_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default cap is two: a third call is 503 while both slots are taken."""
+    in_detect = threading.Semaphore(0)
+    release = threading.Event()
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        in_detect.release()
+        assert release.wait(5)
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    with TestClient(create_app(cache_dir=str(tmp_path / "cache"))) as client:
+        held: list = []
+
+        def hold() -> None:
+            held.append(client.post("/faces", content=_png_bytes()))
+
+        workers = [threading.Thread(target=hold) for _ in range(2)]
+        for t in workers:
+            t.start()
+        assert in_detect.acquire(timeout=5)
+        assert in_detect.acquire(timeout=5)
+        busy = client.post("/faces", content=_png_bytes())
+        release.set()
+        for t in workers:
+            t.join(5)
+    assert busy.status_code == 503 and busy.headers["retry-after"] == "1"
+    assert [r.status_code for r in held] == [200, 200]
+
+
+async def test_faces_burst_does_not_queue_past_a_free_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When one slot is free, extra concurrent callers get 503 — they must not wait on acquire()."""
+    import asyncio
+    import time
+
+    httpx = pytest.importorskip("httpx")
+
+    in_detect = 0
+    count_lock = threading.Lock()
+    first_entered = threading.Event()
+    release = threading.Event()
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        nonlocal in_detect
+        with count_lock:
+            in_detect += 1
+            n = in_detect
+        if n == 1:
+            first_entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    app = create_app(cache_dir=str(tmp_path / "cache"))
+    transport = httpx.ASGITransport(app=app)
+    png = _png_bytes()
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        holder = asyncio.create_task(ac.post("/faces", content=png))
+        assert await asyncio.to_thread(first_entered.wait, 5)
+        racers = [asyncio.create_task(ac.post("/faces", content=png)) for _ in range(8)]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if sum(t.done() for t in racers) >= 7:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("expected 7 refusals while one slot stayed in flight")
+        with count_lock:
+            running = in_detect
+        assert running == 2
+        codes = [t.result().status_code for t in racers if t.done()]
+        assert codes.count(503) == 7
+        release.set()
+        rest = await asyncio.gather(holder, *racers)
+    assert [r.status_code for r in rest].count(200) == 2
+    assert [r.status_code for r in rest].count(503) == 7
