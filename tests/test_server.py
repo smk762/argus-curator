@@ -93,6 +93,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "onnxruntime",
         "fairface",
         "mivolo",
+        "bodies",
         "places365",
         "garments",
         "nudenet",
@@ -1515,8 +1516,31 @@ def test_faces_body_query_asks_mivolo_for_bodies(client: TestClient, monkeypatch
     monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
     monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
     monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
-    plain = client.post("/faces", content=_png_bytes()).json()["faces"][0]
-    with_body = client.post("/faces?body=true", content=_png_bytes()).json()["faces"][0]
+    plain_resp = client.post("/faces", content=_png_bytes()).json()
+    body_resp = client.post("/faces?body=true", content=_png_bytes()).json()
     assert asked == [False, True]
-    assert "age_body" not in plain  # unchanged for callers that do not ask
-    assert with_body["age_body"] is True and with_body["age_estimate_years"] == 34.2
+    assert "age_body" not in plain_resp["faces"][0]  # unchanged for callers that do not ask
+    assert "people" not in plain_resp
+    assert body_resp["faces"][0]["age_body"] is True and body_resp["faces"][0]["age_estimate_years"] == 34.2
+    assert body_resp["people"] == []
+    assert "people_check" not in plain_resp
+
+
+def test_faces_body_says_when_the_person_check_failed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty `people` is "none found" only with people_check "ok"."""
+    state: dict = {}
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        results[0].people_check, results[0].people_error = state["check"], state.get("error")
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    state.update(check="ok")
+    ok = client.post("/faces?body=true", content=_png_bytes())
+    assert ok.status_code == 200 and ok.json()["people_check"] == "ok" and ok.json()["people_error"] is None
+    state.update(check="detection_failed", error="onnx exploded")
+    failed = client.post("/faces?body=true", content=_png_bytes())
+    assert failed.status_code == 200  # the face ages stand; the person check is what failed
+    assert failed.json()["people"] == [] and failed.json()["people_check"] == "detection_failed"
+    assert failed.json()["people_error"] == "onnx exploded"

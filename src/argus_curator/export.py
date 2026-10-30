@@ -194,6 +194,9 @@ def write_report(
         "primary_face_age_years",
         "primary_face_gender_source",
         "primary_face_age_source",
+        "primary_face_age_body",
+        "people_count",
+        "body_ages",
         "scene",
         "scene_conf",
         "scene_environment",
@@ -219,6 +222,7 @@ def write_report(
         "age_years",
         "gender_source",
         "age_source",
+        "age_body",
     )
     ordered = sorted(results, key=lambda r: (r.similar_group, -r.score))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -247,6 +251,10 @@ def write_report(
                     "primary_face_pose": r.primary_face_pose or "",
                     "primary_face_yaw": "" if r.primary_face_yaw is None else round(r.primary_face_yaw, 1),
                     **{f"primary_face_{k}": _blank(getattr(r.primary_face_attributes, k, None)) for k in attr_fields},
+                    "people_count": len(r.people),
+                    "body_ages": ";".join(
+                        f"{p.age_years:.1f}" for p in r.people if p.face_index is None and p.age_years is not None
+                    ),
                     "scene": r.scene.categories[0].label if r.scene and r.scene.categories else "",
                     "scene_conf": r.scene.categories[0].conf if r.scene and r.scene.categories else "",
                     "scene_environment": r.scene.environment if r.scene else "",

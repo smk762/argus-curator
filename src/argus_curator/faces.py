@@ -22,7 +22,7 @@ import numpy as np
 import structlog
 
 from argus_curator.attributes import RawAttributes, pool, to_attributes
-from argus_curator.models import FaceCluster, FaceConfig, FaceDetection, ImageResult, SetAge
+from argus_curator.models import FaceCluster, FaceConfig, FaceDetection, ImageResult, PersonDetection, SetAge
 from argus_curator.runtime import gpu_lease, providers
 
 logger = structlog.get_logger()
@@ -203,26 +203,22 @@ def _body_detector(cfg: FaceConfig) -> object | None:
 
 def _face_attributes(
     sessions: tuple[object | None, object | None],
-    bgr: np.ndarray,
+    image: object,
     kps_by_face: list[np.ndarray | None],
     bboxes: list[list[float]],
     rel: str,
     *,
-    body_detector: object | None = None,
-    cfg: FaceConfig | None = None,
+    body_crops: list[object] | None = None,
 ) -> list[RawAttributes]:
     """Raw model outputs per face of one image; a model that fails is skipped.
 
-    With *body_detector*, MiVOLO is given each face's masked body crop; a body
-    detection that fails leaves every face face-only, as without it.
+    *body_crops*, one per face, are the masked bodies from :mod:`bodies`; a
+    ``None`` crop (or *body_crops* itself ``None``) runs that face face-only.
     """
     raws = [RawAttributes() for _ in bboxes]
     ff_session, mv_session = sessions
     if (ff_session is None and mv_session is None) or not bboxes:
         return raws
-    from PIL import Image
-
-    image = Image.fromarray(bgr[:, :, ::-1])
     if ff_session is not None:
         from argus_curator import fairface
 
@@ -237,15 +233,6 @@ def _face_attributes(
     if mv_session is not None:
         from argus_curator import mivolo
 
-        body_crops = None
-        if body_detector is not None and cfg is not None:
-            from argus_curator import bodies
-
-            try:
-                found = bodies.detect(body_detector, bgr, cfg.body_min_score)
-                body_crops = bodies.crops_for_faces(image, found, bboxes, cfg)
-            except Exception as exc:
-                logger.warning("body_detect_failed", rel_path=rel, error=str(exc))
         try:
             preds = mivolo.predict(mv_session, image, bboxes, body_crops)
             for i, (raw, pred) in enumerate(zip(raws, preds, strict=True)):
@@ -255,6 +242,92 @@ def _face_attributes(
         except Exception as exc:
             logger.warning("mivolo_failed", rel_path=rel, error=str(exc))
     return raws
+
+
+class _PeopleCheckFailed(RuntimeError):
+    """The person detector, matching or cropping failed; the faces run face-only."""
+
+
+def _record_people(
+    body_detector: object,
+    bgr: np.ndarray,
+    image: object,
+    face_bboxes: list[list[float]],
+    cfg: FaceConfig,
+    rel: str,
+) -> tuple[list[PersonDetection], list[object] | None, object]:
+    """Detect people, match them to *face_bboxes*, return people, per-face crops, and xyxy boxes.
+
+    Raises :class:`_PeopleCheckFailed` when any step fails, so the caller records
+    ``people_check = "detection_failed"`` rather than an empty list that reads as none found.
+    """
+    from argus_curator import bodies
+
+    # Matching and cropping fail like detection does: the faces run face-only.
+    try:
+        boxes, scores = bodies.detect(body_detector, bgr, cfg.body_min_score)
+        matched = bodies.assign(boxes, face_bboxes, cfg.body_face_match)
+        crops = [
+            (
+                None
+                if body is None
+                else bodies.body_crop(image, boxes, body, face_bboxes, cfg.body_min_size, cfg.body_min_visible)
+            )
+            for body in matched
+        ]
+        people = bodies.to_people(boxes, scores, matched)
+    except Exception as exc:
+        logger.warning("body_detect_failed", rel_path=rel, error=str(exc))
+        raise _PeopleCheckFailed(str(exc)) from exc
+    return people, crops, boxes
+
+
+def _link_people(
+    r: ImageResult,
+    mv_session: object | None,
+    image: object,
+    boxes_xyxy: object,
+    cfg: FaceConfig,
+    rel: str,
+) -> None:
+    """Copy face ages onto matched people; MiVOLO body-only ages onto the rest."""
+    from argus_curator import bodies
+
+    for i, person in enumerate(r.people):
+        if person.face_index is None:
+            continue
+        face = r.faces[person.face_index]
+        face.person_index = i
+        attrs = face.attributes
+        if attrs is not None:
+            person.age_years = attrs.age_years
+            person.age_source = attrs.age_source
+            person.age_body = attrs.age_body
+    if mv_session is None or boxes_xyxy is None:
+        return
+    from argus_curator import mivolo
+
+    face_bboxes = [f.bbox for f in r.faces]
+    try:
+        unmatched: list[tuple[int, object]] = []
+        for i, person in enumerate(r.people):
+            if person.face_index is not None:
+                continue
+            crop = bodies.body_crop(image, boxes_xyxy, i, face_bboxes, cfg.body_min_size, cfg.body_min_visible)
+            if crop is not None:
+                unmatched.append((i, crop))
+        if not unmatched:
+            return
+        preds = mivolo.predict_bodies(mv_session, [crop for _, crop in unmatched])
+    except Exception as exc:
+        logger.warning("mivolo_body_only_failed", rel_path=rel, error=str(exc))
+        r.people_check, r.people_error = "body_ages_failed", str(exc)[:300]
+        return
+    for (i, _crop), pred in zip(unmatched, preds, strict=True):
+        _gender, years = pred
+        r.people[i].age_years = round(years, 1)
+        r.people[i].age_source = "mivolo"
+        r.people[i].age_body = True
 
 
 @dataclass
@@ -356,6 +429,8 @@ def _detect_one(
     body_detector: object | None = None,
 ) -> None:
     """Faces, embeddings and attributes for one decoded image, recorded on *r* and *found*."""
+    from PIL import Image
+
     try:
         with _INFER_LOCK:
             detections = app.get(bgr)  # type: ignore[attr-defined]
@@ -363,9 +438,9 @@ def _detect_one(
         if strict:
             raise
         logger.warning("face_detect_failed", rel_path=rel, error=str(exc))
-        detections = None
+        detections = []
     if detections is None:
-        return
+        detections = []
     h, w = bgr.shape[:2]
     kept = 0
     kps_by_face: list[np.ndarray | None] = []
@@ -397,12 +472,22 @@ def _detect_one(
         kps_by_face.append(getattr(face, "kps", None))
         kept += 1
     r.face_count = kept
-    raws = _face_attributes(
-        sessions, bgr, kps_by_face, [f.bbox for f in r.faces], rel, body_detector=body_detector, cfg=cfg
-    )
+    image = Image.fromarray(bgr[:, :, ::-1])
+    body_crops = None
+    boxes_xyxy = None
+    if body_detector is not None:
+        try:
+            r.people, body_crops, boxes_xyxy = _record_people(
+                body_detector, bgr, image, [f.bbox for f in r.faces], cfg, rel
+            )
+            r.people_check = "ok"
+        except _PeopleCheckFailed as exc:
+            r.people, r.people_check, r.people_error = [], "detection_failed", str(exc)[:300]
+    raws = _face_attributes(sessions, image, kps_by_face, [f.bbox for f in r.faces], rel, body_crops=body_crops)
     for f, raw in zip(r.faces, raws, strict=True):
         f.attributes = to_attributes(raw)
     found.raws.extend(raws)
+    _link_people(r, sessions[1], image, boxes_xyxy, cfg, rel)
     _assign_primary(r)
 
 
@@ -492,7 +577,7 @@ def infer_set_age(
         years=round(float(np.median(ages)), 1), cluster_id=top.cluster_id, faces=len(ages), share=round(share, 3)
     )
     for r in results:
-        if r.passed and not r.faces:
+        if r.passed and not r.faces and not any(p.age_years is not None for p in r.people):
             r.set_age = set_age
     return set_age, None
 

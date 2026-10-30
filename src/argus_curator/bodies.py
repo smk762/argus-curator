@@ -28,9 +28,10 @@ from __future__ import annotations
 import threading
 
 import numpy as np
+from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS
 from PIL import Image
 
-from argus_curator.models import FaceConfig
+from argus_curator.models import FaceConfig, ImageResult, PersonDetection
 from argus_curator.runtime import ModelUnavailable, providers
 
 # MiVOLO's CROP_ROUND_RATE: a masked person edge this close to the crop's edge snaps to it.
@@ -74,10 +75,20 @@ def _build_detector(cfg: FaceConfig) -> object:
     return PersonDetection(package["tasks"]["person_detection"], providers(cfg.device))
 
 
-def detect(detector: object, bgr: np.ndarray, min_score: float) -> np.ndarray:
-    """``(N, 4)`` person boxes ``[x1, y1, x2, y2]`` scoring at least *min_score*."""
+def detect(detector: object, bgr: np.ndarray, min_score: float) -> tuple[np.ndarray, np.ndarray]:
+    """Person boxes ``[x1, y1, x2, y2]`` and their detector scores, at least *min_score*."""
     rows = np.asarray(detector.detect_candidates(bgr, min_score), dtype=np.float32)  # type: ignore[attr-defined]
-    return rows[:, :4] if rows.size else np.empty((0, 4), np.float32)
+    if not rows.size:
+        return np.empty((0, 4), np.float32), np.empty((0,), np.float32)
+    boxes = rows[:, :4]
+    scores = rows[:, 4] if rows.shape[1] > 4 else np.ones(len(rows), np.float32)
+    return boxes, scores
+
+
+def xywh(box_xyxy: np.ndarray) -> list[float]:
+    """``[x, y, w, h]``, the same box convention faces use."""
+    x1, y1, x2, y2 = (float(v) for v in box_xyxy)
+    return [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)]
 
 
 def _xyxy(bbox_xywh: list[float]) -> np.ndarray:
@@ -160,12 +171,59 @@ def body_crop(
     return Image.fromarray(crop)
 
 
-def crops_for_faces(
-    image: Image.Image, bodies: np.ndarray, faces_xywh: list[list[float]], cfg: FaceConfig
-) -> list[Image.Image | None]:
-    """Per face, its masked body crop, or ``None`` when it has no usable body."""
-    matched = assign(bodies, faces_xywh, cfg.body_face_match)
+def to_people(boxes_xyxy: np.ndarray, scores: np.ndarray, matched: list[int | None]) -> list[PersonDetection]:
+    """Person boxes in face-box convention, with ``face_index`` filled in."""
+    face_of_body = {body: face for face, body in enumerate(matched) if body is not None}
     return [
-        None if b is None else body_crop(image, bodies, b, faces_xywh, cfg.body_min_size, cfg.body_min_visible)
-        for b in matched
+        PersonDetection(bbox=xywh(box), det_score=round(float(score), 4), face_index=face_of_body.get(i))
+        for i, (box, score) in enumerate(zip(boxes_xyxy, scores, strict=True))
     ]
+
+
+def _iou_xywh(a: list[float], b: list[float]) -> float:
+    ab, bb = _xyxy(a), _xyxy(b)
+    inter = _intersection(ab, bb)
+    if inter == 0.0:
+        return 0.0
+    union = _area(ab) + _area(bb) - inter
+    return inter / union if union else 0.0
+
+
+def overlaps(a: list[float], b: list[float]) -> bool:
+    """Whether two ``[x, y, w, h]`` boxes share any area."""
+    return _intersection(_xyxy(a), _xyxy(b)) > 0.0
+
+
+def associate_nsfw(results: list[ImageResult]) -> None:
+    """Give each NudeNet detection to the person (else face) its box overlaps most.
+
+    A detection that overlaps nothing is left unassigned; :func:`selection.minor_exposed`
+    treats those as image-level (fail closed). Called after faces and NudeNet both
+    finish, before the guard pass.
+    """
+    for result in results:
+        if result.nsfw is None:
+            continue
+        for person in result.people:
+            person.nsfw_labels = {}
+            person.exposed_score = 0.0
+        for face in result.faces:
+            face.nsfw_labels = {}
+            face.exposed_score = 0.0
+        targets: list[tuple[list[float], PersonDetection | object]] = [(p.bbox, p) for p in result.people] or [
+            (f.bbox, f) for f in result.faces
+        ]
+        if not targets:
+            continue
+        for det in result.nsfw.detections:
+            best, best_iou = None, 0.0
+            for bbox, obj in targets:
+                iou = _iou_xywh(det.bbox, bbox)
+                if iou > best_iou:
+                    best, best_iou = obj, iou
+            if best is None or best_iou <= 0.0:
+                continue
+            labels = best.nsfw_labels
+            labels[det.label] = max(float(labels.get(det.label, 0.0)), det.score)
+            if det.label in DEFAULT_EXPOSED_LABELS:
+                best.exposed_score = max(best.exposed_score, det.score)
