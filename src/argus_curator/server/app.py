@@ -39,6 +39,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
+from argus_cortex.gpu import GpuLeaseTimeout
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -46,6 +47,7 @@ from argus_curator import __version__, export, scanner
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator.attributes import fairface_available, mivolo_available
+from argus_curator.bodies import bodies_available
 from argus_curator.faces import faces_available
 from argus_curator.garments import garments_available
 from argus_curator.models import (
@@ -61,7 +63,7 @@ from argus_curator.models import (
     SelectResult,
     SelectRow,
 )
-from argus_curator.runtime import ModelUnavailable
+from argus_curator.runtime import ModelUnavailable, gpu_coordinator
 from argus_curator.scenes import scenes_available
 from argus_curator.selection import (
     decide_selection,
@@ -196,6 +198,7 @@ def _detectors() -> dict[str, bool | list[str]]:
         "onnxruntime": find_spec("onnxruntime") is not None or find_spec("onnxruntime_gpu") is not None,
         "fairface": fairface_available(),
         "mivolo": mivolo_available(),
+        "bodies": bodies_available(),
         "places365": scenes_available(),
         "garments": garments_available(),
         # A NudeNet server URL is configured; reachability is not probed here.
@@ -291,10 +294,16 @@ _FACES_MAX_BYTES = 64 * 1024 * 1024
 # POST /faces calls in flight at once. Each buffers and decodes up to
 # _FACES_MAX_BYTES; past this a call is refused (503, Retry-After) instead of queued.
 _FACES_CONCURRENCY = 2
+# Longest a POST /faces call waits for the host's GPU lease. A scan takes the
+# lease per image, so this is a few images' worth, not the whole scan.
+_FACES_LEASE_WAIT_S = 30.0
 
 
-def _faces_from_bytes(data: bytes) -> dict[str, Any]:
+def _faces_from_bytes(data: bytes, body: bool = False) -> dict[str, Any]:
     """MiVOLO estimates for every face in *data*. Writes nothing.
+
+    With *body*, MiVOLO is also given each face's body (``FaceConfig.mivolo_body``,
+    MiVOLO's default thresholds); ``age_body`` says per face whether one was used.
 
     Raises :class:`HTTPException`: 400 if the bytes are not an image, 503 if
     InsightFace or MiVOLO cannot run or a detected face has no estimate.
@@ -317,7 +326,15 @@ def _faces_from_bytes(data: bytes) -> dict[str, Any]:
     result = ImageResult(rel_path="image", abs_path="", passed=True)
     try:
         # strict: a detector that fails must not read as "no faces" (HTTP 200, []).
-        detect_faces([result], [("image", "", data)], FaceConfig(enabled=True, mivolo=True), strict=True)
+        detect_faces(
+            [result],
+            [("image", "", data)],
+            FaceConfig(enabled=True, mivolo=True, mivolo_body=body),
+            strict=True,
+            lease_wait_s=_FACES_LEASE_WAIT_S,
+        )
+    except GpuLeaseTimeout as exc:
+        raise HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"}) from exc
     except (FacesUnavailable, ModelUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -328,8 +345,28 @@ def _faces_from_bytes(data: bytes) -> dict[str, Any]:
         years = face.attributes.age_years if face.attributes is not None else None
         if years is None:
             raise HTTPException(status_code=503, detail="MiVOLO gave no age for a detected face")
-        faces.append({"age_estimate_years": float(years), "bbox": list(face.bbox)})
-    return {"source": "mivolo", "faces": faces}
+        row: dict[str, Any] = {"age_estimate_years": float(years), "bbox": list(face.bbox)}
+        if body:
+            row["age_body"] = bool(face.attributes.age_body)
+            if face.person_index is not None:
+                row["person_index"] = face.person_index
+        faces.append(row)
+    out: dict[str, Any] = {"source": "mivolo", "faces": faces}
+    if body:
+        # Says whether an empty or age-less `people` means "none found" or "the check failed".
+        out["people_check"] = result.people_check
+        out["people_error"] = result.people_error
+        out["people"] = [
+            {
+                "bbox": list(person.bbox),
+                "det_score": person.det_score,
+                "face_index": person.face_index,
+                "age_estimate_years": person.age_years,
+                "age_body": person.age_body,
+            }
+            for person in result.people
+        ]
+    return out
 
 
 def create_app(
@@ -462,6 +499,8 @@ def create_app(
             # POST /faces is up when InsightFace and MiVOLO can run (darkroom probes this).
             # Off the event loop: the first probe imports the whole InsightFace stack.
             "faces": await asyncio.to_thread(lambda: faces_available() and mivolo_available()),
+            # The host-wide GPU lease curator takes on CUDA: "none" or "lease" (ARGUS_GPU_COORDINATOR).
+            "gpu_coordinator": gpu_coordinator().name,
         }
 
     @app.get("/detectors")
@@ -475,11 +514,12 @@ def create_app(
     faces_admit = asyncio.Lock()
 
     @app.post("/faces")
-    async def faces(request: Request) -> dict[str, Any]:
+    async def faces(request: Request, body: bool = Query(False)) -> dict[str, Any]:
         """Age estimates for one image, from memory. Nothing is written.
 
         Raw image bytes, or a multipart file. Darkroom and other suite clients
         POST a buffer; this is not a scan and does not need a source root.
+        ``?body=true`` also gives MiVOLO each face's body (under evaluation).
         """
         nonlocal faces_in_flight
         async with faces_admit:
@@ -487,12 +527,12 @@ def create_app(
                 raise HTTPException(status_code=503, detail="busy: try again", headers={"Retry-After": "1"})
             faces_in_flight += 1
         try:
-            return await _faces(request)
+            return await _faces(request, body)
         finally:
             async with faces_admit:
                 faces_in_flight -= 1
 
-    async def _faces(request: Request) -> dict[str, Any]:
+    async def _faces(request: Request, body: bool) -> dict[str, Any]:
         too_large = HTTPException(status_code=413, detail=f"image larger than {_FACES_MAX_BYTES} bytes")
         try:
             declared = int(request.headers.get("content-length") or 0)
@@ -515,7 +555,7 @@ def create_app(
                 if len(buf) > _FACES_MAX_BYTES:
                     raise too_large
             data = bytes(buf)
-        return await asyncio.to_thread(_faces_from_bytes, data)
+        return await asyncio.to_thread(_faces_from_bytes, data, body)
 
     @app.get("/guard/policies")
     async def guard_policies() -> dict[str, Any]:
@@ -659,6 +699,8 @@ def create_app(
             return summary
         except scanner.ScanCancelled as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except GpuLeaseTimeout as exc:
+            raise HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"}) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
         finally:
@@ -717,6 +759,9 @@ def create_app(
                 # The snapshots saved while it ran are not a result.
                 store.delete(scan_id)
                 events.put(("cancelled", {"scan_id": scan_id}))
+            except GpuLeaseTimeout as exc:
+                store.delete(scan_id)
+                events.put(("error", {"detail": f"GPU busy: {exc}", "retry_after": 5}))
             except Exception as exc:  # surface as a stream error, not a 500
                 events.put(("error", {"detail": f"scan failed: {exc}"}))
             finally:

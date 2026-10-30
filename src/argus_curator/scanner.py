@@ -675,6 +675,11 @@ def scan_items(
         if faces_future is not None:
             detected_faces = faces_future.result()
 
+    # NudeNet boxes onto people (else faces), now both lists are in.
+    from argus_curator import bodies as bodies_mod
+
+    bodies_mod.associate_nsfw(results)
+
     # Identities, as soon as the faces are in: the clustering is quick and
     # local, and the set age read off the dominant identity is part of the
     # context SingGuard gets for a frame with no face, so it comes before

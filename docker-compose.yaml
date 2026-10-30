@@ -1,6 +1,11 @@
 services:
   argus-curator:
-    build: .
+    build:
+      context: .
+      args:
+        # The CUDA image (the services below reserve the GPU for it). CURATOR_GPU=0
+        # in .env builds the CPU image instead, for a host with no NVIDIA runtime.
+        GPU: ${CURATOR_GPU:-1}
     ports:
       - "${CURATOR_PORT:-8101}:8101"
     environment:
@@ -24,9 +29,19 @@ services:
       # SingGuard policy check, off unless .env sets a URL (no server is bundled:
       # it runs a vision language model). Opt-out once set, like NudeNet.
       - ARGUS_CURATOR_SINGGUARD_URL=${ARGUS_CURATOR_SINGGUARD_URL-}
-      - ARGUS_CURATOR_SINGGUARD_THINKING=${ARGUS_CURATOR_SINGGUARD_THINKING-fast}
+      # cascade: fast on every frame, slow only on what fast flags (slow's verdict stands).
+      - ARGUS_CURATOR_SINGGUARD_THINKING=${ARGUS_CURATOR_SINGGUARD_THINKING-cascade}
+      # What the scan already knows, sent as recorded context. Empty sends the image alone.
+      - ARGUS_CURATOR_SINGGUARD_CONTEXT=${ARGUS_CURATOR_SINGGUARD_CONTEXT-age,folder,caption,scene}
       # Uncomment to permit destructive mode="move" exports.
       # - CURATOR_ALLOW_MOVE=1
+      # Share the GPU with other argus services (argus-lens) one job at a time,
+      # each starting only once the card has room (argus_cortex.gpu). Every
+      # service must name the same lock file on the same host directory: uncomment
+      # this and the matching volume below. A CPU build (CURATOR_GPU=0) never
+      # takes the lease.
+      # - ARGUS_GPU_COORDINATOR=lease
+      # - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
     volumes:
       # Dataset mount the curator scans and serves /thumb from.
       - ${CURATOR_SOURCE_PATH:-./data}:/data/images
@@ -36,6 +51,8 @@ services:
       - ~/.cache/argus_curator:/root/.cache/argus_curator
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ~/.insightface:/root/.insightface
+      # The host-wide GPU lease's lock directory, shared by every argus service.
+      # - ${ARGUS_GPU_LOCK_DIR:-/tmp/argus-gpu}:/run/argus-gpu
     deploy:
       resources:
         reservations:

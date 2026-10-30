@@ -20,6 +20,12 @@ WORKDIR /app
 # sans "v"). Defaults to 0.0.0 for local `docker compose` builds.
 ARG VERSION=0.0.0
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=${VERSION}
+# GPU=1 builds the CUDA variant (published as :<version>-gpu): [gpu] instead of
+# [faces] (onnxruntime-gpu for CPU onnxruntime, plus NVML for the GPU lease), and
+# the CUDA and cuDNN runtime libraries as NVIDIA's pip wheels, so the base image
+# stays python-slim. It needs the NVIDIA container runtime and a driver for the
+# CUDA major onnxruntime-gpu targets. The default (0) is the CPU image.
+ARG GPU=0
 
 COPY . /app
 
@@ -27,7 +33,16 @@ COPY . /app
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install \
         "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" \
-    && python -m pip install "certifi>=2026.10.19" ".[server,cli,faces]"
+    && if [ "$GPU" = "1" ]; then \
+        python -m pip install "certifi>=2026.10.19" ".[server,cli,gpu]" "onnxruntime-gpu[cuda,cudnn]" \
+        # insightface requires CPU onnxruntime, which shares onnxruntime-gpu's
+        # module directory and wins: drop it and lay the GPU build back down.
+        && python -m pip uninstall -y onnxruntime \
+        && python -m pip install --force-reinstall --no-deps onnxruntime-gpu \
+        && python -c "import onnxruntime as o, sys; sys.exit('CUDA EP missing' if 'CUDAExecutionProvider' not in o.get_available_providers() else 0)"; \
+    else \
+        python -m pip install "certifi>=2026.10.19" ".[server,cli,faces]"; \
+    fi
 
 EXPOSE 8101
 CMD ["argus-curator", "serve", "--port", "8101", "--cors"]

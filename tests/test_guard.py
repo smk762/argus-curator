@@ -136,6 +136,8 @@ def test_opt_out_semantics(monkeypatch: pytest.MonkeyPatch, url, enabled, expect
 
 
 def test_thinking_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert guard.thinking() == "cascade"
+    monkeypatch.setenv(guard.THINKING_ENV, "fast")
     assert guard.thinking() == "fast"
     monkeypatch.setenv(guard.THINKING_ENV, "fast-slow")
     assert guard.thinking() == "fast-slow"
@@ -191,7 +193,7 @@ def test_check_images_posts_each_image_and_records_results(singguard: type[_Sing
     assert seen[0] == (0, 6) and seen[-1] == (6, 6)
 
     assert {s["path"] for s in singguard.seen} == {"/api/guard/check"}
-    assert {s["input"] for s in singguard.seen} == {""} and {s["thinking"] for s in singguard.seen} == {"fast"}
+    assert {s["input"] for s in singguard.seen} == {""} and {s["thinking"] for s in singguard.seen} == {"cascade"}
     assert all("policy" not in s for s in singguard.seen)  # default rules
 
 
@@ -294,7 +296,9 @@ def test_context_kinds_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(guard.CONTEXT_ENV, " age, Folder ,caption ")
     assert guard.context_kinds() == {"age", "folder", "caption"}
     monkeypatch.setenv(guard.CONTEXT_ENV, "age,nsfw")
-    with pytest.raises(ModelUnavailable, match="nsfw"):
+    assert guard.context_kinds() == {"age", "nsfw"}
+    monkeypatch.setenv(guard.CONTEXT_ENV, "age,bogus")
+    with pytest.raises(ModelUnavailable, match="bogus"):
         guard.context_kinds()
 
 
@@ -360,6 +364,27 @@ def test_image_context_lines(tmp_path: Path) -> None:
     (tmp_path / "c.xmp").unlink()
     long = guard_context.image_context(_aged("c.jpg", abs_path=str(image)), frozenset({"caption"}))
     assert len(long.splitlines()[-1]) < 700 and long.endswith("…")
+
+    from argus_cortex.moderation import NsfwResult
+
+    from argus_curator.models import GarmentDetection, PersonDetection, SceneLabel, SceneTags
+
+    tagged = _aged("a.jpg", 24.0)
+    tagged.scene = SceneTags(
+        categories=[SceneLabel(label="studio", conf=0.81), SceneLabel(label="art_studio", conf=0.1)],
+        environment="indoor",
+        environment_conf=0.9,
+    )
+    tagged.nsfw = NsfwResult(detections=[], labels={"FEMALE_BREAST_EXPOSED": 0.7}, exposed_score=0.7)
+    tagged.garments = [GarmentDetection(label="shirt_blouse", conf=0.9, bbox=[0, 0, 10, 10], color="#aabbcc")]
+    tagged.people = [
+        PersonDetection(bbox=[0, 0, 50, 100], det_score=0.9, age_years=27.4, age_source="mivolo", age_body=True)
+    ]
+    extra = guard_context.image_context(tagged, frozenset({"scene", "nsfw", "garments", "age"}))
+    assert "Places365 scene: studio (0.81), art_studio (0.10); indoor." in extra
+    assert "NudeNet content rating: explicit (FEMALE_BREAST_EXPOSED 0.70)." in extra
+    assert "Fashionpedia garments: shirt_blouse." in extra
+    assert "a person with no visible face: 27 years (MiVOLO body-only estimate" in extra
 
 
 def test_context_is_sent_only_when_configured(singguard: type[_SingGuard], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -591,3 +616,59 @@ def test_report_includes_guard_columns(tmp_path: Path) -> None:
     rows = {r["rel_path"]: r for r in csv.DictReader(report.open())}
     assert rows["granular-only.jpg"]["guard_variants"] == "adult=safe;adult-granular=unsafe[H]"
     assert rows["granular-missing.jpg"]["guard_variants"] == "adult=safe"
+
+
+class _Stub:
+    """A SingGuardClient stand-in: answers from *answers*, raising the ones that are errors."""
+
+    def __init__(self, thinking: str, answers: list) -> None:
+        self.thinking, self.answers, self.calls = thinking, list(answers), 0
+
+    def check(self, data: bytes, text: str = "") -> GuardResult:
+        self.calls += 1
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _fallback(primary: list, fallback: list | None, mode: str = "cascade") -> guard.FallbackClient:
+    client = guard.FallbackClient("http://guard:9150", 5.0, mode, None)
+    client.primary = _Stub(mode, primary)  # type: ignore[assignment]
+    client.fallback = _Stub("fast", fallback) if fallback is not None else None  # type: ignore[assignment]
+    return client
+
+
+def test_a_server_without_cascade_falls_back_to_fast_once() -> None:
+    """A stock SingGuard server answers 400 to cascade/slow; curator judges in fast and says so."""
+    from argus_cortex.moderation import GuardCheckFailed
+
+    refused = GuardCheckFailed("SingGuard returned HTTP 400")
+    client = _fallback([refused], [GuardResult(safe=True)])
+    first, second = client.check(b"x"), client.check(b"y")
+    assert first.thinking == second.thinking == "fast" and client.fell_back and client.thinking == "fast"
+    assert client.primary.calls == 1 and client.fallback.calls == 2  # the extended mode is not asked again
+
+
+def test_a_400_that_fast_also_gets_is_raised_and_keeps_the_mode() -> None:
+    from argus_cortex.moderation import GuardCheckFailed
+
+    bad_image = GuardCheckFailed("SingGuard returned HTTP 400")
+    client = _fallback([bad_image], [GuardCheckFailed("SingGuard returned HTTP 400")])
+    with pytest.raises(GuardCheckFailed) as exc:
+        client.check(b"x")
+    assert exc.value is bad_image and not client.fell_back and client.thinking == "cascade"
+
+
+def test_other_failures_and_plain_modes_never_fall_back() -> None:
+    from argus_cortex.moderation import GuardCheckFailed
+
+    timeout = GuardCheckFailed("SingGuard request failed: timed out")
+    client = _fallback([timeout], [GuardResult(safe=True)])
+    with pytest.raises(GuardCheckFailed, match="timed out"):
+        client.check(b"x")
+    assert client.fallback.calls == 0
+    assert guard.FallbackClient("http://guard:9150", 5.0, "fast", None).fallback is None
+    assert guard.FallbackClient("http://guard:9150", 5.0, "fast-slow", None).fallback is None
+    verdict = GuardResult(safe=True, thinking="slow")  # a server that says which mode it used is believed
+    assert _fallback([GuardCheckFailed("HTTP 400")], [verdict]).check(b"x").thinking == "slow"

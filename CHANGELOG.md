@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-30
+
+### Added
+
+- Person boxes from `--mivolo-body` are recorded on `results[].people` (bbox,
+  matched `face_index`, age). A person with no face still gets a body-only
+  MiVOLO age. NudeNet detections are assigned to the overlapping person (else
+  face); `minor-exposed` uses that pairing and fails closed on unassigned
+  exposure. `POST /faces?body=true` returns `people`. `people_check` (`ok`,
+  `detection_failed` or `body_ages_failed`, with `people_error`) says how the
+  person check went, on each result and in the `/faces` response, so an empty
+  `people` reads as "none found" only when it is `ok`.
+- SingGuard context kinds `scene`, `nsfw`, and `garments` send Places365,
+  the NudeNet content rating, and Fashionpedia tags with the image. `age`
+  includes body-only estimates. Compose defaults
+  `ARGUS_CURATOR_SINGGUARD_CONTEXT` to `age,folder,caption,scene`.
+  `adult-granular` and `adult-cautious` stay available for comparison.
+
+- MiVOLO can read each face's body as well as its face:
+  `FaceConfig.mivolo_body` (`--mivolo-body`, `POST /faces?body=true`). Bodies
+  come from InsightFace 2.1's person detector, the one model of the
+  `cheetah_l` pack, loaded alone. Faces get bodies by one-to-one assignment
+  and body crops are masked as MiVOLO masks them, with MiVOLO's thresholds as
+  request fields (`body_min_score`, `body_min_size`, `body_min_visible`,
+  `body_face_match`). `FaceAttributes.age_body` records whether a body was
+  used. Off by default while it is evaluated: `scripts/age_eval.py` compares
+  face-only and face+body ages on labelled images, including how many minors
+  each reads as adults.
+- On CUDA, curator takes argus-cortex 0.4.3's host-wide GPU lease
+  (`argus_cortex.gpu`) around each image's model run (faces with MiVOLO and
+  FairFace, Places365 batches, garments) and around each model load. It is off
+  unless `ARGUS_GPU_COORDINATOR=lease`, and never taken on CPU. With `[gpu]`
+  (now including `argus-cortex[gpu]`, for NVML) it also waits for free VRAM
+  across the card. A scan that cannot get the GPU in time fails instead of
+  skipping images; the server answers 503 with `Retry-After: 5` (and a
+  streaming scan drops any partial cache). `POST /faces` waits at most 30 s,
+  then answers the same 503. `GET /health` reports `gpu_coordinator`. The
+  lease is not taken when CUDA was requested but onnxruntime has no CUDA
+  provider. InsightFace's pack download is off the load lease. The minimum
+  argus-cortex is now 0.4.3.
+- A CUDA image: `ghcr.io/smk762/argus-curator:<version>-gpu` (and
+  `latest-gpu`) beside the CPU image, built with `GPU=1`. It installs `[gpu]`
+  plus `onnxruntime-gpu[cuda,cudnn]`, removing the CPU `onnxruntime` that
+  insightface pulls in (it shadows the GPU build), and the build fails if the
+  CUDA provider is missing. `docker compose` now builds this variant by default
+  (`CURATOR_GPU=0` for CPU).
+
+### Fixed
+
+- On a `[gpu]` install whose CUDA libraries came from NVIDIA's pip wheels,
+  every model silently ran on CPU: those libraries are off the loader's path.
+  `runtime.providers()` now calls onnxruntime's `preload_dlls()` once when it
+  picks CUDA.
+
+### Changed
+
+- SingGuard thinking defaults to `cascade` (`fast` on every image, `slow` on
+  what `fast` flags), including `docker-compose.yaml`. A server without the
+  mode (stock SingGuard answers 400 to `cascade` and `slow`) is retried in
+  `fast`; once `fast` works there, the rest of the run is judged in `fast`,
+  `singguard_mode_unsupported` is logged once, and each such verdict records
+  `thinking: "fast"`. A 400 that `fast` also gets is raised as it came.
+
+- InsightFace is pinned to 2.x (`>=2.1,<3`; it had no upper bound, and a GPU
+  image build had picked up 2.1 unasked), with `scikit-image<2.2`, whose 2.2
+  removes a call InsightFace's face alignment makes.
+- InsightFace loads only detection, recognition and the 3D-68 landmarks. The
+  pack's gender/age model (MiVOLO replaces it) and its 2D-106 landmarks were
+  loaded and never read: about 28% less time per image on CPU, with identical
+  embeddings and pose.
+
 ## [0.9.0] - 2026-10-30
 
 ### Added
@@ -505,7 +576,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/smk762/argus-curator/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/smk762/argus-curator/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/smk762/argus-curator/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/smk762/argus-curator/compare/v0.7.0...v0.8.0

@@ -39,10 +39,17 @@ _CONFIG_ENV = (
 
 
 @pytest.fixture(autouse=True)
-def hermetic_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Config comes from create_app arguments only, never the ambient shell."""
+def hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Config comes from create_app arguments only, never the ambient shell.
+
+    Models too: with the env vars cleared, a model resolves under MODEL_DIR, and
+    a dev box that has run ``mivolo-convert`` has one there.
+    """
     for name in _CONFIG_ENV:
         monkeypatch.delenv(name, raising=False)
+    from argus_curator import runtime
+
+    monkeypatch.setattr(runtime, "MODEL_DIR", tmp_path_factory.mktemp("models"))
 
 
 def _noise_image(size: int = 768, seed: int = 0) -> Image.Image:

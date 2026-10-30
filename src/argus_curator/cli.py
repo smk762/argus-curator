@@ -95,6 +95,11 @@ def scan(
         "--set-age",
         help="Give frames with no face the set's median MiVOLO age when one identity holds the scan (implies --mivolo)",
     ),
+    mivolo_body: bool = Option(
+        False,
+        "--mivolo-body",
+        help="Also give MiVOLO each face's body, from InsightFace's person detector (implies --mivolo; under evaluation)",
+    ),
     mivolo_model: Path | None = Option(
         None, "--mivolo-model", help="Converted MiVOLO ONNX model (ARGUS_CURATOR_MIVOLO_MODEL)"
     ),
@@ -290,6 +295,7 @@ def scan(
         fairface=fairface,
         mivolo=mivolo,
         set_age=set_age,
+        mivolo_body=mivolo_body,
     )
 
     scene_cfg = SceneConfig(enabled=scenes, top_k=scene_top_k, device=device)

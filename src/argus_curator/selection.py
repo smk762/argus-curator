@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 import imagehash
+from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
 from argus_curator.garments import outfit, outfit_similarity
@@ -119,18 +120,44 @@ def _mivolo_years(attrs: FaceAttributes | None) -> float | None:
     return attrs.age_years
 
 
-def minor_exposed(result: ImageResult) -> bool:
-    """True when any MiVOLO age is under 18 and an exposed class scored at least 0.2.
+def _young_mivolo(years: float | None) -> bool:
+    return years is not None and years < MINOR_AGE_YEARS
 
-    0.2 is the lowest score NudeNet reports, so this is any detection of the
-    default exposed classes. Covered parts, faces, belly, feet, and chest do
-    not count. The check uses every face on the image, not only the primary.
+
+def minor_exposed(result: ImageResult) -> bool:
+    """True when a MiVOLO age under 18 shares the frame with an exposed detection.
+
+    0.2 is the lowest score NudeNet reports. Covered parts, faces, belly, feet,
+    and chest do not count. Ages come from every face and from unmatched people
+    (body-only MiVOLO). With person boxes (else face boxes), an exposed
+    detection flags the image when it overlaps a young box or overlaps no box at
+    all; one that overlaps only adults does not. It fails closed: a young face
+    with no person box, or a young age with no box to place it, flags any
+    exposure.
     """
     if result.nsfw is None or exposed_score(result.nsfw.labels) < MIN_REPORTED_SCORE:
         return False
-    years = [_mivolo_years(face.attributes) for face in result.faces]
-    years.append(_mivolo_years(result.primary_face_attributes))
-    return any(age is not None and age < MINOR_AGE_YEARS for age in years)
+    face_years = [_mivolo_years(face.attributes) for face in result.faces]
+    years = [*face_years, _mivolo_years(result.primary_face_attributes)]
+    years.extend(person.age_years for person in result.people)
+    if not any(_young_mivolo(age) for age in years):
+        return False
+    if result.people:
+        if any(
+            _young_mivolo(age) and face.person_index is None for face, age in zip(result.faces, face_years, strict=True)
+        ):
+            return True  # a young face whose body was not found: any exposure may be theirs
+        boxes = [p.bbox for p in result.people]
+        young = [p.bbox for p in result.people if _young_mivolo(p.age_years)]
+    else:
+        boxes = [f.bbox for f in result.faces]
+        young = [f.bbox for f, age in zip(result.faces, face_years, strict=True) if _young_mivolo(age)]
+    exposed = [d for d in result.nsfw.detections if d.label in DEFAULT_EXPOSED_LABELS and d.score >= MIN_REPORTED_SCORE]
+    if not young or not exposed:
+        return True  # the young age (or the exposure) has no box to compare
+    from argus_curator.bodies import overlaps
+
+    return any(any(overlaps(d.bbox, b) for b in young) or not any(overlaps(d.bbox, b) for b in boxes) for d in exposed)
 
 
 def _attribute_exclusion(r: ImageResult, req: ExportRequest) -> str | None:

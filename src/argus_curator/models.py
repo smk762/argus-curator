@@ -179,12 +179,30 @@ class FaceConfig(BaseModel):
     set_age_min_faces: int = Field(5, ge=1)
     set_age_min_share: float = Field(0.9, ge=0.0, le=1.0)
 
+    # Give MiVOLO each face's body as well (see bodies.py). MiVOLO reads a face
+    # and a person crop side by side and is published on the pair; without a
+    # body every face runs face-only. Bodies come from InsightFace's person
+    # detector (body_model, a Cheetah pack). Under evaluation
+    # (scripts/age_eval.py): off by default. The thresholds are MiVOLO's own.
+    mivolo_body: bool = False
+    body_model: str = "cheetah_l"
+    # A person box below this detector score is not a body.
+    body_min_score: float = Field(0.5, ge=0.0, le=1.0)
+    # A body crop narrower or shorter than this many pixels is not used.
+    body_min_size: int = Field(50, ge=1)
+    # Share of a body crop left once every face and other person on it is blacked
+    # out; below it, the crop is not used.
+    body_min_visible: float = Field(0.4, ge=0.0, le=1.0)
+    # Least match score (mean of IoU and the share of the face inside the body)
+    # for a face to be given a body.
+    body_face_match: float = Field(0.0001, ge=0.0, le=1.0)
+
     @model_validator(mode="after")
     def _attributes_need_faces(self) -> FaceConfig:
         # Attributes are read off detected faces; asking for them without
         # detection would otherwise silently yield nothing. A set age is read
         # off MiVOLO ages.
-        if self.set_age:
+        if self.set_age or self.mivolo_body:
             self.mivolo = True
         if self.fairface or self.mivolo:
             self.enabled = True
@@ -288,6 +306,9 @@ class FaceAttributes(BaseModel):
     age_conf: float | None = None
     age_years: float | None = None
     age_source: AttributeSource | None = None
+    # MiVOLO read this face's body as well as its face (FaceConfig.mivolo_body).
+    # None on a pooled cluster, or when MiVOLO did not run.
+    age_body: bool | None = None
 
 
 class SetAge(BaseModel):
@@ -320,6 +341,33 @@ class FaceDetection(BaseModel):
     pitch: float | None = None
     pose: FacePose | None = None
     attributes: FaceAttributes | None = None
+    # Index into ImageResult.people when FaceConfig.mivolo_body matched this face
+    # to a person box; NudeNet detections assigned to that person live there.
+    person_index: int | None = None
+    # NudeNet classes assigned to this face's box when no person list was recorded.
+    nsfw_labels: dict[NudeNetLabel, float] = Field(default_factory=dict)
+    exposed_score: float = 0.0
+
+
+PeopleCheck = Literal["ok", "detection_failed", "body_ages_failed"]
+
+
+class PersonDetection(BaseModel):
+    """One person box from InsightFace's Cheetah detector (FaceConfig.mivolo_body).
+
+    ``face_index`` is the face it was given, or ``None`` when no face matched
+    (a body-only crop; MiVOLO then runs with an absent face). ``nsfw_labels``
+    are NudeNet detections whose box overlaps this person.
+    """
+
+    bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
+    det_score: float
+    face_index: int | None = None
+    age_years: float | None = None
+    age_source: AttributeSource | None = None
+    age_body: bool | None = None
+    nsfw_labels: dict[NudeNetLabel, float] = Field(default_factory=dict)
+    exposed_score: float = 0.0
 
 
 class SceneLabel(BaseModel):
@@ -409,6 +457,16 @@ class ImageResult(BaseModel):
     # Faces (M2)
     faces: list[FaceDetection] = Field(default_factory=list)
     face_count: int = 0
+    # Person boxes from Cheetah when FaceConfig.mivolo_body ran. Empty means it
+    # was not asked, or it found none — unlike garments, this is never None.
+    people: list[PersonDetection] = Field(default_factory=list)
+    # How the person check went (FaceConfig.mivolo_body): None = not asked for,
+    # or face detection on the image failed before it;
+    # "ok"; "detection_failed" = the person detector failed, so `people` is empty
+    # and the faces ran face-only; "body_ages_failed" = people were found but
+    # MiVOLO's body-only ages failed. An empty `people` with "ok" means none found.
+    people_check: PeopleCheck | None = None
+    people_error: str | None = None
     primary_face_cluster: str | None = None
     # Orientation of the primary face (for pose-balanced subset selection).
     primary_face_pose: FacePose | None = None
