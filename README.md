@@ -715,10 +715,13 @@ CPU, or when `device="cuda"` but onnxruntime has no CUDA provider (sessions
 would only run on CPU anyway). InsightFace's pack download happens before the
 load lease, so a cold start does not hold the GPU while weights hit the disk.
 
-- `ARGUS_GPU_COORDINATOR=lease` turns it on (`none`, the default, gates nothing).
-  Every argus process on the host must name the same `ARGUS_GPU_LEASE_PATH` on a
-  shared directory. Containers have their own `/tmp`, so mount one; see the
-  commented lines in `docker-compose.yaml`.
+- `ARGUS_GPU_COORDINATOR=lease` turns it on. `none`, the library default,
+  gates nothing; `docker-compose.yaml` sets `lease`. Every argus process on the
+  host must name the same `ARGUS_GPU_LEASE_PATH` on a shared directory.
+  Containers have their own `/tmp`, so compose mounts `ARGUS_GPU_LOCK_DIR`
+  (`/tmp/argus-gpu` on the host) at `/run/argus-gpu` and uses
+  `/run/argus-gpu/argus-gpu.lock`; argus-lens must mount the same host
+  directory and use the same file.
 - With the `[gpu]` extra (which brings NVML), the lease also waits until the card
   has the memory a model needs free, counted across every process on it, so
   ComfyUI or an Ollama-backed SingGuard on the same GPU are included. The

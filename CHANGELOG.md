@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `docker-compose.yaml` turns the GPU lease on (`ARGUS_GPU_COORDINATOR=lease`,
+  `none` in `.env` to opt out) and mounts its lock directory: host
+  `ARGUS_GPU_LOCK_DIR` (`/tmp/argus-gpu`) at `/run/argus-gpu`, lock file
+  `/run/argus-gpu/argus-gpu.lock`. argus-lens shares the lock by mounting the
+  same host directory and naming the same file.
+
+### Fixed
+
+- `.env.example` listed `ARGUS_LENS_URL`, which nothing reads: an export hands
+  its manifest to argus-lens only through the request's `caption_url`. It now
+  says so, and lists the GPU lease settings instead.
+
 ## [0.10.0] - 2026-10-30
 
 ### Added
