@@ -107,6 +107,7 @@ VRAM_MB: dict[str, dict[str, int]] = {
     "faces": {"load": 1500, "run": 512},  # InsightFace buffalo_l, plus MiVOLO and FairFace
     "scenes": {"load": 400, "run": 512},  # one Places365 batch (up to 16); NVML is a snapshot
     "garments": {"load": 600, "run": 512},
+    "bodies": {"load": 300, "run": 256},  # a Cheetah pack's person detector alone
 }
 
 _coordinator_lock = threading.Lock()

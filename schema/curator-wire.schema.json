@@ -651,6 +651,18 @@
           "default": null,
           "title": "Age"
         },
+        "age_body": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Body"
+        },
         "age_conf": {
           "anyOf": [
             {
@@ -825,6 +837,38 @@
     "FaceConfig": {
       "description": "InsightFace detection + identity-clustering configuration (M2).",
       "properties": {
+        "body_face_match": {
+          "default": 0.0001,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Body Face Match",
+          "type": "number"
+        },
+        "body_min_score": {
+          "default": 0.5,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Body Min Score",
+          "type": "number"
+        },
+        "body_min_size": {
+          "default": 50,
+          "minimum": 1,
+          "title": "Body Min Size",
+          "type": "integer"
+        },
+        "body_min_visible": {
+          "default": 0.4,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Body Min Visible",
+          "type": "number"
+        },
+        "body_model": {
+          "default": "cheetah_l",
+          "title": "Body Model",
+          "type": "string"
+        },
         "cluster_eps": {
           "default": 0.5,
           "title": "Cluster Eps",
@@ -858,6 +902,11 @@
         "mivolo": {
           "default": false,
           "title": "Mivolo",
+          "type": "boolean"
+        },
+        "mivolo_body": {
+          "default": false,
+          "title": "Mivolo Body",
           "type": "boolean"
         },
         "model": {
