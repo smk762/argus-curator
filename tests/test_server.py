@@ -36,7 +36,9 @@ def contained(dataset: Path, tmp_path: Path) -> tuple[TestClient, Path]:
 def test_health(client: TestClient) -> None:
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json()["service"] == "argus-curator"
+    body = resp.json()
+    assert body["service"] == "argus-curator"
+    assert isinstance(body["faces"], bool)
 
 
 def test_health_declares_manifest_version(client: TestClient) -> None:
@@ -765,6 +767,7 @@ def test_cross_site_guard_covers_scan_and_export(contained: tuple[TestClient, Pa
         ("/export", {"scan_id": "x", "dest": "out"}),
         ("/export/stream", {"scan_id": "x", "dest": "out"}),
         ("/scan/x/select", {}),
+        ("/faces", {}),
     ):
         assert client.post(endpoint, json=body, headers=evil).status_code == 403, endpoint
 
@@ -958,7 +961,17 @@ def test_select_request_has_every_export_filter() -> None:
     """A new ExportRequest filter must be added to SelectRequest too."""
     from argus_curator.models import ExportRequest, SelectRequest
 
-    not_filters = {"scan_id", "selection", "dest", "mode", "preserve_structure", "write_manifest", "caption_url"}
+    not_filters = {
+        "scan_id",
+        "selection",
+        "dest",
+        "mode",
+        "preserve_structure",
+        "write_manifest",
+        "caption_url",
+        "write_xmp",
+        "face_names",
+    }
     trims = {"max_keep", "diversify_scenes", "diversify_outfits"}
     assert set(SelectRequest.model_fields) == set(ExportRequest.model_fields) - not_filters - trims
 
@@ -1025,6 +1038,37 @@ def test_export_with_nsfw_thresholds_on_unchecked_scan_is_refused(contained: tup
         resp = client.post(endpoint, json=body)
         assert resp.status_code == 400, endpoint
         assert "NudeNet" in resp.json()["detail"]
+
+
+def test_export_with_content_ratings_on_unchecked_scan_is_refused(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    body = {"scan_id": scan["scan_id"], "dest": "out", "content_ratings": ["safe"]}
+    for endpoint in ("/export", "/export/stream"):
+        resp = client.post(endpoint, json=body)
+        assert resp.status_code == 400, endpoint
+        assert "NudeNet" in resp.json()["detail"]
+
+
+def test_export_write_xmp_stays_under_the_export_root(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_cortex.xmp import XmpData, sidecar_path
+
+    monkeypatch.setattr("argus_curator.export.xmp_data", lambda *_a, **_k: XmpData(content_rating="safe"))
+    client, exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    resp = client.post(
+        "/export",
+        json={"scan_id": scan["scan_id"], "dest": "out", "mode": "copy", "min_score": 0.0, "write_xmp": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["xmp_written"] >= 1
+    exported = resp.json()["exported_abs_paths"]
+    for abs_path in exported.values():
+        sidecar = sidecar_path(Path(abs_path))
+        assert sidecar.is_file()
+        assert exports.resolve() in sidecar.resolve().parents
 
 
 def test_scan_requiring_singguard_without_url_is_refused(contained: tuple[TestClient, Path]) -> None:
@@ -1181,3 +1225,206 @@ def test_cancel_and_purge_are_writes(contained: tuple[TestClient, Path]) -> None
     evil = {"Origin": "https://evil.example"}
     assert client.post("/scans/purge", headers=evil).status_code == 403
     assert client.post("/scan/x/cancel", headers=evil).status_code == 403
+
+
+def _face(years: float | None, source: str | None = "mivolo"):
+    from argus_curator.models import FaceAttributes, FaceDetection
+
+    attrs = None if years is None else FaceAttributes(age_years=years, age_source=source)
+    return FaceDetection(bbox=[10.0, 20.0, 30.0, 40.0], det_score=0.9, attributes=attrs)
+
+
+def _stub_detect(monkeypatch: pytest.MonkeyPatch, faces: list) -> None:
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        results[0].faces.extend(faces)
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+
+
+def test_faces_returns_estimates_and_writes_nothing(
+    dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    app = create_app(cache_dir=str(tmp_path / "cache"), source_root=str(dataset), export_root=str(exports))
+    client = TestClient(app)
+    before = {p.relative_to(dataset) for p in dataset.rglob("*")}
+    _stub_detect(monkeypatch, [_face(34.2)])
+    resp = client.post("/faces", content=_png_bytes(), headers={"content-type": "image/png"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "source": "mivolo",
+        "faces": [{"age_estimate_years": 34.2, "bbox": [10.0, 20.0, 30.0, 40.0]}],
+    }
+    assert {p.relative_to(dataset) for p in dataset.rglob("*")} == before
+    assert list(exports.iterdir()) == []
+
+
+def test_faces_empty_when_there_is_no_face(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_detect(monkeypatch, [])
+    resp = client.post("/faces", content=_png_bytes())
+    assert resp.status_code == 200
+    assert resp.json() == {"source": "mivolo", "faces": []}
+
+
+def test_faces_503_when_mivolo_is_down(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: False)
+    resp = client.post("/faces", content=_png_bytes())
+    assert resp.status_code == 503
+    assert "MiVOLO" in resp.json()["detail"]
+
+
+def test_faces_503_when_a_face_has_no_estimate(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_detect(monkeypatch, [_face(None)])
+    resp = client.post("/faces", content=_png_bytes())
+    assert resp.status_code == 503
+    assert "no age" in resp.json()["detail"]
+
+
+def test_faces_400_when_bytes_are_not_an_image(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_detect(monkeypatch, [])
+    resp = client.post("/faces", content=b"not-an-image")
+    assert resp.status_code == 400
+    assert "undecodable" in resp.json()["detail"]
+
+
+def test_faces_accepts_multipart(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_detect(monkeypatch, [])
+    resp = client.post("/faces", files={"file": ("x.png", _png_bytes(), "image/png")})
+    assert resp.status_code == 200
+    assert resp.json()["faces"] == []
+
+
+def test_faces_without_origin_works(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Server-to-server (darkroom) sends no Origin."""
+    _stub_detect(monkeypatch, [])
+    assert client.post("/faces", content=_png_bytes()).status_code == 200
+
+
+def test_faces_503_when_the_detector_fails(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A detector error must not come back as 200 with no faces (fail-open age check)."""
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        assert kwargs.get("strict") is True
+        raise RuntimeError("onnx exploded")
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    resp = client.post("/faces", content=_png_bytes())
+    assert resp.status_code == 503
+    assert "face detection failed" in resp.json()["detail"]
+
+
+def test_faces_413_when_the_body_is_too_large(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_detect(monkeypatch, [])
+    monkeypatch.setattr("argus_curator.server.app._FACES_MAX_BYTES", 16)
+    resp = client.post("/faces", content=_png_bytes())
+    assert resp.status_code == 413
+
+
+def test_faces_503_with_retry_after_when_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the in-flight limit a call is refused at once, not queued: each one buffers an image."""
+    entered, release = threading.Event(), threading.Event()
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr("argus_curator.server.app._FACES_CONCURRENCY", 1)
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    with TestClient(create_app(cache_dir=str(tmp_path / "cache"))) as client:
+        first: list = []
+        worker = threading.Thread(target=lambda: first.append(client.post("/faces", content=_png_bytes())))
+        worker.start()
+        assert entered.wait(5)
+        busy = client.post("/faces", content=_png_bytes())
+        release.set()
+        worker.join(5)
+    assert busy.status_code == 503 and busy.headers["retry-after"] == "1"
+    assert first[0].status_code == 200
+
+
+def test_faces_third_call_503_at_default_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default cap is two: a third call is 503 while both slots are taken."""
+    in_detect = threading.Semaphore(0)
+    release = threading.Event()
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        in_detect.release()
+        assert release.wait(5)
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    with TestClient(create_app(cache_dir=str(tmp_path / "cache"))) as client:
+        held: list = []
+
+        def hold() -> None:
+            held.append(client.post("/faces", content=_png_bytes()))
+
+        workers = [threading.Thread(target=hold) for _ in range(2)]
+        for t in workers:
+            t.start()
+        assert in_detect.acquire(timeout=5)
+        assert in_detect.acquire(timeout=5)
+        busy = client.post("/faces", content=_png_bytes())
+        release.set()
+        for t in workers:
+            t.join(5)
+    assert busy.status_code == 503 and busy.headers["retry-after"] == "1"
+    assert [r.status_code for r in held] == [200, 200]
+
+
+async def test_faces_burst_does_not_queue_past_a_free_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When one slot is free, extra concurrent callers get 503 — they must not wait on acquire()."""
+    import asyncio
+    import time
+
+    httpx = pytest.importorskip("httpx")
+
+    in_detect = 0
+    count_lock = threading.Lock()
+    first_entered = threading.Event()
+    release = threading.Event()
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        nonlocal in_detect
+        with count_lock:
+            in_detect += 1
+            n = in_detect
+        if n == 1:
+            first_entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    app = create_app(cache_dir=str(tmp_path / "cache"))
+    transport = httpx.ASGITransport(app=app)
+    png = _png_bytes()
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        holder = asyncio.create_task(ac.post("/faces", content=png))
+        assert await asyncio.to_thread(first_entered.wait, 5)
+        racers = [asyncio.create_task(ac.post("/faces", content=png)) for _ in range(8)]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if sum(t.done() for t in racers) >= 7:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("expected 7 refusals while one slot stayed in flight")
+        with count_lock:
+            running = in_detect
+        assert running == 2
+        codes = [t.result().status_code for t in racers if t.done()]
+        assert codes.count(503) == 7
+        release.set()
+        rest = await asyncio.gather(holder, *racers)
+    assert [r.status_code for r in rest].count(200) == 2
+    assert [r.status_code for r in rest].count(503) == 7

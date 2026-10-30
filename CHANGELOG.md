@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-30
+
+### Added
+
+- XMP sidecars on export (#16): `write_xmp` (`--xmp`) writes face regions,
+  person names (`face_names` / `--face-names`, by cluster) and the content
+  rating beside each exported file, through `argus_cortex.xmp`. The source's
+  sidecar is the starting point (`photo.jpg.xmp`, else Lightroom's
+  `photo.xmp`), its other properties are kept, and it is never changed itself.
+  Age estimates are never written. `ExportResult.xmp_written` counts the
+  sidecars; a transfer can succeed while a sidecar fails. `--xmp-sources`
+  (CLI only) merges into every scanned original's sidecar, including
+  rejected images, independent of `--xmp`.
+- A content rating from NudeNet (#18): `ImageResult.content_rating` is
+  `safe` / `suggestive` / `explicit` (derived on read, so cached scans have one
+  too). It is filtered by `content_ratings` (`--content-ratings`) and appears
+  in the CSV report.
+- `POST /faces` judges one image from memory (raw bytes or a multipart file)
+  and returns MiVOLO `age_estimate_years` plus `bbox` per face. It writes
+  nothing, so a caller that must not persist a buffer (argus-darkroom) can
+  use it. `GET /health` reports `faces` when InsightFace and MiVOLO can run.
+  A missing model, a detector that fails, or a detected face with no estimate
+  is HTTP 503. A body over 64 MiB is HTTP 413.
+  At most two calls run at once; a third is refused straight away with HTTP
+  503 and `Retry-After: 1` rather than queued, because each call holds an
+  image in memory. Admission is counted under a lock so a burst that hits a
+  free slot cannot queue behind it.
+
+### Fixed
+
+- An unreadable source sidecar no longer leaves a broken copy beside the
+  exported file. The seed is removed if the merge fails after copying it.
+
+### Changed
+
+- The SingGuard caption context reads XMP with argus-cortex's parser and
+  finds argus-lens's sidecars: it looked only for `photo.xmp`, while lens
+  writes `photo.jpg.xmp`, so lens captions never reached it. A sidecar that is
+  not valid XMP is now no caption rather than a best-effort regex read.
+- The InsightFace app and the onnxruntime sessions (MiVOLO, FairFace,
+  Places365, garments) are built under a lock. A scan and a `POST /faces`
+  asking for the same model at once used to be able to load it twice.
+  InsightFace `app.get` is also serialized: the cached app is shared, and
+  concurrent `get()` has mixed bboxes across images.
+- The SingGuard policy names and texts (`default`, `adult`, `adult-granular`,
+  `adult-cautious`) now come from argus-cortex 0.4.2
+  (`argus_cortex.moderation.policies`), which shares them with argus-darkroom.
+  The texts are unchanged, so results record the same policy names and
+  verdicts are comparable with earlier scans. `guard.POLICIES`, the
+  `guard.ADULT_*_POLICY` constants and `GuardPolicy` keep their names. The
+  minimum argus-cortex is now 0.4.2.
+
 ## [0.8.1] - 2026-10-28
 
 ### Changed
@@ -453,7 +505,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/smk762/argus-curator/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/smk762/argus-curator/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/smk762/argus-curator/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/smk762/argus-curator/compare/v0.6.1...v0.7.0

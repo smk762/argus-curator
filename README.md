@@ -411,6 +411,43 @@ and `nsfw-<class>` (e.g. `nsfw-belly-exposed`). Exporting with NSFW thresholds
 from a scan that did not run NudeNet is refused (400) rather than excluding
 everything. `GET /detectors` reports `nudenet` when a URL is configured.
 
+Each checked image also carries a **`content_rating`**, read off the same
+detections: `explicit` when an exposed class was reported (the five above, from
+NudeNet's 0.2 floor), else `suggestive` when a covered intimate class was
+(lingerie, swimwear: covered breast, genitalia, buttocks or anus), else `safe`.
+An unchecked image has none. It is on every result and in the CSV report, and
+`content_ratings` (`--content-ratings safe,suggestive`) keeps only those
+ratings; unchecked images are excluded (`nsfw-unchecked`), others get
+`content-rating:<rating>`. The rating always uses the five default exposed
+classes; `--nsfw-exposed-labels` / `--nsfw-label` can still drop an image
+the rating calls `safe` (for example a high `BELLY_EXPOSED`).
+
+### XMP sidecars
+
+`write_xmp: true` (`--xmp`) writes an XMP sidecar beside each exported file,
+`photo.jpg.xmp`, through argus-cortex's shared writer, the one argus-lens uses:
+
+- `mwg-rs:Regions`: every detected face, with the name given for its cluster.
+- `Iptc4xmpExt:PersonInImage`: the names, from `face_names`
+  (`--face-names face_1=Ada,face_3=Ada`; two clusters can be one person). An
+  unnamed cluster gets an unnamed region and no person entry.
+- `argus:ContentRating`: the content rating above.
+
+The source's own sidecar (lens's captions, a photo app's stars and edits) is
+the starting point and everything curator does not set is kept; the source's
+sidecar itself is never changed. Age estimates are never written: a MiVOLO
+guess in a photo library reads as a fact. A file curator knows nothing about
+gets no sidecar; `xmp_written` counts the ones written. A transfer can succeed
+while a sidecar fails (`copied` greater than `xmp_written`); the image still
+landed, and the failure is logged rather than undoing it.
+
+`--xmp-sources` (CLI only) merges the same fields into the sidecars beside
+**every scanned original** curator has something for — including rejected
+images — independent of `--xmp` / `--copy-to`. That writes into the scanned
+folder; the server's write paths stay under the export root. Regions are
+replaced as a whole, so regions drawn by hand on an image with detected faces
+are lost.
+
 ### Policy check (SingGuard)
 
 Where NudeNet scores nudity per body part, a [SingGuard](https://huggingface.co/inclusionAI/SingGuard-4b-GGUF)
@@ -449,8 +486,8 @@ sends what the scan already knows as the request text, opening with a line
 that says it is recorded context and not a request (SingGuard reads a bare
 description as a request to produce it): `age` is each face's MiVOLO estimate,
 named as an estimate; `folder` is the image's folder under the scanned root,
-which usually names the set; `caption` is an argus-lens `<stem>.txt` or
-`<stem>.xmp` sidecar, cut to 600 characters. It is off by default. A wrong
+which usually names the set; `caption` is an argus-lens `<stem>.txt` or XMP
+sidecar (`photo.jpg.xmp`, else Lightroom's `photo.xmp`), cut to 600 characters. It is off by default. A wrong
 age leans the verdict the wrong way, so measure it on labelled images
 (`scripts/guard_eval.py --images`) before relying on it. The under-18 rule
 (`minor-exposed`) does not read this text.
@@ -545,8 +582,9 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 
 | Route | Description |
 |---|---|
-| `GET  /health` | Liveness |
+| `GET  /health` | Liveness. `faces` is true when `POST /faces` can run (InsightFace and MiVOLO). |
 | `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet }` |
+| `POST /faces` | One image in memory (raw bytes or multipart). `{ source: mivolo, faces: [{ age_estimate_years, bbox }] }`. Writes nothing. |
 | `GET  /guard/policies` | Each SingGuard policy a scan can name: `{ singguard, policies: [{ name, recorded, source, text, error }] }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |

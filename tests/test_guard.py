@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from argus_cortex.xmp import XmpData, sidecar_path, write_xmp
 from PIL import Image
 from pydantic import ValidationError
 
@@ -339,16 +340,20 @@ def test_image_context_lines(tmp_path: Path) -> None:
     image = tmp_path / "c.jpg"
     image.write_bytes(_png(10))
     (tmp_path / "c.txt").write_text("a woman in a pink sweater, studio portrait\n")
-    (tmp_path / "c.xmp").write_text(
-        "<x:xmpmeta><rdf:RDF><rdf:Description>"
-        "<dc:subject><rdf:Bag><rdf:li>portrait</rdf:li><rdf:li>studio &amp; set</rdf:li></rdf:Bag></dc:subject>"
-        "<dc:description><rdf:Alt><rdf:li xml:lang='x-default'>Final <b>caption</b>.</rdf:li></rdf:Alt></dc:description>"
-        "</rdf:Description></rdf:RDF></x:xmpmeta>"
-    )
+    # lens writes c.jpg.xmp through argus-cortex.
+    write_xmp(image, XmpData(keywords=["portrait", "studio & set"], description="Final caption."))
     captioned = guard_context.image_context(_aged("c.jpg", abs_path=str(image)), frozenset({"caption"}))
     assert captioned.endswith(
         "- Caption written by an earlier captioning tool: a woman in a pink sweater, studio portrait"
         " | Final caption. | portrait, studio & set"
+    )
+    # Lightroom names it after the stem; read when there is no c.jpg.xmp.
+    sidecar_path(image).rename(tmp_path / "c.xmp")
+    assert guard_context.image_context(_aged("c.jpg", abs_path=str(image)), frozenset({"caption"})) == captioned
+    # A sidecar that is not XMP is no caption, not an error.
+    (tmp_path / "c.xmp").write_text("<x:xmpmeta><dc:subject>unbound prefixes")
+    assert guard_context.image_context(_aged("c.jpg", abs_path=str(image)), frozenset({"caption"})).endswith(
+        "a woman in a pink sweater, studio portrait"
     )
 
     (tmp_path / "c.txt").write_text("x" * 5000)
