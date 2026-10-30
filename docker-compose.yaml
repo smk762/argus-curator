@@ -37,11 +37,12 @@ services:
       # - CURATOR_ALLOW_MOVE=1
       # Share the GPU with other argus services (argus-lens) one job at a time,
       # each starting only once the card has room (argus_cortex.gpu). Every
-      # service must name the same lock file on the same host directory: uncomment
-      # this and the matching volume below. A CPU build (CURATOR_GPU=0) never
-      # takes the lease.
-      # - ARGUS_GPU_COORDINATOR=lease
-      # - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
+      # service on the host must mount the same host directory (ARGUS_GPU_LOCK_DIR,
+      # below) and name the same lock file in it. ARGUS_GPU_COORDINATOR=none in
+      # .env turns it off. A CPU build (CURATOR_GPU=0) never takes the lease.
+      - ARGUS_GPU_COORDINATOR=${ARGUS_GPU_COORDINATOR:-lease}
+      - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
+      - ARGUS_GPU_LEASE_TIMEOUT_S=${ARGUS_GPU_LEASE_TIMEOUT_S:-300}
     volumes:
       # Dataset mount the curator scans and serves /thumb from.
       - ${CURATOR_SOURCE_PATH:-./data}:/data/images
@@ -52,7 +53,7 @@ services:
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ~/.insightface:/root/.insightface
       # The host-wide GPU lease's lock directory, shared by every argus service.
-      # - ${ARGUS_GPU_LOCK_DIR:-/tmp/argus-gpu}:/run/argus-gpu
+      - ${ARGUS_GPU_LOCK_DIR:-/tmp/argus-gpu}:/run/argus-gpu
     deploy:
       resources:
         reservations:
