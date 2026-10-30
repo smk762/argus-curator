@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-30
+
 ### Changed
 
+- Under `cascade` thinking, a frame with a MiVOLO age under 18 (a measured
+  face, a body-only estimate, or the set's age for a faceless frame) and an
+  exposed NudeNet score of at least 0.2 goes straight to SingGuard `slow`
+  instead of the `fast` screen. That pairing already holds the frame, so
+  reasoning on it costs little.
 - `docker-compose.yaml` turns the GPU lease on (`ARGUS_GPU_COORDINATOR=lease`,
   `none` in `.env` to opt out) and mounts its lock directory: host
   `ARGUS_GPU_LOCK_DIR` (`/tmp/argus-gpu`) at `/run/argus-gpu`, lock file
@@ -590,7 +597,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/smk762/argus-curator/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/smk762/argus-curator/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/smk762/argus-curator/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/smk762/argus-curator/compare/v0.8.0...v0.8.1

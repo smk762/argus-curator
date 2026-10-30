@@ -10,11 +10,10 @@ from __future__ import annotations
 import re
 
 import imagehash
-from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS
+from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS, rule_matches
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
 from argus_curator.garments import outfit, outfit_similarity
-from argus_curator.guard import rule_matches
 from argus_curator.models import ExportRequest, FaceAttributes, GuardResult, ImageResult, ScanSummary
 from argus_curator.nsfw import exposed_score
 
