@@ -468,7 +468,11 @@ def create_app(
     async def detectors() -> dict[str, bool | list[str]]:
         return _detectors()
 
-    faces_slots = asyncio.Semaphore(_FACES_CONCURRENCY)
+    # Semaphore.locked() is not a non-blocking acquire: when one slot remains,
+    # several coroutines can all pass the check and then queue on acquire().
+    # Count in flight under a lock so a call past the cap is 503, never queued.
+    faces_in_flight = 0
+    faces_admit = asyncio.Lock()
 
     @app.post("/faces")
     async def faces(request: Request) -> dict[str, Any]:
@@ -477,10 +481,16 @@ def create_app(
         Raw image bytes, or a multipart file. Darkroom and other suite clients
         POST a buffer; this is not a scan and does not need a source root.
         """
-        if faces_slots.locked():
-            raise HTTPException(status_code=503, detail="busy: try again", headers={"Retry-After": "1"})
-        async with faces_slots:
+        nonlocal faces_in_flight
+        async with faces_admit:
+            if faces_in_flight >= _FACES_CONCURRENCY:
+                raise HTTPException(status_code=503, detail="busy: try again", headers={"Retry-After": "1"})
+            faces_in_flight += 1
+        try:
             return await _faces(request)
+        finally:
+            async with faces_admit:
+                faces_in_flight -= 1
 
     async def _faces(request: Request) -> dict[str, Any]:
         too_large = HTTPException(status_code=413, detail=f"image larger than {_FACES_MAX_BYTES} bytes")

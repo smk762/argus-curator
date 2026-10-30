@@ -30,6 +30,10 @@ logger = structlog.get_logger()
 _APP_CACHE: dict[str, object] = {}
 # A scan thread and POST /faces can ask for the same app at once; build it once.
 _APP_LOCK = threading.Lock()
+# FaceAnalysis.get is not thread-safe (bbox/result mix-ups under concurrent
+# callers). A scan's faces phase and POST /faces share the cached app, so every
+# get() is serialized. onnxruntime session.run (MiVOLO, FairFace) is fine.
+_INFER_LOCK = threading.Lock()
 
 
 class FacesUnavailable(RuntimeError):
@@ -287,7 +291,8 @@ def detect_faces(
             raise ValueError(f"cannot decode {rel} for face detection")
         if bgr is not None:
             try:
-                detections = app.get(bgr)
+                with _INFER_LOCK:
+                    detections = app.get(bgr)
             except Exception as exc:
                 if strict:
                     raise

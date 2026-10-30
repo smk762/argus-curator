@@ -541,3 +541,43 @@ def test_concurrent_callers_build_a_model_once(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(faces, "_build_app", slow_build)
     apps = _race(lambda: faces._get_app(FaceConfig(enabled=True)))
     assert len(builds) == 1 and len({id(a) for a in apps}) == 1
+
+
+def test_insightface_get_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scan thread and POST /faces must not call FaceAnalysis.get at the same time.
+
+    InsightFace is not thread-safe there; concurrent get() has mixed bboxes.
+    """
+    import threading
+    import time
+
+    overlapping = threading.Event()
+    inside = 0
+    guard = threading.Lock()
+
+    class App:
+        def get(self, bgr):  # noqa: ANN001, ARG002
+            nonlocal inside
+            with guard:
+                if inside:
+                    overlapping.set()
+                inside += 1
+            time.sleep(0.05)
+            with guard:
+                inside -= 1
+            return []
+
+    monkeypatch.setattr(faces, "_get_app", lambda cfg: App())
+    png = _png(400)
+    cfg = FaceConfig(enabled=True)
+
+    def one(rel: str) -> None:
+        result = ImageResult(rel_path=rel, abs_path=f"/{rel}", passed=True)
+        faces.detect_faces([result], [(rel, f"/{rel}", png)], cfg)
+
+    threads = [threading.Thread(target=one, args=(f"{i}.png",)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not overlapping.is_set()
