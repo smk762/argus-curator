@@ -242,12 +242,17 @@ def detect_faces(
     cfg: FaceConfig,
     progress: Callable[[int, int], None] | None = None,
     on_done: Callable[[ImageResult, int, int], None] | None = None,
+    strict: bool = False,
 ) -> DetectedFaces:
     """Detect faces and run MiVOLO and FairFace. Identity clustering is separate.
 
     ``on_done(image, done, total)`` fires once each passing image has its faces,
     so a caller can show ages and race before the rest of the scan. ``total`` is
     the number of passing images.
+
+    A scan logs and skips an image the detector cannot read. With *strict* that
+    raises instead, so a single-image caller (``POST /faces``) cannot mistake a
+    failed detection for "no faces".
     """
     empty = DetectedFaces([], [], [])
     if not cfg.enabled:
@@ -269,10 +274,14 @@ def detect_faces(
         if progress is not None and i % step == 0:
             progress(i, total)
         bgr = _to_bgr(data_by_rel[rel])
+        if bgr is None and strict:
+            raise ValueError(f"cannot decode {rel} for face detection")
         if bgr is not None:
             try:
                 detections = app.get(bgr)
             except Exception as exc:
+                if strict:
+                    raise
                 logger.warning("face_detect_failed", rel_path=rel, error=str(exc))
                 detections = None
             if detections is not None:

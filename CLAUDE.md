@@ -24,7 +24,7 @@ Curator and lens share one `TargetProfile`, so a manifest written here is consum
 - `faces.py` — optional InsightFace detect/embed/cluster into `face_<n>` identities + head-pose bucketing (`classify_pose`). All heavy imports deferred; `import faces` is always safe.
 - `store.py` — `ScanStore`, a flat `<scan_id>.json` cache that makes paginated `GET /scan/{id}` and export-by-id possible.
 - `cli.py` — Typer app (`scan`, `serve`, `detectors`, `schema`).
-- `server/app.py` — `create_app()`: routes + containment + `argus_cortex` write-guard. Optional `[server]` extra.
+- `server/app.py` — `create_app()`: routes + containment + `argus_cortex` write-guard. Optional `[server]` extra. `POST /faces` is memory-only (no source root); it is the age-check HTTP surface for darkroom.
 
 ## Commands
 
