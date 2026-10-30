@@ -297,8 +297,11 @@ _FACES_CONCURRENCY = 2
 _FACES_LEASE_WAIT_S = 30.0
 
 
-def _faces_from_bytes(data: bytes) -> dict[str, Any]:
+def _faces_from_bytes(data: bytes, body: bool = False) -> dict[str, Any]:
     """MiVOLO estimates for every face in *data*. Writes nothing.
+
+    With *body*, MiVOLO is also given each face's body (``FaceConfig.mivolo_body``,
+    MiVOLO's default thresholds); ``age_body`` says per face whether one was used.
 
     Raises :class:`HTTPException`: 400 if the bytes are not an image, 503 if
     InsightFace or MiVOLO cannot run or a detected face has no estimate.
@@ -324,7 +327,7 @@ def _faces_from_bytes(data: bytes) -> dict[str, Any]:
         detect_faces(
             [result],
             [("image", "", data)],
-            FaceConfig(enabled=True, mivolo=True),
+            FaceConfig(enabled=True, mivolo=True, mivolo_body=body),
             strict=True,
             lease_wait_s=_FACES_LEASE_WAIT_S,
         )
@@ -340,7 +343,10 @@ def _faces_from_bytes(data: bytes) -> dict[str, Any]:
         years = face.attributes.age_years if face.attributes is not None else None
         if years is None:
             raise HTTPException(status_code=503, detail="MiVOLO gave no age for a detected face")
-        faces.append({"age_estimate_years": float(years), "bbox": list(face.bbox)})
+        row: dict[str, Any] = {"age_estimate_years": float(years), "bbox": list(face.bbox)}
+        if body:
+            row["age_body"] = bool(face.attributes.age_body)
+        faces.append(row)
     return {"source": "mivolo", "faces": faces}
 
 
@@ -489,11 +495,12 @@ def create_app(
     faces_admit = asyncio.Lock()
 
     @app.post("/faces")
-    async def faces(request: Request) -> dict[str, Any]:
+    async def faces(request: Request, body: bool = Query(False)) -> dict[str, Any]:
         """Age estimates for one image, from memory. Nothing is written.
 
         Raw image bytes, or a multipart file. Darkroom and other suite clients
         POST a buffer; this is not a scan and does not need a source root.
+        ``?body=true`` also gives MiVOLO each face's body (under evaluation).
         """
         nonlocal faces_in_flight
         async with faces_admit:
@@ -501,12 +508,12 @@ def create_app(
                 raise HTTPException(status_code=503, detail="busy: try again", headers={"Retry-After": "1"})
             faces_in_flight += 1
         try:
-            return await _faces(request)
+            return await _faces(request, body)
         finally:
             async with faces_admit:
                 faces_in_flight -= 1
 
-    async def _faces(request: Request) -> dict[str, Any]:
+    async def _faces(request: Request, body: bool) -> dict[str, Any]:
         too_large = HTTPException(status_code=413, detail=f"image larger than {_FACES_MAX_BYTES} bytes")
         try:
             declared = int(request.headers.get("content-length") or 0)
@@ -529,7 +536,7 @@ def create_app(
                 if len(buf) > _FACES_MAX_BYTES:
                     raise too_large
             data = bytes(buf)
-        return await asyncio.to_thread(_faces_from_bytes, data)
+        return await asyncio.to_thread(_faces_from_bytes, data, body)
 
     @app.get("/guard/policies")
     async def guard_policies() -> dict[str, Any]:

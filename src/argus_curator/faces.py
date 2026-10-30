@@ -28,6 +28,10 @@ from argus_curator.runtime import gpu_lease, providers
 logger = structlog.get_logger()
 
 _APP_CACHE: dict[str, object] = {}
+# The InsightFace models curator reads: boxes and keypoints, identity embeddings,
+# and the 3D-68 landmarks behind head pose. A pack's gender/age model (MiVOLO
+# replaces it) and its 2D-106 landmarks are never loaded.
+FACE_MODULES = ("detection", "recognition", "landmark_3d_68")
 # A scan thread and POST /faces can ask for the same app at once; build it once.
 _APP_LOCK = threading.Lock()
 # FaceAnalysis.get is not thread-safe (bbox/result mix-ups under concurrent
@@ -70,7 +74,7 @@ def _build_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
     provs = providers(cfg.device)
     # FaceAnalysis() fetches the pack to disk; prepare() builds CUDA sessions.
     # Keep the download off the GPU lease so a cold start does not block lens.
-    app = FaceAnalysis(name=cfg.model, providers=provs)
+    app = FaceAnalysis(name=cfg.model, providers=provs, allowed_modules=list(FACE_MODULES))
     ctx_id = 0 if "CUDAExecutionProvider" in provs else -1
     with gpu_lease(cfg.device, "faces", "load", wait_s=lease_wait_s):
         app.prepare(ctx_id=ctx_id, det_size=(640, 640))
@@ -188,14 +192,30 @@ def _attribute_sessions(cfg: FaceConfig) -> tuple[object | None, object | None]:
     return ff, mv
 
 
+def _body_detector(cfg: FaceConfig) -> object | None:
+    """The person detector when ``cfg.mivolo_body`` asks for body crops, else ``None``."""
+    if not cfg.mivolo_body:
+        return None
+    from argus_curator import bodies
+
+    return bodies.get_detector(cfg)
+
+
 def _face_attributes(
     sessions: tuple[object | None, object | None],
     bgr: np.ndarray,
     kps_by_face: list[np.ndarray | None],
     bboxes: list[list[float]],
     rel: str,
+    *,
+    body_detector: object | None = None,
+    cfg: FaceConfig | None = None,
 ) -> list[RawAttributes]:
-    """Raw model outputs per face of one image; a model that fails is skipped."""
+    """Raw model outputs per face of one image; a model that fails is skipped.
+
+    With *body_detector*, MiVOLO is given each face's masked body crop; a body
+    detection that fails leaves every face face-only, as without it.
+    """
     raws = [RawAttributes() for _ in bboxes]
     ff_session, mv_session = sessions
     if (ff_session is None and mv_session is None) or not bboxes:
@@ -217,10 +237,21 @@ def _face_attributes(
     if mv_session is not None:
         from argus_curator import mivolo
 
+        body_crops = None
+        if body_detector is not None and cfg is not None:
+            from argus_curator import bodies
+
+            try:
+                found = bodies.detect(body_detector, bgr, cfg.body_min_score)
+                body_crops = bodies.crops_for_faces(image, found, bboxes, cfg)
+            except Exception as exc:
+                logger.warning("body_detect_failed", rel_path=rel, error=str(exc))
         try:
-            for raw, pred in zip(raws, mivolo.predict(mv_session, image, bboxes), strict=True):
+            preds = mivolo.predict(mv_session, image, bboxes, body_crops)
+            for i, (raw, pred) in enumerate(zip(raws, preds, strict=True)):
                 if pred is not None:
                     raw.mivolo_gender, raw.mivolo_age = pred
+                    raw.mivolo_body = body_crops is not None and body_crops[i] is not None
         except Exception as exc:
             logger.warning("mivolo_failed", rel_path=rel, error=str(exc))
     return raws
@@ -285,6 +316,7 @@ def detect_faces(
     app = _get_app(cfg, lease_wait_s=lease_wait_s)
     with gpu_lease(cfg.device, "faces", "load", wait_s=lease_wait_s):
         sessions = _attribute_sessions(cfg)
+        body_detector = _body_detector(cfg)
     data_by_rel = {rel: data for rel, _abs, data in items}
     result_by_rel = {r.rel_path: r for r in results}
     found = DetectedFaces([], [], [])
@@ -303,7 +335,7 @@ def detect_faces(
             raise ValueError(f"cannot decode {rel} for face detection")
         if bgr is not None:
             with gpu_lease(cfg.device, "faces", wait_s=lease_wait_s):
-                _detect_one(app, sessions, bgr, rel, r, cfg, found, strict)
+                _detect_one(app, sessions, bgr, rel, r, cfg, found, strict, body_detector)
         if on_done is not None:
             on_done(r, i + 1, total)
 
@@ -321,6 +353,7 @@ def _detect_one(
     cfg: FaceConfig,
     found: DetectedFaces,
     strict: bool,
+    body_detector: object | None = None,
 ) -> None:
     """Faces, embeddings and attributes for one decoded image, recorded on *r* and *found*."""
     try:
@@ -364,7 +397,9 @@ def _detect_one(
         kps_by_face.append(getattr(face, "kps", None))
         kept += 1
     r.face_count = kept
-    raws = _face_attributes(sessions, bgr, kps_by_face, [f.bbox for f in r.faces], rel)
+    raws = _face_attributes(
+        sessions, bgr, kps_by_face, [f.bbox for f in r.faces], rel, body_detector=body_detector, cfg=cfg
+    )
     for f, raw in zip(r.faces, raws, strict=True):
         f.attributes = to_attributes(raw)
     found.raws.extend(raws)

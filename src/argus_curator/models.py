@@ -179,12 +179,30 @@ class FaceConfig(BaseModel):
     set_age_min_faces: int = Field(5, ge=1)
     set_age_min_share: float = Field(0.9, ge=0.0, le=1.0)
 
+    # Give MiVOLO each face's body as well (see bodies.py). MiVOLO reads a face
+    # and a person crop side by side and is published on the pair; without a
+    # body every face runs face-only. Bodies come from InsightFace's person
+    # detector (body_model, a Cheetah pack). Under evaluation
+    # (scripts/age_eval.py): off by default. The thresholds are MiVOLO's own.
+    mivolo_body: bool = False
+    body_model: str = "cheetah_l"
+    # A person box below this detector score is not a body.
+    body_min_score: float = Field(0.5, ge=0.0, le=1.0)
+    # A body crop narrower or shorter than this many pixels is not used.
+    body_min_size: int = Field(50, ge=1)
+    # Share of a body crop left once every face and other person on it is blacked
+    # out; below it, the crop is not used.
+    body_min_visible: float = Field(0.4, ge=0.0, le=1.0)
+    # Least match score (mean of IoU and the share of the face inside the body)
+    # for a face to be given a body.
+    body_face_match: float = Field(0.0001, ge=0.0, le=1.0)
+
     @model_validator(mode="after")
     def _attributes_need_faces(self) -> FaceConfig:
         # Attributes are read off detected faces; asking for them without
         # detection would otherwise silently yield nothing. A set age is read
         # off MiVOLO ages.
-        if self.set_age:
+        if self.set_age or self.mivolo_body:
             self.mivolo = True
         if self.fairface or self.mivolo:
             self.enabled = True
@@ -288,6 +306,9 @@ class FaceAttributes(BaseModel):
     age_conf: float | None = None
     age_years: float | None = None
     age_source: AttributeSource | None = None
+    # MiVOLO read this face's body as well as its face (FaceConfig.mivolo_body).
+    # None on a pooled cluster, or when MiVOLO did not run.
+    age_body: bool | None = None
 
 
 class SetAge(BaseModel):
