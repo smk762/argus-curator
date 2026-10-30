@@ -19,8 +19,9 @@ from typing import Any
 
 import structlog
 from argus_cortex.moderation import rule_letter
+from argus_cortex.xmp import XmpData, XmpError, XmpRegion, XmpRegions, sidecar_path, write_xmp
 
-from argus_curator.models import ExportRequest, ExportResult, ImageResult, ManifestRow, ScanSummary
+from argus_curator.models import ExportRequest, ExportResult, FaceDetection, ImageResult, ManifestRow, ScanSummary
 from argus_curator.selection import decide_selection, minor_exposed
 
 logger = structlog.get_logger()
@@ -200,6 +201,7 @@ def write_report(
         "garments",
         "nsfw_exposed_score",
         "nsfw_labels",
+        "content_rating",
         "guard_safe",
         "guard_rules",
         "guard_variants",
@@ -256,6 +258,7 @@ def write_report(
                     "nsfw_exposed_score": r.nsfw.exposed_score if r.nsfw else "",
                     # "LABEL:score" per detected class, highest first.
                     "nsfw_labels": ";".join(f"{k}:{v:.2f}" for k, v in r.nsfw.labels.items()) if r.nsfw else "",
+                    "content_rating": r.content_rating or "",
                     "guard_safe": "" if r.guard is None else str(r.guard.safe).lower(),
                     "guard_rules": ";".join(r.guard.rules) if r.guard else "",
                     # "policy=safe" or "policy=unsafe[A,H]" per policy that judged the image.
@@ -268,6 +271,94 @@ def write_report(
                     "abs_path": r.abs_path,
                 }
             )
+
+
+def _region(face: FaceDetection, width: int, height: int, names: dict[str, str]) -> XmpRegion:
+    """*face*'s pixel ``[x, y, w, h]`` as an MWG region: centre and size as fractions of the frame."""
+    x, y, w, h = face.bbox
+
+    def frac(value: float, whole: int) -> float:
+        return min(1.0, max(0.0, value / whole))
+
+    return XmpRegion(
+        x=frac(x + w / 2, width),
+        y=frac(y + h / 2, height),
+        w=frac(w, width),
+        h=frac(h, height),
+        name=names.get(face.cluster_id) if face.cluster_id else None,
+    )
+
+
+def xmp_data(r: ImageResult, face_names: dict[str, str] | None = None) -> XmpData | None:
+    """What curator records about *r* in a sidecar, or ``None`` when it knows nothing worth writing.
+
+    A field curator has nothing for stays ``None``, so merging leaves whatever
+    the sidecar already holds there. Age estimates are never written: a MiVOLO
+    guess in a photo library would read as a fact.
+    """
+    names = face_names or {}
+    regions = None
+    if r.faces and r.width > 0 and r.height > 0:
+        regions = XmpRegions(
+            width=r.width, height=r.height, regions=[_region(face, r.width, r.height, names) for face in r.faces]
+        )
+    persons = sorted({names[f.cluster_id] for f in r.faces if f.cluster_id in names})
+    if regions is None and not persons and r.content_rating is None:
+        return None
+    return XmpData(regions=regions, persons=persons or None, content_rating=r.content_rating)
+
+
+def _source_sidecar(src: Path) -> Path | None:
+    """The sidecar already beside *src*: ``photo.jpg.xmp`` (lens, digiKam), else ``photo.xmp`` (Lightroom)."""
+    for candidate in (sidecar_path(src), src.with_suffix(".xmp")):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _write_export_sidecar(src: Path, dst: Path, data: XmpData) -> None:
+    """Merge *data* into *dst*'s sidecar, starting from *src*'s when *dst* has none yet.
+
+    The seed is copied first so lens keywords and a photo app's stars survive.
+    If the merge then fails, a sidecar we just created is removed: the export
+    must not leave a broken ``photo.jpg.xmp`` that was not there before.
+    """
+    seed = _source_sidecar(src)
+    target = sidecar_path(dst)
+    created = False
+    if seed is not None and not target.exists():
+        shutil.copyfile(seed, target)
+        created = True
+    try:
+        write_xmp(dst, data)
+    except Exception:
+        if created:
+            target.unlink(missing_ok=True)
+        raise
+
+
+def write_source_sidecars(results: list[ImageResult], face_names: dict[str, str] | None = None) -> int:
+    """Merge curator's metadata into the sidecar beside each scanned original. Returns how many were written.
+
+    Every result with something to record is written, including rejected and
+    below-threshold images — this is a library annotate, not an export of
+    keepers. This writes into the scanned folder, so only the CLI offers it
+    (``--xmp-sources``); the server's write paths stay under the export root.
+    Merging keeps every property curator does not set. Regions are replaced as
+    a whole, so face regions drawn by hand in a photo app are lost on an image
+    with detected faces.
+    """
+    written = 0
+    for r in results:
+        data = xmp_data(r, face_names)
+        if data is None:
+            continue
+        try:
+            write_xmp(r.abs_path, data)
+            written += 1
+        except (OSError, XmpError) as exc:
+            logger.warning("xmp_write_failed", rel_path=r.rel_path, error=str(exc))
+    return written
 
 
 def _post_manifest_to_lens(manifest_path: Path, caption_url: str) -> bool:
@@ -321,6 +412,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
 
     copied = 0
     skipped = 0
+    xmp_written = 0
     transferred: list[ImageResult] = []
     for i, r in enumerate(selected):
         src = Path(r.abs_path)
@@ -336,6 +428,14 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
             except Exception as exc:
                 logger.warning("export_transfer_failed", rel_path=r.rel_path, error=str(exc))
                 skipped += 1
+            else:
+                if req.write_xmp and (data := xmp_data(r, req.face_names)) is not None:
+                    try:
+                        _write_export_sidecar(src, dst, data)
+                        xmp_written += 1
+                    except (OSError, XmpError) as exc:
+                        # The file landed; a sidecar that cannot be written does not undo that.
+                        logger.warning("xmp_write_failed", rel_path=r.rel_path, error=str(exc))
         if progress is not None:
             progress({"phase": "transferring", "done": i + 1, "total": total})
 
@@ -377,4 +477,5 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         exported_paths=exported,
         exported_abs_paths=exported_abs,
         captioned=captioned,
+        xmp_written=xmp_written,
     )

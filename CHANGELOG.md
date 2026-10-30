@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- XMP sidecars on export (#16): `write_xmp` (`--xmp`) writes face regions,
+  person names (`face_names` / `--face-names`, by cluster) and the content
+  rating beside each exported file, through `argus_cortex.xmp`. The source's
+  sidecar is the starting point (`photo.jpg.xmp`, else Lightroom's
+  `photo.xmp`), its other properties are kept, and it is never changed itself.
+  Age estimates are never written. `ExportResult.xmp_written` counts the
+  sidecars; a transfer can succeed while a sidecar fails. `--xmp-sources`
+  (CLI only) merges into every scanned original's sidecar, including
+  rejected images, independent of `--xmp`.
+- A content rating from NudeNet (#18): `ImageResult.content_rating` is
+  `safe` / `suggestive` / `explicit` (derived on read, so cached scans have one
+  too). It is filtered by `content_ratings` (`--content-ratings`) and appears
+  in the CSV report.
 - `POST /faces` judges one image from memory (raw bytes or a multipart file)
   and returns MiVOLO `age_estimate_years` plus `bbox` per face. It writes
   nothing, so a caller that must not persist a buffer (argus-darkroom) can
@@ -20,8 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image in memory. Admission is counted under a lock so a burst that hits a
   free slot cannot queue behind it.
 
+### Fixed
+
+- An unreadable source sidecar no longer leaves a broken copy beside the
+  exported file. The seed is removed if the merge fails after copying it.
+
 ### Changed
 
+- The SingGuard caption context reads XMP with argus-cortex's parser and
+  finds argus-lens's sidecars: it looked only for `photo.xmp`, while lens
+  writes `photo.jpg.xmp`, so lens captions never reached it. A sidecar that is
+  not valid XMP is now no caption rather than a best-effort regex read.
 - The InsightFace app and the onnxruntime sessions (MiVOLO, FairFace,
   Places365, garments) are built under a lock. A scan and a `POST /faces`
   asking for the same model at once used to be able to load it twice.

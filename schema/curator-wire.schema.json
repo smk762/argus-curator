@@ -14,6 +14,27 @@
           "default": null,
           "title": "Caption Url"
         },
+        "content_ratings": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "safe",
+                  "suggestive",
+                  "explicit"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Ratings"
+        },
         "dest": {
           "title": "Dest",
           "type": "string"
@@ -131,6 +152,21 @@
           ],
           "default": null,
           "title": "Face Genders"
+        },
+        "face_names": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Names"
         },
         "face_poses": {
           "anyOf": [
@@ -500,6 +536,11 @@
           "default": true,
           "title": "Write Manifest",
           "type": "boolean"
+        },
+        "write_xmp": {
+          "default": false,
+          "title": "Write Xmp",
+          "type": "boolean"
         }
       },
       "required": [
@@ -567,6 +608,11 @@
         },
         "skipped": {
           "title": "Skipped",
+          "type": "integer"
+        },
+        "xmp_written": {
+          "default": 0,
+          "title": "Xmp Written",
           "type": "integer"
         }
       },
@@ -1150,6 +1196,24 @@
           "title": "Artifact Score",
           "type": "number"
         },
+        "content_rating": {
+          "anyOf": [
+            {
+              "enum": [
+                "safe",
+                "suggestive",
+                "explicit"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Derived from :attr:`nsfw` on read, so a scan cached before ratings existed has one too.",
+          "readOnly": true,
+          "title": "Content Rating"
+        },
         "duplicate_of": {
           "anyOf": [
             {
@@ -1389,7 +1453,8 @@
       },
       "required": [
         "rel_path",
-        "abs_path"
+        "abs_path",
+        "content_rating"
       ],
       "title": "ImageResult",
       "type": "object"
@@ -1898,6 +1963,27 @@
     "SelectRequest": {
       "description": "Filter body for ``POST /scan/{id}/select``.\n\nThe filter fields of :class:`ExportRequest`, and none of the transfer\nfields (``dest``, ``mode``, ``selection``). ``max_keep`` and the diversify\nflags are absent on purpose: this route never diversity-trims.",
       "properties": {
+        "content_ratings": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "safe",
+                  "suggestive",
+                  "explicit"
+                ],
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Ratings"
+        },
         "exclude_garments": {
           "anyOf": [
             {

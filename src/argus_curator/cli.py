@@ -24,6 +24,19 @@ def _csv_list(value: str | None) -> list[str] | None:
     return [v.strip() for v in value.split(",") if v.strip()] if value else None
 
 
+def _face_names(value: str | None) -> dict[str, str] | None:
+    """Parse ``face_1=Ada,face_2=Bo``; the names are validated by ExportRequest."""
+    if not value:
+        return None
+    out: dict[str, str] = {}
+    for pair in _csv_list(value) or []:
+        cluster, sep, name = pair.partition("=")
+        if not sep:
+            raise ValueError(f"expected CLUSTER=name, got {pair!r}")
+        out[cluster.strip()] = name.strip()
+    return out
+
+
 def _label_thresholds(value: str | None) -> dict[str, float] | None:
     """Parse ``LABEL=score,LABEL=score``; the labels are validated by ExportRequest."""
     if not value:
@@ -163,6 +176,11 @@ def scan(
     nsfw_exposed_labels: str | None = Option(
         None, "--nsfw-exposed-labels", help="NudeNet classes --nsfw-threshold is taken over (default: the 5 exposed)"
     ),
+    content_ratings: str | None = Option(
+        None,
+        "--content-ratings",
+        help="Keep only these NudeNet content ratings, comma-separated: safe, suggestive, explicit",
+    ),
     guard: bool | None = Option(
         None,
         "--guard/--no-guard",
@@ -189,6 +207,21 @@ def scan(
     guard_unsafe: bool = Option(False, "--guard-unsafe", help="Drop images SingGuard judged unsafe, under any rule"),
     guard_rules: str | None = Option(
         None, "--guard-rules", help="Drop images where one of these SingGuard rules fired, comma-separated (e.g. A,C)"
+    ),
+    xmp: bool = Option(
+        False, "--xmp", help="Write an XMP sidecar beside each exported file (face regions, names, content rating)"
+    ),
+    xmp_sources: bool = Option(
+        False,
+        "--xmp-sources",
+        help=(
+            "Merge face regions, names and content rating into sidecars beside every "
+            "scanned original (including rejected ones; independent of --xmp / --copy-to). "
+            "Writes into the scanned folder"
+        ),
+    ),
+    face_names: str | None = Option(
+        None, "--face-names", help="Person names for the sidecars by cluster, comma-separated (face_1=Ada,face_2=Bo)"
     ),
     csv_out: Path | None = Option(None, "--csv", help="Write the per-image CSV report here"),
     json_out: Path | None = Option(None, "--json", help="Write the full ScanSummary JSON here"),
@@ -277,6 +310,14 @@ def scan(
         typer.echo(f"Error: --nsfw-label: {exc}", err=True)
         raise typer.Exit(2) from exc
     try:
+        names = _face_names(face_names)
+    except ValueError as exc:
+        typer.echo(f"Error: --face-names: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if xmp and dest is None:
+        typer.echo("Error: --xmp writes beside exported files; add --copy-to, --move-to or --symlink-to", err=True)
+        raise typer.Exit(2)
+    try:
         export_req = ExportRequest(
             dest=str(dest) if dest else str(source),
             mode=mode,
@@ -303,11 +344,14 @@ def scan(
             diversify_outfits=diversify_outfits,
             nsfw_threshold=nsfw_threshold,
             nsfw_label_thresholds=label_thresholds,
+            content_ratings=_csv_list(content_ratings),
             guard_unsafe=guard_unsafe,
             guard_rules=_csv_list(guard_rules),
             guard_policies=_csv_list(guard_policies),
             **({"nsfw_exposed_labels": _csv_list(nsfw_exposed_labels)} if nsfw_exposed_labels else {}),
             write_manifest=dest is not None,
+            write_xmp=xmp,
+            face_names=names,
         )
     except ValidationError as exc:
         for err in exc.errors():
@@ -339,9 +383,9 @@ def scan(
         if nudenet_endpoint is None:
             typer.echo(f"Error: --nsfw needs a NudeNet server (--nudenet-url or {nsfw_mod.URL_ENV})", err=True)
             raise typer.Exit(1)
-    elif nsfw_threshold is not None or label_thresholds:
+    elif nsfw_threshold is not None or label_thresholds or content_ratings:
         why = "--no-nsfw was given" if nsfw is False else f"no NudeNet server is configured ({nsfw_mod.URL_ENV})"
-        typer.echo(f"Error: NSFW thresholds need the NudeNet check, but {why}", err=True)
+        typer.echo(f"Error: NSFW thresholds and content ratings need the NudeNet check, but {why}", err=True)
         raise typer.Exit(1)
 
     variant_names = _csv_list(guard_variants) or []
@@ -474,6 +518,12 @@ def scan(
     # Persist so the result is reusable by the server / export-by-id.
     ScanStore().save(summary)
 
+    if xmp_sources:
+        from argus_curator.export import write_source_sidecars
+
+        written = write_source_sidecars(summary.results, export_req.face_names)
+        typer.echo(f"\nXMP sidecars merged beside {written} scanned originals")
+
     if json_out:
         json_out.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
         typer.echo(f"\nJSON summary written -> {json_out}")
@@ -497,6 +547,8 @@ def scan(
             typer.echo(f"\n{verb} {result.copied} images -> {result.dest}")
             if result.manifest_path:
                 typer.echo(f"Manifest -> {result.manifest_path}")
+            if xmp:
+                typer.echo(f"XMP sidecars -> {result.xmp_written} exported files")
 
     typer.echo(f"\nDone. scan_id={summary.scan_id}")
 

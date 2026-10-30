@@ -16,9 +16,11 @@ from argus_cortex.moderation import (  # re-exported: part of curator's wire con
     GuardResult,
     NsfwResult,
     NudeNetLabel,
+    exposed_score,
 )
+from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import PolicyName
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 TargetStyle = Literal["photo", "anime"]
 TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
@@ -350,6 +352,31 @@ class GarmentDetection(BaseModel):
     color: str
 
 
+# A content rating read off NudeNet's detections, for a facet in a UI and for
+# argus:ContentRating in an XMP sidecar. "explicit": an exposed class was
+# reported (the five DEFAULT_EXPOSED_LABELS, from NudeNet's 0.2 floor, the
+# suite's one definition of nudity). "suggestive": otherwise, a covered intimate
+# class was (lingerie, swimwear). "safe": neither. Unchecked images have none.
+ContentRating = Literal["safe", "suggestive", "explicit"]
+SUGGESTIVE_LABELS: tuple[NudeNetLabel, ...] = (
+    "FEMALE_BREAST_COVERED",
+    "FEMALE_GENITALIA_COVERED",
+    "BUTTOCKS_COVERED",
+    "ANUS_COVERED",
+)
+
+
+def rate_content(nsfw: NsfwResult | None) -> ContentRating | None:
+    """*nsfw*'s :data:`ContentRating`, or ``None`` when NudeNet did not check the image."""
+    if nsfw is None:
+        return None
+    if exposed_score(nsfw.labels) >= MIN_REPORTED_SCORE:
+        return "explicit"
+    if any(nsfw.labels.get(label, 0.0) >= MIN_REPORTED_SCORE for label in SUGGESTIVE_LABELS):
+        return "suggestive"
+    return "safe"
+
+
 class ImageResult(BaseModel):
     """Per-image curation record — superset of imogen's scanner output.
 
@@ -406,6 +433,12 @@ class ImageResult(BaseModel):
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
     score_breakdown: dict[str, float] = Field(default_factory=dict)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def content_rating(self) -> ContentRating | None:
+        """Derived from :attr:`nsfw` on read, so a scan cached before ratings existed has one too."""
+        return rate_content(self.nsfw)
 
 
 class FaceCluster(BaseModel):
@@ -539,6 +572,9 @@ class ExportRequest(BaseModel):
     # Never empty: an empty set scores every image 0.0, so nsfw_threshold
     # would silently pass everything.
     nsfw_exposed_labels: list[NudeNetLabel] = Field(default_factory=lambda: list(DEFAULT_EXPOSED_LABELS), min_length=1)
+    # Optional: keep only images with one of these content ratings. An image
+    # NudeNet never checked has no rating and is excluded once this is set.
+    content_ratings: list[ContentRating] | None = Field(None, min_length=1)
 
     # Optional: drop images SingGuard judged unsafe, under any rule.
     guard_unsafe: bool = False
@@ -553,6 +589,26 @@ class ExportRequest(BaseModel):
     write_manifest: bool = True
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).
     caption_url: str | None = None
+    # Write an XMP sidecar beside each exported file (<file>.xmp): face regions,
+    # the names in face_names, and the content rating. A sidecar beside the
+    # source (lens's captions, a photo app's edits) is the starting point and
+    # its other properties are kept. The source's own sidecar is never changed.
+    write_xmp: bool = False
+    # Person names by face cluster id ("face_1" -> "Ada"), for the regions and
+    # Iptc4xmpExt:PersonInImage. Two ids may share a name. Unnamed clusters get
+    # an unnamed region and no person entry: "face_1" is not a person's name.
+    face_names: dict[str, str] | None = None
+
+    @field_validator("face_names")
+    @classmethod
+    def _names_are_names(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        names = {cluster.strip(): name.strip() for cluster, name in value.items()}
+        for cluster, name in names.items():
+            if not cluster or not name or len(name) > 200:
+                raise ValueError(f"face_names[{cluster!r}]: a name must be 1-200 characters")
+        return names
 
     @field_validator("nsfw_label_thresholds")
     @classmethod
@@ -652,6 +708,11 @@ class ExportResult(BaseModel):
     # client can reproduce. The process that owns the rule publishes the answer.
     exported_abs_paths: dict[str, str] = Field(default_factory=dict)
     captioned: bool = False
+    # Sidecars written beside exported files (write_xmp). A file with nothing
+    # to record (no faces, never checked by NudeNet) gets none. Transfer can
+    # succeed while a sidecar fails (copied > xmp_written); the image still
+    # landed, and the failure is logged rather than undoing it.
+    xmp_written: int = 0
 
 
 class SelectRow(BaseModel):
@@ -700,6 +761,7 @@ class SelectRequest(BaseModel):
     nsfw_threshold: float | None = Field(None, ge=0.2, le=1.0)
     nsfw_label_thresholds: dict[NudeNetLabel, float] | None = None
     nsfw_exposed_labels: list[NudeNetLabel] = Field(default_factory=lambda: list(DEFAULT_EXPOSED_LABELS), min_length=1)
+    content_ratings: list[ContentRating] | None = Field(None, min_length=1)
 
     guard_unsafe: bool = False
     guard_rules: list[str] | None = None

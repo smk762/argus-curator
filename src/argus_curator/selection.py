@@ -232,6 +232,20 @@ def _nsfw_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
     return None
 
 
+def _rating_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
+    """Keep-reason when *r*'s content rating is not one *req* keeps, else ``None``.
+
+    Like the NudeNet thresholds, an image NudeNet never checked is excluded.
+    """
+    if req.content_ratings is None:
+        return None
+    if r.content_rating is None:
+        return "nsfw-unchecked"
+    if r.content_rating not in req.content_ratings:
+        return f"content-rating:{r.content_rating}"
+    return None
+
+
 def _verdict_exclusion(verdict: GuardResult | None, req: ExportRequest) -> str | None:
     """Keep-reason when one verdict fails the SingGuard filters, else ``None``.
 
@@ -292,10 +306,11 @@ def guard_filter_problem(req: ExportRequest, summary: ScanSummary) -> str | None
 
 def nsfw_filter_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
     """Why *req*'s NSFW filters cannot be applied to *summary*, else ``None``."""
-    uses_nsfw = req.nsfw_threshold is not None or bool(req.nsfw_label_thresholds)
+    uses_nsfw = req.nsfw_threshold is not None or bool(req.nsfw_label_thresholds) or req.content_ratings is not None
     if uses_nsfw and not summary.nsfw_config.enabled:
         return (
-            "NSFW thresholds need a scan that ran NudeNet; this one did not (set ARGUS_CURATOR_NUDENET_URL and rescan)"
+            "NSFW thresholds and content ratings need a scan that ran NudeNet; this one did not "
+            "(set ARGUS_CURATOR_NUDENET_URL and rescan)"
         )
     return None
 
@@ -355,6 +370,8 @@ def decide_selection(
             keep_reason[r.rel_path] = garment_reason
         elif (nsfw_reason := _nsfw_exclusion(r, req)) is not None:
             keep_reason[r.rel_path] = nsfw_reason
+        elif (rating_reason := _rating_exclusion(r, req)) is not None:
+            keep_reason[r.rel_path] = rating_reason
         elif (guard_reason := _guard_exclusion(r, req)) is not None:
             keep_reason[r.rel_path] = guard_reason
         else:
