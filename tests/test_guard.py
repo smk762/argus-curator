@@ -283,11 +283,7 @@ _ADULT_LETTER_CASES = [
     ("adult", "ABCDEFG"),
     ("adult-cautious", "ABCDEFG"),
     ("adult-granular", "ABCDEFGHI"),
-    *(
-        [("adult-cinematic", "ABCDEFG")]
-        if "adult-cinematic" in guard.POLICIES
-        else []
-    ),
+    *([("adult-cinematic", "ABCDEFG")] if "adult-cinematic" in guard.POLICIES else []),
 ]
 _ADULT_SAFE_NAMES = [n for n in ("adult", "adult-granular", "adult-cautious", "adult-cinematic") if n in guard.POLICIES]
 
