@@ -45,12 +45,8 @@ from argus_cortex.moderation import (
     rule_matches,  # noqa: F401 - re-exported
 )
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
-from argus_cortex.moderation.policies import (
-    ADULT_CAUTIOUS_POLICY,
-    ADULT_GRANULAR_POLICY,
-    ADULT_POLICY,
-    POLICIES,
-)
+from argus_cortex.moderation.policies import POLICIES
+from argus_cortex.moderation.policies import policy_text as cortex_policy_text
 
 from argus_curator.guard_context import CONTEXT_KINDS, body_only_ages, image_context, mivolo_ages
 from argus_curator.models import GuardConfig, GuardPolicy, GuardResult, ImageResult
@@ -69,14 +65,15 @@ DEFAULT_TIMEOUT = 90.0
 DEFAULT_WORKERS = 2
 
 # The policies a request can name, in the order /detectors lists them, and
-# their texts: argus-cortex's, shared with argus-darkroom. "adult-granular" and
-# "adult-cautious" are under evaluation against "adult" (scripts/guard_eval.py);
-# keep them out of UIs until one is chosen.
-_POLICY_TEXT: dict[str, str] = {
-    "adult": ADULT_POLICY,
-    "adult-granular": ADULT_GRANULAR_POLICY,
-    "adult-cautious": ADULT_CAUTIOUS_POLICY,
-}
+# their texts: argus-cortex's, shared with argus-darkroom. Adult variants
+# besides "adult" are under evaluation against "adult" (scripts/guard_eval.py);
+# keep them out of UIs until one is chosen. Built from cortex so a new name
+# such as "adult-cinematic" is offered as soon as cortex ships it.
+_POLICY_TEXT: dict[str, str] = {name: text for name in POLICIES if (text := cortex_policy_text(name))}
+ADULT_POLICY = _POLICY_TEXT["adult"]
+ADULT_GRANULAR_POLICY = _POLICY_TEXT["adult-granular"]
+ADULT_CAUTIOUS_POLICY = _POLICY_TEXT["adult-cautious"]
+ADULT_CINEMATIC_POLICY = _POLICY_TEXT.get("adult-cinematic")
 
 
 def endpoint() -> str | None:
