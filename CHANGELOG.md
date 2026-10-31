@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-01
+
+### Added
+
+- `scripts/guard_eval.py` scores a `cinematic` expectation (fictional crime
+  as a story or still): pass under `adult-cinematic`, flag under the others.
+  Text probes cover a heist, pension fraud, dirty cops, war, weapons as a
+  prop, and drugs as a plot, plus a how-to robbery that every policy should
+  still flag. Commercial adult-entertainment stills stay `adult` (pass under
+  every adult policy, including cinematic).
+
+### Changed
+
+- Requires `argus-cortex>=0.4.5` so `adult-cinematic` is in `POLICIES` and the
+  wire schema. Policy texts come from cortex; headings dropped Extreme.
+
 ## [0.10.1] - 2026-10-30
 
 ### Changed
@@ -597,7 +613,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/smk762/argus-curator/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/smk762/argus-curator/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/smk762/argus-curator/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/smk762/argus-curator/compare/v0.8.1...v0.9.0

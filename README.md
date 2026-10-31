@@ -544,8 +544,10 @@ record it under (`recorded`), so a verdict can be traced to its wording. The
 policy file's text is served too, to anyone who can read from the server.
 
 `adult-granular` (a letter per hard case: A minors, H non-consent, I sexual
-violence) and `adult-cautious` (doubt about age or consent counts as rule A)
-are under evaluation against `adult`; don't build on them yet.
+violence), `adult-cautious` (doubt about age or consent counts as rule A), and
+`adult-cinematic` (adult, with B narrowed to how-to / real targeting; fictional
+crime and legal adult entertainment are Safe) are under evaluation against
+`adult`; don't build on them yet.
 
 To compare policies on your own images, judge one scan under several:
 `"guard": {"policy": "adult", "variants": ["adult-granular", "adult-cautious"]}`

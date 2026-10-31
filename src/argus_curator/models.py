@@ -255,8 +255,8 @@ class NsfwConfig(BaseModel):
 # "default" is the operator's policy (ARGUS_CURATOR_SINGGUARD_POLICY_FILE, else
 # SingGuard's own rules); "adult" is curator's built-in policy that allows
 # consensual adult nudity and still flags minors (see guard.ADULT_POLICY).
-# "adult-granular" and "adult-cautious" are variants under evaluation. The
-# names and texts are argus-cortex's (argus_cortex.moderation.policies).
+# "adult-granular", "adult-cautious" and "adult-cinematic" are variants under
+# evaluation. The names and texts are argus-cortex's (argus_cortex.moderation.policies).
 GuardPolicy = PolicyName
 
 

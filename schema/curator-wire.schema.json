@@ -269,7 +269,8 @@
                   "default",
                   "adult",
                   "adult-granular",
-                  "adult-cautious"
+                  "adult-cautious",
+                  "adult-cinematic"
                 ],
                 "type": "string"
               },
@@ -1195,7 +1196,8 @@
             "default",
             "adult",
             "adult-granular",
-            "adult-cautious"
+            "adult-cautious",
+            "adult-cinematic"
           ],
           "title": "Policy",
           "type": "string"
@@ -1206,7 +1208,8 @@
               "default",
               "adult",
               "adult-granular",
-              "adult-cautious"
+              "adult-cautious",
+              "adult-cinematic"
             ],
             "type": "string"
           },
@@ -1375,7 +1378,8 @@
                   "default",
                   "adult",
                   "adult-granular",
-                  "adult-cautious"
+                  "adult-cautious",
+                  "adult-cinematic"
                 ]
               },
               "type": "object"
@@ -2431,7 +2435,8 @@
                   "default",
                   "adult",
                   "adult-granular",
-                  "adult-cautious"
+                  "adult-cautious",
+                  "adult-cinematic"
                 ],
                 "type": "string"
               },

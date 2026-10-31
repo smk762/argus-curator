@@ -106,14 +106,11 @@ def test_detectors_keys(client: TestClient) -> None:
 def test_detectors_list_policies_when_singguard_is_configured(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from argus_curator import guard
+
     monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
     body = client.get("/detectors").json()
-    assert body["singguard"] is True and body["singguard_policies"] == [
-        "default",
-        "adult",
-        "adult-granular",
-        "adult-cautious",
-    ]
+    assert body["singguard"] is True and body["singguard_policies"] == list(guard.POLICIES)
 
 
 def test_guard_policies_serve_builtin_text_and_singguard_default(

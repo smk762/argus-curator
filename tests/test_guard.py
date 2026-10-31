@@ -279,17 +279,28 @@ def _letters(text: str) -> list[str]:
     return [line[4] for line in text.splitlines() if line.startswith("### ") and line[5] == "."]
 
 
-@pytest.mark.parametrize(
-    ("name", "letters"),
-    [("adult", "ABCDEFG"), ("adult-cautious", "ABCDEFG"), ("adult-granular", "ABCDEFGHI")],
-)
+_ADULT_LETTER_CASES = [
+    ("adult", "ABCDEFG"),
+    ("adult-cautious", "ABCDEFG"),
+    ("adult-granular", "ABCDEFGHI"),
+    *([("adult-cinematic", "ABCDEFG")] if "adult-cinematic" in guard.POLICIES else []),
+]
+_ADULT_SAFE_NAMES = [n for n in ("adult", "adult-granular", "adult-cautious", "adult-cinematic") if n in guard.POLICIES]
+
+
+@pytest.mark.parametrize(("name", "letters"), _ADULT_LETTER_CASES)
 def test_adult_policies_keep_the_default_rule_letters(name: str, letters: str) -> None:
     recorded, text = guard.policy(name)
     assert recorded == name and _letters(text) == list(letters)
     lines = text.rstrip().splitlines()
     assert "under 18" in text and "### Safe" in lines
     assert all(line.startswith("  - ") for line in lines[lines.index("### Safe") + 1 :])  # Safe is last
-    # B to G read the same under every adult policy.
+    # B to G read the same under every adult policy except cinematic, which
+    # narrows B to how-to / real targeting.
+    if name == "adult-cinematic":
+        assert "how to commit one" in text
+        assert "violent crime, weapons, other crimes" not in text
+        return
     other = guard.ADULT_POLICY[guard.ADULT_POLICY.index("### B.") : guard.ADULT_POLICY.index("### Safe")]
     assert other in text
 
@@ -297,7 +308,7 @@ def test_adult_policies_keep_the_default_rule_letters(name: str, letters: str) -
 def test_adult_policies_name_solo_posing_and_consent_under_safe() -> None:
     # SingGuard reads a bullet under a risk heading as a match for it, so what
     # passes is said under Safe, and the A carve-out does not say "between".
-    for name in ("adult", "adult-granular"):
+    for name in ("adult", "adult-granular", *(("adult-cinematic",) if "adult-cinematic" in guard.POLICIES else ())):
         _recorded, text = guard.policy(name)
         safe = text[text.index("### Safe") :]
         assert "A single adult posing nude or in lingerie for the camera" in safe
@@ -307,7 +318,7 @@ def test_adult_policies_name_solo_posing_and_consent_under_safe() -> None:
     assert "consent is unclear" in guard.ADULT_CAUTIOUS_POLICY
 
 
-@pytest.mark.parametrize("name", ["adult", "adult-granular", "adult-cautious"])
+@pytest.mark.parametrize("name", _ADULT_SAFE_NAMES)
 def test_adult_policies_carve_out_only_under_safe(name: str) -> None:
     # No risk heading carries a carve-out, and Safe names the model's own
     # "Adult Content (Non-criminal)" category, which it otherwise cites as a violation.
@@ -315,6 +326,17 @@ def test_adult_policies_carve_out_only_under_safe(name: str) -> None:
     risks, safe = text.split("### Safe")
     assert "is not this rule" not in risks and "Adult Content (Non-criminal)" not in risks
     assert '"Adult Content (Non-criminal)" is Safe under this policy' in safe
+
+
+@pytest.mark.skipif("adult-cinematic" not in guard.POLICIES, reason="needs argus-cortex with adult-cinematic")
+def test_adult_cinematic_keeps_legal_adult_entertainment_safe() -> None:
+    _recorded, text = guard.policy("adult-cinematic")
+    risks, safe = text.split("### Safe")
+    assert "legal adult entertainment" in safe
+    assert "commercial porn" in safe
+    assert "adult-site watermark" in safe
+    assert "how to commit one" in risks
+    assert "violent crime, weapons, other crimes" not in risks
 
 
 # ---------------------------------------------------------------------------
