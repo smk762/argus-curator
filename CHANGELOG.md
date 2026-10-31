@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still flag. Commercial adult-entertainment stills stay `adult` (pass under
   every adult policy, including cinematic).
 
+### Changed
+
+- Requires `argus-cortex>=0.4.5` so `adult-cinematic` is in `POLICIES` and the
+  wire schema. Policy texts come from cortex; headings dropped Extreme.
+
 ## [0.10.1] - 2026-10-30
 
 ### Changed
