@@ -31,7 +31,16 @@ def test_image_folders_become_cases(tmp_path: Path) -> None:
 def test_adult_content_is_correct_to_flag_only_under_default() -> None:
     assert guard_eval.should_flag("default", "adult") is True
     assert guard_eval.should_flag("adult-granular", "adult") is False
+    assert guard_eval.should_flag("adult-cinematic", "adult") is False
     assert all(guard_eval.should_flag(p, "hard") for p in ("default", "adult", "adult-cautious"))
+
+
+def test_cinematic_crime_passes_only_under_adult_cinematic() -> None:
+    assert guard_eval.should_flag("default", "cinematic") is True
+    assert guard_eval.should_flag("adult", "cinematic") is True
+    assert guard_eval.should_flag("adult-granular", "cinematic") is True
+    assert guard_eval.should_flag("adult-cinematic", "cinematic") is False
+    assert guard_eval.should_flag("adult-cinematic", "other") is True
 
 
 def test_summary_counts_correct_runs_and_hard_letters() -> None:
@@ -42,4 +51,4 @@ def test_summary_counts_correct_runs_and_hard_letters() -> None:
         {"policy": "adult", "expect": "safe", "error": "SingGuard returned no verdict"},
     ]
     table = guard_eval.summarise(rows, ["adult"])
-    assert "| adult | 1/2 | - | 1/1 | - | - | A:1 | 1 | 1000 |" in table
+    assert "| adult | 1/2 | - | 1/1 | - | - | - | A:1 | 1 | 1000 |" in table
