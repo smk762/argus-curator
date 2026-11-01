@@ -5,10 +5,11 @@ that speaks NudeNet's ``/infer`` API with EraX class names, through the
 same HTTP helpers as :mod:`argus_curator.nsfw`. Running that server is
 the deployer's choice; curator stays MIT.
 
-When NudeNet returns no exposed score (empty detections, or the check
-failed), EraX hits are mapped onto NudeNet's exposed labels so filters,
-blur, pairing and cascade keep using ``nsfw``. An image NudeNet already
-scored as exposed is left alone.
+Every image goes to EraX, beside NudeNet rather than after it, and its
+result is kept on ``erax``. When NudeNet returns no exposed score (empty
+detections, or the check failed), EraX hits are mapped onto NudeNet's
+exposed labels so filters, blur, pairing and cascade keep using ``nsfw``.
+An image NudeNet already scored as exposed is left alone.
 
 Configured by ``ARGUS_CURATOR_ERAX_URL``. Empty or unset turns it off.
 """
@@ -18,15 +19,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
-from argus_cortex.moderation import ModerationConfigError
 from argus_cortex.moderation._http import CheckFailed, post_json, service_url
 
 # The request shape and number check are NudeNet's: EraX speaks the same API.
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE, _is_number, _multipart, to_result
 
+from argus_curator.bodies import overlaps
 from argus_curator.models import EraxDetection, EraxLabel, EraxResult, ImageResult, NsfwConfig
-from argus_curator.remote import check_all, env_set, env_value, float_env
-from argus_curator.runtime import ModelUnavailable
+from argus_curator.remote import RemoteService, check_all
 
 URL_ENV = "ARGUS_CURATOR_ERAX_URL"
 TIMEOUT_ENV = "ARGUS_CURATOR_ERAX_TIMEOUT"
@@ -37,7 +37,10 @@ DEFAULT_WORKERS = 4
 ERAX_LABELS: tuple[EraxLabel, ...] = EraxLabel.__args__
 
 # EraX's five classes → NudeNet exposed labels. ``nipple`` is the exposed-
-# breast signal (EraX does not split male/female). ``make_love`` is a sex
+# breast signal: EraX does not split male/female, so a nipple inside a box
+# NudeNet called MALE_BREAST_EXPOSED is dropped (a bare male chest is fine).
+# A male nipple NudeNet did not box still counts: a false flag at the edge
+# is the cheaper mistake. ``make_love`` is a sex
 # act, not a body part: both genitalia labels get the box so exposed_score
 # and pairing still fire.
 _TO_NUDENET: dict[EraxLabel, tuple[str, ...]] = {
@@ -79,10 +82,16 @@ def to_erax_result(raw: list) -> EraxResult:
     return EraxResult(detections=dets, labels=labels)
 
 
-def mapped_detections(erax: EraxResult) -> list[dict]:
-    """EraX hits as NudeNet-shaped dicts for :func:`to_result`."""
+def mapped_detections(erax: EraxResult, male_chests: list[list[float]] | tuple = ()) -> list[dict]:
+    """EraX hits as NudeNet-shaped dicts for :func:`to_result`.
+
+    A ``nipple`` overlapping any of *male_chests* (NudeNet MALE_BREAST_EXPOSED
+    boxes) is left out.
+    """
     out: list[dict] = []
     for det in erax.detections:
+        if det.label == "nipple" and any(overlaps(det.bbox, box) for box in male_chests):
+            continue
         for label in _TO_NUDENET[det.label]:
             out.append({"class": label, "score": det.score, "box": det.bbox})
     return out
@@ -93,26 +102,29 @@ def needs_fill(result: ImageResult) -> bool:
     return result.nsfw is None or result.nsfw.exposed_score == 0.0
 
 
-def fill_nsfw(results: list[ImageResult]) -> int:
-    """Copy EraX hits into ``nsfw`` when NudeNet did not score the image as exposed.
+def fill_one(result: ImageResult) -> bool:
+    """Copy *result*'s EraX hits into ``nsfw`` when NudeNet did not score it as exposed.
 
     Existing non-exposed NudeNet detections (a face, a covered class) are
-    kept and the mapped EraX boxes are added. Returns how many images were
-    filled.
+    kept and the mapped EraX boxes are added. When NudeNet's check failed,
+    ``nudenet_failed`` is set: EraX has no buttocks class, so an EraX score
+    under a filter's threshold is not a clean bill. Returns whether it filled.
     """
-    filled = 0
-    for result in results:
-        if result.erax is None or not result.erax.detections or not needs_fill(result):
-            continue
-        raw = mapped_detections(result.erax)
-        if not raw:
-            continue
-        if result.nsfw is not None:
-            raw = [{"class": d.label, "score": d.score, "box": d.bbox} for d in result.nsfw.detections] + raw
-        result.nsfw = to_result(raw)
-        result.erax_filled = True
-        filled += 1
-    return filled
+    if result.erax is None or not result.erax.detections or not needs_fill(result):
+        return False
+    kept = result.nsfw.detections if result.nsfw is not None else []
+    raw = mapped_detections(result.erax, [d.bbox for d in kept if d.label == "MALE_BREAST_EXPOSED"])
+    if not raw:
+        return False
+    result.nudenet_failed = result.nsfw is None
+    result.nsfw = to_result([{"class": d.label, "score": d.score, "box": d.bbox} for d in kept] + raw)
+    result.erax_filled = True
+    return True
+
+
+def fill_nsfw(results: list[ImageResult]) -> int:
+    """:func:`fill_one` over *results*; returns how many images were filled."""
+    return sum(fill_one(result) for result in results)
 
 
 class EraxClient:
@@ -133,15 +145,12 @@ class EraxClient:
         return to_erax_result(prediction[0])
 
 
+SERVICE = RemoteService(URL_ENV, TIMEOUT_ENV, WORKERS_ENV, EraxClient, DEFAULT_TIMEOUT, DEFAULT_WORKERS)
+
+
 def client() -> EraxClient | None:
     """A client for the configured server, or ``None`` when EraX is not configured."""
-    base = env_value(URL_ENV)
-    if base is None:
-        return None
-    try:
-        return EraxClient(base, timeout=float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT))
-    except ModerationConfigError as exc:
-        raise ModelUnavailable(f"{URL_ENV} must be an http(s) URL, got {base!r}") from exc
+    return SERVICE.client()
 
 
 def endpoint() -> str | None:
@@ -151,9 +160,8 @@ def endpoint() -> str | None:
 
 
 def configured() -> bool:
-    """An EraX URL is set. A malformed one still counts, so that it fails the
-    scan loudly instead of silently switching the check off."""
-    return env_set(URL_ENV)
+    """An EraX URL is set (a malformed one still counts; see :meth:`RemoteService.configured`)."""
+    return SERVICE.configured()
 
 
 def resolve_enabled(nsfw_cfg: NsfwConfig) -> bool:
@@ -182,7 +190,7 @@ def check_images(
         items,
         lambda data, rel: erax.check(data, PurePosixPath(rel).name),
         "erax",
-        int(float_env(WORKERS_ENV, DEFAULT_WORKERS)),
+        SERVICE.workers(),
         progress,
         on_done=on_done,
     )

@@ -1524,6 +1524,11 @@
           ],
           "default": null
         },
+        "nudenet_failed": {
+          "default": false,
+          "title": "Nudenet Failed",
+          "type": "boolean"
+        },
         "passed": {
           "default": false,
           "title": "Passed",

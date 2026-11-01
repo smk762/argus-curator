@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import threading
+import time
 from collections.abc import Iterator
 from email.parser import BytesParser
 from email.policy import HTTP
@@ -14,9 +15,18 @@ import pytest
 from PIL import Image
 
 from argus_curator import erax, nsfw
-from argus_curator.models import EraxConfig, FaceConfig, ImageResult, NsfwConfig, ScanConfig, TargetProfile
+from argus_curator.models import (
+    EraxConfig,
+    ExportRequest,
+    FaceConfig,
+    ImageResult,
+    NsfwConfig,
+    ScanConfig,
+    TargetProfile,
+)
 from argus_curator.runtime import ModelUnavailable, ScanCancelled
 from argus_curator.scanner import scan_items
+from argus_curator.selection import decide_selection
 
 _DETECTIONS = {
     10: [],
@@ -143,6 +153,8 @@ def test_fill_nsfw_when_nudenet_missed() -> None:
     assert scored.nsfw.labels == {"BUTTOCKS_EXPOSED": 0.9}
     assert failed.erax_filled is True
     assert failed.nsfw.labels["FEMALE_GENITALIA_EXPOSED"] == 0.5
+    assert failed.nudenet_failed is True
+    assert missed.nudenet_failed is False
 
 
 def test_fill_keeps_non_exposed_nudenet_detections() -> None:
@@ -239,3 +251,136 @@ def test_cancel_is_noticed_during_erax(erax_server: type[_EraX], monkeypatch: py
         scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), cancelled=lambda: stop["now"])
     # Stopped at the next progress step, not after every image went to EraX.
     assert len(erax_server.seen) < len(items)
+
+
+def test_nipple_on_a_nudenet_male_chest_is_not_filled() -> None:
+    chest = ImageResult(
+        rel_path="a.png",
+        abs_path="/d/a",
+        passed=True,
+        nsfw=nsfw.to_result([{"class": "MALE_BREAST_EXPOSED", "score": 0.8, "box": [0, 0, 20, 20]}]),
+        erax=erax.to_erax_result([{"class": "nipple", "score": 0.7, "box": [5, 5, 3, 3]}]),
+    )
+    both = ImageResult(
+        rel_path="b.png",
+        abs_path="/d/b",
+        passed=True,
+        nsfw=nsfw.to_result([{"class": "MALE_BREAST_EXPOSED", "score": 0.8, "box": [0, 0, 20, 20]}]),
+        erax=erax.to_erax_result(
+            [
+                {"class": "nipple", "score": 0.7, "box": [5, 5, 3, 3]},
+                {"class": "nipple", "score": 0.6, "box": [60, 5, 3, 3]},
+            ]
+        ),
+    )
+    assert erax.fill_nsfw([chest, both]) == 1
+    assert chest.erax_filled is False and chest.nsfw.exposed_score == 0.0
+    assert chest.erax.labels["nipple"] == 0.7  # the raw EraX result is still kept
+    # The nipple away from the male chest still counts.
+    assert both.nsfw.labels["FEMALE_BREAST_EXPOSED"] == 0.6
+    assert both.nsfw.labels["MALE_BREAST_EXPOSED"] == 0.8
+
+
+def test_erax_alone_under_threshold_stays_unchecked() -> None:
+    def failed(rel: str, score: float) -> ImageResult:
+        row = ImageResult(
+            rel_path=rel,
+            abs_path=f"/d/{rel}",
+            score=0.9,
+            passed=True,
+            nsfw=None,
+            erax=erax.to_erax_result([{"class": "nipple", "score": score, "box": [0, 0, 3, 3]}]),
+        )
+        erax.fill_one(row)
+        return row
+
+    rows = [failed("weak.png", 0.25), failed("strong.png", 0.9)]
+    _, why = decide_selection(rows, ExportRequest(dest="/o", min_score=0.0, nsfw_threshold=0.5), 0.0)
+    assert why["weak.png"] == "nsfw-unchecked"  # EraX has no buttocks class: not a pass
+    assert why["strong.png"] == "nsfw-exposed"
+    assert rows[0].nsfw.exposed_score == 0.25  # still blurred and paired
+
+
+class _ExposedOrEmptyNudeNet:
+    """NudeNet that scores red 30 as exposed and sees nothing on anything else."""
+
+    def check(self, data: bytes, filename: str = "image"):
+        red = Image.open(io.BytesIO(data)).convert("RGB").getpixel((0, 0))[0]
+        if red == 30:
+            return nsfw.to_result([{"class": "BUTTOCKS_EXPOSED", "score": 0.9, "box": [0, 0, 4, 4]}])
+        return nsfw.to_result([])
+
+
+def test_nudenet_exposed_rows_do_not_wait_for_erax(monkeypatch: pytest.MonkeyPatch) -> None:
+    exposed_sent = threading.Event()
+
+    class _SlowEraX:
+        url = "http://erax:8080/infer"
+
+        def check(self, data: bytes, filename: str = "image"):
+            # Held until the NudeNet-exposed row has gone out (or 5 s, to fail rather than hang).
+            exposed_sent.wait(5)
+            return erax.to_erax_result([{"class": "nipple", "score": 0.7, "box": [0, 0, 3, 3]}])
+
+    monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
+    monkeypatch.setenv(erax.URL_ENV, "http://erax:8080")
+    monkeypatch.setattr(nsfw, "client", lambda: _ExposedOrEmptyNudeNet())
+    monkeypatch.setattr(erax, "client", lambda: _SlowEraX())
+    chunks: list[dict] = []
+
+    def on_chunk(payload: dict) -> None:
+        if payload["phase"] != "nsfw":
+            return
+        chunks.append(payload)
+        if any(r["rel_path"] == "exposed.png" for r in payload["results"]):
+            exposed_sent.set()
+
+    items = [("exposed.png", "/d/e", _png(30, (600, 600))), ("missed.png", "/d/m", _png(20, (600, 600)))]
+    started = time.monotonic()
+    summary = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), chunk=on_chunk)
+    assert time.monotonic() - started < 4, "the exposed row waited for EraX"
+    first = [r["rel_path"] for r in chunks[0]["results"]]
+    assert first == ["exposed.png"]
+    assert [r["rel_path"] for c in chunks for r in c["results"]].count("missed.png") == 1
+    assert chunks[-1]["done"] == chunks[-1]["total"] == 2
+    by = {r.rel_path: r for r in summary.results}
+    # EraX results are kept on every row, the NudeNet-exposed one included.
+    assert by["exposed.png"].erax.labels["nipple"] == 0.7
+    assert by["exposed.png"].erax_filled is False
+    assert by["missed.png"].erax_filled is True
+    assert summary.erax_config.enabled is True
+
+
+def test_fill_when_erax_answers_before_nudenet(monkeypatch: pytest.MonkeyPatch) -> None:
+    erax_answered = threading.Event()
+
+    class _LateNudeNet:
+        def check(self, data: bytes, filename: str = "image"):
+            erax_answered.wait(5)
+            time.sleep(0.05)  # let the EraX row be recorded first
+            return nsfw.to_result([])
+
+    class _QuickEraX:
+        url = "http://erax:8080/infer"
+
+        def check(self, data: bytes, filename: str = "image"):
+            erax_answered.set()
+            return erax.to_erax_result([{"class": "vagina", "score": 0.66, "box": [0, 0, 3, 3]}])
+
+    monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
+    monkeypatch.setenv(erax.URL_ENV, "http://erax:8080")
+    monkeypatch.setattr(nsfw, "client", lambda: _LateNudeNet())
+    monkeypatch.setattr(erax, "client", lambda: _QuickEraX())
+    chunks: list[dict] = []
+    items = [("a.png", "/d/a", _png(20, (600, 600)))]
+    summary = scan_items(
+        items,
+        TargetProfile(),
+        ScanConfig(),
+        FaceConfig(),
+        chunk=lambda p: chunks.append(p) if p["phase"] == "nsfw" else None,
+    )
+    row = summary.results[0]
+    assert row.erax_filled is True and row.nsfw.exposed_score == 0.66
+    sent = [r for c in chunks for r in c["results"]]
+    assert len(sent) == 1 and sent[0]["nsfw"]["exposed_score"] == 0.66
