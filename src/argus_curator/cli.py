@@ -482,10 +482,13 @@ def scan(
         common = sorted(garment_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
         typer.echo(f"  Garments (images):     {'  '.join(f'{k}={n}' for k, n in common)}")
     if summary.nsfw_config.enabled:
-        checked = [r for r in summary.results if r.nsfw is not None]
+        # A row EraX filled after NudeNet failed was not checked by NudeNet,
+        # but its EraX hits still count as exposed.
+        scored = [r for r in summary.results if r.nsfw is not None]
+        checked = [r for r in scored if not r.nudenet_failed]
         # Count against the threshold the export will apply, over its classes.
         at = export_req.nsfw_threshold if export_req.nsfw_threshold is not None else 0.5
-        exposed = sum(1 for r in checked if nsfw_mod.exposed_score(r.nsfw.labels, export_req.nsfw_exposed_labels) >= at)
+        exposed = sum(1 for r in scored if nsfw_mod.exposed_score(r.nsfw.labels, export_req.nsfw_exposed_labels) >= at)
         unchecked = summary.total - len(checked)
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
         typer.echo(f"  NudeNet:               {len(checked)} checked, {exposed} with exposed score >= {at:g}{tail}")
