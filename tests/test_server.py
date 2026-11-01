@@ -97,6 +97,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "places365",
         "garments",
         "nudenet",
+        "erax",
         "singguard",
         "singguard_policies",
     }
@@ -1024,6 +1025,18 @@ def test_malformed_nudenet_url_is_refused_without_echoing_it(
     resp = client.post("/scan/folder", json={"folder": ""})  # opt-out default: the check is on
     assert resp.status_code == 400
     assert "not a valid http(s) URL" in resp.json()["detail"]
+    assert "secret" not in resp.json()["detail"]
+
+
+def test_malformed_erax_url_is_refused_before_the_scan(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _exports = contained
+    monkeypatch.setenv("ARGUS_CURATOR_NUDENET_URL", "http://nudenet:8080")
+    monkeypatch.setenv("ARGUS_CURATOR_ERAX_URL", "ftp://user:secret@erax")
+    resp = client.post("/scan/folder", json={"folder": ""})
+    assert resp.status_code == 400
+    assert "ARGUS_CURATOR_ERAX_URL is not a valid http(s) URL" in resp.json()["detail"]
     assert "secret" not in resp.json()["detail"]
 
 

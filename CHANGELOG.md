@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-01
+
+### Added
+
+- Optional EraX-NSFW sidecar (`ARGUS_CURATOR_ERAX_URL`). When NudeNet returns
+  no exposed score, EraX hits are mapped onto the same labels so filters,
+  blur, pairing and cascade still work. `GET /detectors` reports `erax`.
+
 ## [0.10.2] - 2026-11-01
 
 ### Added
@@ -613,7 +621,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/smk762/argus-curator/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/smk762/argus-curator/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/smk762/argus-curator/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/smk762/argus-curator/compare/v0.9.0...v0.10.0

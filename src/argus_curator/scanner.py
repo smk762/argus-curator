@@ -37,6 +37,7 @@ from PIL import Image, ImageFilter
 
 from argus_curator.models import (
     SUPPORTED_EXTS,
+    EraxConfig,
     FaceConfig,
     GarmentConfig,
     GuardConfig,
@@ -457,6 +458,7 @@ def scan_items(
     every progress step and between phases; once it answers True the scan
     raises :class:`ScanCancelled` as soon as the work in flight is done.
     """
+    from argus_curator import erax as erax_mod
     from argus_curator import guard as guard_mod
     from argus_curator import nsfw as nsfw_mod
 
@@ -493,7 +495,7 @@ def scan_items(
         return [results_by_rel[rel] for rel, _, _ in items if rel in results_by_rel]
 
     # Whether each opt-out check actually ran, read when a snapshot is saved.
-    ran = {"nsfw": False, "guard": False}
+    ran = {"nsfw": False, "erax": False, "guard": False}
     # The set age given to the frames with no face, or why none was.
     # Until the identities phase a saved snapshot says the age is still to come.
     set_age: dict[str, Any] = {
@@ -506,7 +508,7 @@ def scan_items(
 
     def snapshot() -> ScanSummary:
         rows = ordered()
-        nsfw_ran, guard_ran = ran["nsfw"], ran["guard"]
+        nsfw_ran, erax_ran, guard_ran = ran["nsfw"], ran["erax"], ran["guard"]
         rejected = [r for r in rows if not r.passed]
         passed = [r for r in rows if r.passed]
         duplicates = [r for r in passed if r.is_duplicate]
@@ -519,6 +521,7 @@ def scan_items(
             scenes_config=scene_cfg,
             garments_config=garment_cfg,
             nsfw_config=NsfwConfig(enabled=nsfw_ran),
+            erax_config=EraxConfig(enabled=erax_ran),
             guard_config=guard_cfg.model_copy(update={"enabled": guard_ran}),
             total=total,
             passed=len(passed),
@@ -645,25 +648,108 @@ def scan_items(
     # this scan says otherwise. The summary records whether it actually ran.
     def run_nsfw() -> None:
         nsfw_batch: list[ImageResult] = []
+        fill_in = erax_mod.resolve_enabled(nsfw_cfg)
+        # NudeNet and EraX run side by side. A row goes out once it is
+        # decided: straight from NudeNet when it scored the image as exposed
+        # (or EraX is off), else once EraX has answered and filled it too, so
+        # the first chunk carrying a row already has the score a viewer
+        # unblurs on.
+        with_data = {rel for rel, _abs, data in items if data is not None}
+        sendable = {r.rel_path for r in results if r.rel_path in with_data}
+        nudenet_done: set[str] = set()
+        erax_done: set[str] = set()
+        sent: set[str] = set()
+        decide = threading.Lock()
+        # Set when the NudeNet pass dies, so EraX stops at its next image.
+        abort = threading.Event()
 
-        def on_nsfw(row: ImageResult, phase_done: int, phase_total: int) -> None:
+        def erax_check_stopped() -> None:
+            if abort.is_set():
+                raise ScanCancelled("the NudeNet pass stopped")
             check_cancelled()
+
+        def release(row: ImageResult) -> None:
+            # Under *decide*: each row once, and chunks in order.
+            if row.rel_path in sent:
+                return
+            sent.add(row.rel_path)
             nsfw_batch.append(row)
-            last = phase_done == phase_total
+            sent_n, sent_total = len(sent), len(sendable)
+            last = sent_n == sent_total
             if last:
                 ran["nsfw"] = True
             if last or len(nsfw_batch) >= CHUNK_SIZE:
-                deliver("nsfw", phase_done, phase_total, nsfw_batch, finished="nsfw" if last else None)
+                deliver("nsfw", sent_n, sent_total, nsfw_batch, finished="nsfw" if last else None)
                 nsfw_batch.clear()
 
-        try:
-            ran["nsfw"] = nsfw_mod.check_images(
+        def on_nudenet(row: ImageResult, _done: int, _total: int) -> None:
+            check_cancelled()
+            with decide:
+                nudenet_done.add(row.rel_path)
+                if not fill_in or not erax_mod.needs_fill(row):
+                    release(row)
+                elif row.rel_path in erax_done:
+                    erax_mod.fill_one(row)
+                    release(row)
+                if fill_in and nsfw_batch and len(nudenet_done) == len(sendable):
+                    # NudeNet is through: what is decided goes out now, not
+                    # with whichever EraX answer fills the chunk.
+                    deliver("nsfw", len(sent), len(sendable), nsfw_batch)
+                    nsfw_batch.clear()
+
+        def on_erax(row: ImageResult, _done: int, _total: int) -> None:
+            erax_check_stopped()
+            with decide:
+                erax_done.add(row.rel_path)
+                if row.rel_path in nudenet_done:
+                    erax_mod.fill_one(row)
+                    release(row)
+
+        def erax_progress(phase_done: int, phase_total: int) -> None:
+            erax_check_stopped()
+            _emit(progress, "erax", phase_done, phase_total, pending())
+
+        def run_erax() -> bool:
+            return erax_mod.check_images(
                 results,
                 items,
-                nsfw_cfg,
-                progress=(lambda phase_done, phase_total: emit("nsfw", phase_done, phase_total)) if progress else None,
-                on_done=on_nsfw,
+                progress=erax_progress,
+                on_done=on_erax,
             )
+
+        try:
+            if fill_in:
+                # A malformed EraX URL fails here, before any image is sent.
+                erax_mod.client()
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="erax") as side:
+                erax_future = side.submit(run_erax) if fill_in else None
+                try:
+                    ran_nudenet = nsfw_mod.check_images(
+                        results,
+                        items,
+                        nsfw_cfg,
+                        progress=(lambda phase_done, phase_total: emit("nsfw", phase_done, phase_total))
+                        if progress
+                        else None,
+                        on_done=on_nudenet,
+                    )
+                except BaseException:
+                    # Stop EraX and wait it out; NudeNet's error is the one to raise.
+                    abort.set()
+                    if erax_future is not None:
+                        with contextlib.suppress(BaseException):
+                            erax_future.result()
+                    raise
+                # EraX's own error (a stop, a broken server config) surfaces here.
+                erax_ran = erax_future.result() if erax_future is not None else False
+            ran["erax"] = erax_ran
+            if ran_nudenet and fill_in:
+                # Rows whose EraX check failed (or was never sent) go out as NudeNet left them.
+                with decide:
+                    for row in results:
+                        if row.rel_path in nudenet_done:
+                            release(row)
+            ran["nsfw"] = ran_nudenet
         finally:
             # Over whether it ran or not: a client must not wait for a result that will not come.
             finish("nsfw")

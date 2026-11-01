@@ -16,16 +16,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
+from argus_cortex.moderation import NudeNetCheckFailed as NsfwCheckFailed  # noqa: F401 - re-exported
 from argus_cortex.moderation import (
-    ModerationConfigError,
     NudeNetClient,
     exposed_score,  # noqa: F401 - re-exported for selection
 )
-from argus_cortex.moderation import NudeNetCheckFailed as NsfwCheckFailed  # noqa: F401 - re-exported
 from argus_cortex.moderation.nudenet import to_result  # noqa: F401 - re-exported
 
 from argus_curator.models import ImageResult, NsfwConfig
-from argus_curator.remote import check_all, env_set, env_value, float_env
+from argus_curator.remote import RemoteService, check_all
 from argus_curator.runtime import ModelUnavailable
 
 URL_ENV = "ARGUS_CURATOR_NUDENET_URL"
@@ -34,16 +33,12 @@ WORKERS_ENV = "ARGUS_CURATOR_NUDENET_WORKERS"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_WORKERS = 4
 
+SERVICE = RemoteService(URL_ENV, TIMEOUT_ENV, WORKERS_ENV, NudeNetClient, DEFAULT_TIMEOUT, DEFAULT_WORKERS)
+
 
 def client() -> NudeNetClient | None:
     """A client for the configured server, or ``None`` when NudeNet is not configured."""
-    base = env_value(URL_ENV)
-    if base is None:
-        return None
-    try:
-        return NudeNetClient(base, timeout=float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT))
-    except ModerationConfigError as exc:
-        raise ModelUnavailable(f"{URL_ENV} must be an http(s) URL, got {base!r}") from exc
+    return SERVICE.client()
 
 
 def endpoint() -> str | None:
@@ -57,9 +52,8 @@ def endpoint() -> str | None:
 
 
 def configured() -> bool:
-    """A NudeNet URL is set. A malformed one still counts, so that it fails the
-    scan loudly instead of silently switching the check off."""
-    return env_set(URL_ENV)
+    """A NudeNet URL is set (a malformed one still counts; see :meth:`RemoteService.configured`)."""
+    return SERVICE.configured()
 
 
 def resolve_enabled(cfg: NsfwConfig) -> bool:
@@ -86,7 +80,7 @@ def check_images(
         items,
         lambda data, rel: nudenet.check(data, PurePosixPath(rel).name),
         "nsfw",
-        int(float_env(WORKERS_ENV, DEFAULT_WORKERS)),
+        SERVICE.workers(),
         progress,
         on_done=on_done,
     )

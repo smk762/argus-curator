@@ -1,5 +1,91 @@
 {
   "$defs": {
+    "EraxConfig": {
+      "description": "Optional EraX-NSFW fill-in via a remote server (see erax.py).\n\nThe URL (ARGUS_CURATOR_ERAX_URL) is process configuration, like NudeNet.\nA finished scan records whether the check ran as True or False.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        }
+      },
+      "title": "EraxConfig",
+      "type": "object"
+    },
+    "EraxDetection": {
+      "description": "One EraX-NSFW detection. ``bbox`` is ``[x, y, w, h]`` in source pixels.",
+      "properties": {
+        "bbox": {
+          "description": "[x, y, w, h]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Bbox",
+          "type": "array"
+        },
+        "label": {
+          "enum": [
+            "anus",
+            "make_love",
+            "nipple",
+            "penis",
+            "vagina"
+          ],
+          "title": "Label",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "score",
+        "bbox"
+      ],
+      "title": "EraxDetection",
+      "type": "object"
+    },
+    "EraxResult": {
+      "description": "EraX-NSFW's view of one image. Classes are EraX's own, not NudeNet's.",
+      "properties": {
+        "detections": {
+          "items": {
+            "$ref": "#/$defs/EraxDetection"
+          },
+          "title": "Detections",
+          "type": "array"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "propertyNames": {
+            "enum": [
+              "anus",
+              "make_love",
+              "nipple",
+              "penis",
+              "vagina"
+            ]
+          },
+          "title": "Labels",
+          "type": "object"
+        }
+      },
+      "title": "EraxResult",
+      "type": "object"
+    },
     "ExportRequest": {
       "properties": {
         "caption_url": {
@@ -1324,6 +1410,22 @@
           "default": null,
           "title": "Duplicate Of"
         },
+        "erax": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EraxResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "erax_filled": {
+          "default": false,
+          "title": "Erax Filled",
+          "type": "boolean"
+        },
         "face_count": {
           "default": 0,
           "title": "Face Count",
@@ -1421,6 +1523,11 @@
             }
           ],
           "default": null
+        },
+        "nudenet_failed": {
+          "default": false,
+          "title": "Nudenet Failed",
+          "type": "boolean"
         },
         "passed": {
           "default": false,
@@ -2009,6 +2116,9 @@
         "duplicates": {
           "title": "Duplicates",
           "type": "integer"
+        },
+        "erax_config": {
+          "$ref": "#/$defs/EraxConfig"
         },
         "face_clusters": {
           "items": {
