@@ -90,7 +90,7 @@ _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing sn
 
 
 class DeleteRequest(BaseModel):
-    """One image, or a batch. Every path has to be an under-18 exposed detection."""
+    """One image, or a batch. Every path has to be in the scan."""
 
     rel_path: str | None = None
     rel_paths: list[str] = Field(default_factory=list, max_length=200)
@@ -905,24 +905,26 @@ def create_app(
         if missing:
             raise HTTPException(status_code=404, detail=f"not in scan: {missing[0]}")
 
-        targets = [_image_file(path, scan_id) for path in paths]
+        targets = [(path, _image_file(path, scan_id)) for path in paths]
+        # Files removed before a failure are gone from disk, so the cache drops
+        # their rows too, even when a later unlink fails.
+        gone: list[str] = []
 
         def _unlink() -> None:
-            for target in targets:
+            for path, target in targets:
                 target.unlink()
+                gone.append(path)
 
+        failure: OSError | None = None
         try:
             await asyncio.to_thread(_unlink)
         except OSError as exc:
-            raise HTTPException(status_code=400, detail=f"could not delete: {exc}") from exc
-        gone = set(paths)
-        summary.results = [r for r in summary.results if r.rel_path not in gone]
-        summary.total = len(summary.results)
-        summary.passed = sum(1 for r in summary.results if r.passed)
-        summary.rejected = summary.total - summary.passed
-        summary.duplicates = sum(1 for r in summary.results if r.is_duplicate)
-        summary.returned = len(summary.results)
-        await asyncio.to_thread(store.save, summary)
+            failure = exc
+        if gone:
+            scanner.drop_results(summary, gone)
+            await asyncio.to_thread(store.save, summary)
+        if failure is not None:
+            raise HTTPException(status_code=400, detail=f"could not delete: {failure}; deleted: {gone}") from failure
         body: dict[str, Any] = {"rel_paths": paths, "total": summary.total}
         if len(paths) == 1:
             body["rel_path"] = paths[0]
