@@ -24,7 +24,6 @@ from argus_cortex.moderation._http import CheckFailed, post_json, service_url
 # The request shape and number check are NudeNet's: EraX speaks the same API.
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE, _is_number, _multipart, to_result
 
-from argus_curator.bodies import overlaps
 from argus_curator.models import EraxDetection, EraxLabel, EraxResult, ImageResult, NsfwConfig
 from argus_curator.remote import RemoteService, check_all
 
@@ -38,7 +37,7 @@ ERAX_LABELS: tuple[EraxLabel, ...] = EraxLabel.__args__
 
 # EraX's five classes → NudeNet exposed labels. ``nipple`` is the exposed-
 # breast signal: EraX does not split male/female, so a nipple inside a box
-# NudeNet called MALE_BREAST_EXPOSED is dropped (a bare male chest is fine).
+# NudeNet called MALE_BREAST_EXPOSED (its centre inside) is dropped.
 # A male nipple NudeNet did not box still counts: a false flag at the edge
 # is the cheaper mistake. ``make_love`` is a sex
 # act, not a body part: both genitalia labels get the box so exposed_score
@@ -82,15 +81,22 @@ def to_erax_result(raw: list) -> EraxResult:
     return EraxResult(detections=dets, labels=labels)
 
 
+def _centre_inside(inner: list[float], outer: list[float]) -> bool:
+    """Whether the centre of ``[x, y, w, h]`` box *inner* lies inside box *outer*."""
+    cx, cy = inner[0] + inner[2] / 2, inner[1] + inner[3] / 2
+    return outer[0] <= cx <= outer[0] + outer[2] and outer[1] <= cy <= outer[1] + outer[3]
+
+
 def mapped_detections(erax: EraxResult, male_chests: list[list[float]] | tuple = ()) -> list[dict]:
     """EraX hits as NudeNet-shaped dicts for :func:`to_result`.
 
-    A ``nipple`` overlapping any of *male_chests* (NudeNet MALE_BREAST_EXPOSED
-    boxes) is left out.
+    A ``nipple`` whose centre lies inside any of *male_chests* (NudeNet
+    MALE_BREAST_EXPOSED boxes) is left out. One that only grazes a male
+    chest's edge (a second person beside him) still counts.
     """
     out: list[dict] = []
     for det in erax.detections:
-        if det.label == "nipple" and any(overlaps(det.bbox, box) for box in male_chests):
+        if det.label == "nipple" and any(_centre_inside(det.bbox, box) for box in male_chests):
             continue
         for label in _TO_NUDENET[det.label]:
             out.append({"class": label, "score": det.score, "box": det.bbox})
