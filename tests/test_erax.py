@@ -281,6 +281,19 @@ def test_nipple_on_a_nudenet_male_chest_is_not_filled() -> None:
     assert both.nsfw.labels["MALE_BREAST_EXPOSED"] == 0.8
 
 
+def test_nipple_grazing_a_male_chest_edge_still_counts() -> None:
+    # A second person beside a bare male chest: the boxes touch, the nipple is not his.
+    row = ImageResult(
+        rel_path="a.png",
+        abs_path="/d/a",
+        passed=True,
+        nsfw=nsfw.to_result([{"class": "MALE_BREAST_EXPOSED", "score": 0.8, "box": [0, 0, 20, 20]}]),
+        erax=erax.to_erax_result([{"class": "nipple", "score": 0.7, "box": [18, 5, 8, 8]}]),
+    )
+    assert erax.fill_one(row) is True
+    assert row.nsfw.labels["FEMALE_BREAST_EXPOSED"] == 0.7
+
+
 def test_erax_alone_under_threshold_stays_unchecked() -> None:
     def failed(rel: str, score: float) -> ImageResult:
         row = ImageResult(
