@@ -10,7 +10,7 @@ Routes (section 4 of the brief):
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
     GET  /image?path=<rel> -> original bytes (same containment as /thumb)
     POST /scan/{id}/select -> SelectResult  (decide_selection, writes nothing)
-    POST /scan/{id}/delete -> remove one under-18 exposed file from the source folder
+    POST /scan/{id}/delete -> remove scanned files from the source folder
     POST /upload           -> save images into a folder under the source root
     POST /export           -> ExportResult
 """
@@ -90,7 +90,7 @@ _COUNT_CAP = 5000  # per-folder recursive image-count ceiling (keeps browsing sn
 
 
 class DeleteRequest(BaseModel):
-    """One image, or a batch. Every path has to be an under-18 exposed detection."""
+    """One image, or a batch. Every path has to be in the scan."""
 
     rel_path: str | None = None
     rel_paths: list[str] = Field(default_factory=list, max_length=200)
@@ -498,6 +498,9 @@ def create_app(
             "set_age": True,
             # GET /guard/policies serves each policy's text (0.8 and later).
             "guard_policy_text": True,
+            # POST /scan/{id}/delete takes any image in the scan, not only an
+            # under-18 exposed one (0.12 and later).
+            "delete_any": True,
             # POST /faces is up when InsightFace and MiVOLO can run (darkroom probes this).
             # Off the event loop: the first probe imports the whole InsightFace stack.
             "faces": await asyncio.to_thread(lambda: faces_available() and mivolo_available()),
@@ -881,11 +884,11 @@ def create_app(
 
     @app.post("/scan/{scan_id}/delete")
     async def delete_image(scan_id: str, req: DeleteRequest) -> dict[str, Any]:
-        """Delete source files that MiVOLO reads as under 18 with an exposed score.
+        """Delete source files that belong to this scan.
 
-        One path or a batch. If any path is not that kind of image, nothing is
-        deleted. A scan that is still running is refused too, because its next
-        save would put the rows back.
+        One path or a batch, any image in the scan. If any path is not in the
+        scan, nothing is deleted. A scan that is still running is refused too,
+        because its next save would put the rows back.
         """
         paths = req.targets()
         if not paths:
@@ -901,31 +904,27 @@ def create_app(
         missing = [path for path in paths if path not in by_path]
         if missing:
             raise HTTPException(status_code=404, detail=f"not in scan: {missing[0]}")
-        refused = [path for path in paths if not minor_exposed(by_path[path])]
-        if refused:
-            raise HTTPException(
-                status_code=403,
-                detail="Only an image with a MiVOLO age under 18 and an exposed score of at least 0.2 can be deleted here.",
-            )
 
-        targets = [_image_file(path, scan_id) for path in paths]
+        targets = [(path, _image_file(path, scan_id)) for path in paths]
+        # Files removed before a failure are gone from disk, so the cache drops
+        # their rows too, even when a later unlink fails.
+        gone: list[str] = []
 
         def _unlink() -> None:
-            for target in targets:
+            for path, target in targets:
                 target.unlink()
+                gone.append(path)
 
+        failure: OSError | None = None
         try:
             await asyncio.to_thread(_unlink)
         except OSError as exc:
-            raise HTTPException(status_code=400, detail=f"could not delete: {exc}") from exc
-        gone = set(paths)
-        summary.results = [r for r in summary.results if r.rel_path not in gone]
-        summary.total = len(summary.results)
-        summary.passed = sum(1 for r in summary.results if r.passed)
-        summary.rejected = summary.total - summary.passed
-        summary.duplicates = sum(1 for r in summary.results if r.is_duplicate)
-        summary.returned = len(summary.results)
-        await asyncio.to_thread(store.save, summary)
+            failure = exc
+        if gone:
+            scanner.drop_results(summary, gone)
+            await asyncio.to_thread(store.save, summary)
+        if failure is not None:
+            raise HTTPException(status_code=400, detail=f"could not delete: {failure}; deleted: {gone}") from failure
         body: dict[str, Any] = {"rel_paths": paths, "total": summary.total}
         if len(paths) == 1:
             body["rel_path"] = paths[0]

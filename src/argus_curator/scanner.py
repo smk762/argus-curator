@@ -418,6 +418,46 @@ def _tally_reasons(rejected: list[ImageResult]) -> dict[str, int]:
     return tally
 
 
+def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
+    """Remove *gone* rows from a finished scan and bring everything derived from them up to date.
+
+    Near-duplicate groups are rebuilt, so a deleted representative does not leave
+    its siblings marked ``similar-to`` a file that no longer exists. Identity
+    sizes and representatives are recounted from the remaining faces, and an
+    identity with no face left is dropped.
+    """
+    gone = set(gone)
+    results = [r for r in summary.results if r.rel_path not in gone]
+    for r in results:
+        r.is_duplicate = False
+        r.duplicate_of = None
+    _mark_duplicates(results, summary.config)
+    summary.similar_clusters = _assign_clusters(results)
+
+    clusters = []
+    for cluster in summary.face_clusters:
+        members = [(r.rel_path, f) for r in results for f in r.faces if f.cluster_id == cluster.cluster_id]
+        if not members:
+            continue
+        cluster.size = len(members)
+        if cluster.representative_rel_path in gone:
+            rel, face = max(members, key=lambda m: m[1].det_score * ((m[1].bbox[2] * m[1].bbox[3]) or 1.0))
+            cluster.representative_rel_path = rel
+            cluster.representative_bbox = face.bbox
+        clusters.append(cluster)
+    clusters.sort(key=lambda c: -c.size)
+    summary.face_clusters = clusters
+
+    rejected = [r for r in results if not r.passed]
+    summary.results = results
+    summary.total = len(results)
+    summary.passed = summary.total - len(rejected)
+    summary.rejected = len(rejected)
+    summary.duplicates = sum(1 for r in results if r.passed and r.is_duplicate)
+    summary.reject_reasons = _tally_reasons(rejected)
+    summary.returned = len(results)
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------

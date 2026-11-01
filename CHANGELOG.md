@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `GET /health` reports `delete_any: true`, so a client such as argus-cull can
+  tell this curator deletes any image in a scan without sniffing the version.
+
+### Changed
+
+- `POST /scan/{scan_id}/delete` takes any image in the scan, not only one
+  MiVOLO reads as under 18 with an exposed score; the 403 for other images is
+  gone. A batch is still all or nothing (a path not in the scan is a 404 and
+  deletes nothing), and a running scan is still a 409. The under-18 exposed
+  rule still decides which thumbnails are blurred.
+
 ## [0.11.1] - 2026-11-01
 
 ### Added

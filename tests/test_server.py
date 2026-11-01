@@ -291,7 +291,7 @@ def test_unknown_scan_404(client: TestClient) -> None:
     assert client.get("/scan/does-not-exist").status_code == 404
 
 
-def test_delete_removes_only_an_under_18_exposed_file(tmp_path: Path) -> None:
+def test_delete_removes_any_image_in_the_scan(tmp_path: Path) -> None:
     from argus_curator.models import (
         FaceAttributes,
         FaceConfig,
@@ -352,16 +352,24 @@ def test_delete_removes_only_an_under_18_exposed_file(tmp_path: Path) -> None:
         )
     )
     client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
-    refused = client.post("/scan/scan/delete", json={"rel_paths": ["minor.png", "adult.png"]})
-    assert refused.status_code == 403
-    assert minor.exists() and adult.exists()
+    assert client.get("/health").json()["delete_any"] is True
+    # All or nothing: one path outside the scan refuses the whole batch.
+    refused = client.post("/scan/scan/delete", json={"rel_paths": ["minor.png", "stranger.png"]})
+    assert refused.status_code == 404
+    assert minor.exists() and minor_b.exists() and adult.exists()
+    assert client.get("/scan/scan").json()["total"] == 3
+    # An image that is not under-18 exposed can be deleted too.
+    adult_gone = client.post("/scan/scan/delete", json={"rel_paths": ["adult.png"]})
+    assert adult_gone.status_code == 200
+    assert adult_gone.json() == {"rel_paths": ["adult.png"], "total": 2, "rel_path": "adult.png"}
+    assert not adult.exists()
+    after = client.get("/scan/scan").json()
+    assert after["total"] == 2 and after["passed"] == 2 and after["rejected"] == 0
+    assert "adult.png" not in {r["rel_path"] for r in after["results"]}
     deleted = client.post("/scan/scan/delete", json={"rel_paths": ["minor.png", "minor-b.png"]})
     assert deleted.status_code == 200
-    assert deleted.json()["total"] == 1
+    assert deleted.json()["total"] == 0
     assert not minor.exists() and not minor_b.exists()
-    assert adult.exists()
-    hidden = client.get("/image", params={"path": "adult.png", "scan_id": "scan"})
-    assert hidden.status_code == 200
     gone = client.get("/image", params={"path": "minor.png", "scan_id": "scan"})
     assert gone.status_code == 404
 
