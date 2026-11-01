@@ -10,7 +10,7 @@ Routes (section 4 of the brief):
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
     GET  /image?path=<rel> -> original bytes (same containment as /thumb)
     POST /scan/{id}/select -> SelectResult  (decide_selection, writes nothing)
-    POST /scan/{id}/delete -> remove one under-18 exposed file from the source folder
+    POST /scan/{id}/delete -> remove scanned files from the source folder
     POST /upload           -> save images into a folder under the source root
     POST /export           -> ExportResult
 """
@@ -498,6 +498,9 @@ def create_app(
             "set_age": True,
             # GET /guard/policies serves each policy's text (0.8 and later).
             "guard_policy_text": True,
+            # POST /scan/{id}/delete takes any image in the scan, not only an
+            # under-18 exposed one (0.12 and later).
+            "delete_any": True,
             # POST /faces is up when InsightFace and MiVOLO can run (darkroom probes this).
             # Off the event loop: the first probe imports the whole InsightFace stack.
             "faces": await asyncio.to_thread(lambda: faces_available() and mivolo_available()),
@@ -881,11 +884,11 @@ def create_app(
 
     @app.post("/scan/{scan_id}/delete")
     async def delete_image(scan_id: str, req: DeleteRequest) -> dict[str, Any]:
-        """Delete source files that MiVOLO reads as under 18 with an exposed score.
+        """Delete source files that belong to this scan.
 
-        One path or a batch. If any path is not that kind of image, nothing is
-        deleted. A scan that is still running is refused too, because its next
-        save would put the rows back.
+        One path or a batch, any image in the scan. If any path is not in the
+        scan, nothing is deleted. A scan that is still running is refused too,
+        because its next save would put the rows back.
         """
         paths = req.targets()
         if not paths:
@@ -901,12 +904,6 @@ def create_app(
         missing = [path for path in paths if path not in by_path]
         if missing:
             raise HTTPException(status_code=404, detail=f"not in scan: {missing[0]}")
-        refused = [path for path in paths if not minor_exposed(by_path[path])]
-        if refused:
-            raise HTTPException(
-                status_code=403,
-                detail="Only an image with a MiVOLO age under 18 and an exposed score of at least 0.2 can be deleted here.",
-            )
 
         targets = [_image_file(path, scan_id) for path in paths]
 
