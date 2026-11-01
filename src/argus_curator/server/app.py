@@ -3,7 +3,7 @@
 Routes (section 4 of the brief):
 
     GET  /health
-    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet, singguard }
+    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet, erax, singguard }
     POST /faces            -> { source, faces: [{age_estimate_years, bbox}] }  (memory only)
     POST /scan/folder      -> ScanSummary
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
@@ -44,6 +44,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from argus_curator import __version__, export, scanner
+from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator.attributes import fairface_available, mivolo_available
@@ -201,8 +202,9 @@ def _detectors() -> dict[str, bool | list[str]]:
         "bodies": bodies_available(),
         "places365": scenes_available(),
         "garments": garments_available(),
-        # A NudeNet server URL is configured; reachability is not probed here.
+        # A NudeNet / EraX server URL is configured; reachability is not probed here.
         "nudenet": nsfw_mod.configured(),
+        "erax": erax_mod.configured(),
         "singguard": guard_mod.configured(),
         # Policy names a scan can pass as guard.policy; empty without a server.
         "singguard_policies": list(guard_mod.POLICIES) if guard_mod.configured() else [],

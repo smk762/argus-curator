@@ -170,6 +170,9 @@ def scan(
     nudenet_url: str | None = Option(
         None, "--nudenet-url", help="NudeNet server origin, e.g. http://nudenet:8080 (ARGUS_CURATOR_NUDENET_URL)"
     ),
+    erax_url: str | None = Option(
+        None, "--erax-url", help="EraX-NSFW server origin, e.g. http://erax:8080 (ARGUS_CURATOR_ERAX_URL)"
+    ),
     nsfw_threshold: float | None = Option(
         None, "--nsfw-threshold", help="Drop images whose exposed-nudity score is at or above this (0.2..1)"
     ),
@@ -254,6 +257,7 @@ def scan(
         raise typer.Exit(1)
     import os
 
+    from argus_curator import erax as erax_mod
     from argus_curator import fairface as fairface_mod
     from argus_curator import garments as garments_mod
     from argus_curator import guard as guard_mod
@@ -267,6 +271,7 @@ def scan(
         (places365_model, scenes_mod.MODEL_ENV),
         (garments_model, garments_mod.MODEL_ENV),
         (nudenet_url, nsfw_mod.URL_ENV),
+        (erax_url, erax_mod.URL_ENV),
         (singguard_url, guard_mod.URL_ENV),
     ):
         if model_file is not None:

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional EraX-NSFW sidecar (`ARGUS_CURATOR_ERAX_URL`). When NudeNet returns
+  no exposed score, EraX hits are mapped onto the same labels so filters,
+  blur, pairing and cascade still work. `GET /detectors` reports `erax`.
+
 ## [0.10.2] - 2026-11-01
 
 ### Added
