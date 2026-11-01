@@ -7,12 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-01
+
 ### Added
 
 - **A new argus-cortex rebuilds the published image.** `release.yml` also runs on
   the `cortex-released` dispatch argus-cortex's release sends: only the image job runs,
   rebuilding the newest final `v*` tag without cache and republishing its tags, so the
   image picks up the cortex its pyproject range now resolves to.
+
+### Fixed
+
+- EraX drops a nipple hit only when its centre lies inside a NudeNet
+  `MALE_BREAST_EXPOSED` box. A box that merely touched one was dropped, so a
+  topless woman beside a bare-chested man passed the NSFW filters.
+- The CLI scan summary no longer counts rows EraX filled after NudeNet failed
+  as "NudeNet checked"; the export already treats them as unchecked. Their
+  EraX hits still count as exposed.
 
 ## [0.11.0] - 2026-11-01
 
@@ -21,6 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional EraX-NSFW sidecar (`ARGUS_CURATOR_ERAX_URL`). When NudeNet returns
   no exposed score, EraX hits are mapped onto the same labels so filters,
   blur, pairing and cascade still work. `GET /detectors` reports `erax`.
+  EraX runs beside NudeNet, not after it, and every image keeps its EraX
+  result.
+- `ImageResult.nudenet_failed`: NudeNet's check failed and the score is EraX's
+  alone. The NudeNet filters exclude such a frame as `nsfw-unchecked` unless
+  EraX reaches a threshold, since EraX has no buttocks class.
+
+### Changed
+
+- A malformed `ARGUS_CURATOR_ERAX_URL` is rejected before the scan starts
+  (server 400, CLI exit 1) instead of after the whole NudeNet pass. The EraX
+  pass reports an `erax` progress phase and stops on cancel.
 
 ## [0.10.2] - 2026-11-01
 
@@ -628,7 +650,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/smk762/argus-curator/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/smk762/argus-curator/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/smk762/argus-curator/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/smk762/argus-curator/compare/v0.10.0...v0.10.1
