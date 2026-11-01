@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.11.1] - 2026-11-01
 
+### Added
+
+- **A new argus-cortex rebuilds the published image.** `release.yml` also runs on
+  the `cortex-released` dispatch argus-cortex's release sends: only the image job runs,
+  rebuilding the newest final `v*` tag without cache and republishing its tags, so the
+  image picks up the cortex its pyproject range now resolves to.
+
 ### Fixed
 
 - EraX drops a nipple hit only when its centre lies inside a NudeNet
