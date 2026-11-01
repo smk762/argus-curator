@@ -446,7 +446,14 @@ or the check failed, those hits are mapped onto NudeNet's exposed labels
 (`nipple` → `FEMALE_BREAST_EXPOSED`, `make_love` → both genitalia classes)
 and recorded on `nsfw`, with the raw EraX result on `erax` and
 `erax_filled: true`. An image NudeNet already scored as exposed is left
-alone. `--no-nsfw` turns both off. `GET /detectors` reports `erax`.
+alone. A `nipple` inside a box NudeNet called `MALE_BREAST_EXPOSED` is not
+mapped (a bare male chest is fine); one NudeNet did not box still counts.
+When NudeNet's check failed, the filled image also gets `nudenet_failed:
+true` and the NudeNet filters exclude it as `nsfw-unchecked` unless the EraX
+hits reach a threshold (EraX has no buttocks class). EraX runs beside
+NudeNet on every image, and each nsfw row is streamed as soon as it is
+decided: at once when NudeNet scored it exposed, otherwise when EraX has
+answered too. `--no-nsfw` turns both off. `GET /detectors` reports `erax`.
 
 Each checked image also carries a **`content_rating`**, read off the same
 detections: `explicit` when an exposed class was reported (the five above, from

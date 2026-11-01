@@ -388,6 +388,8 @@ def scan(
     if nsfw_on:
         try:
             nudenet_endpoint = nsfw_mod.endpoint()
+            if erax_mod.resolve_enabled(nsfw_cfg):
+                erax_mod.endpoint()
         except Exception as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc

@@ -628,6 +628,16 @@ def create_app(
                     status_code=400,
                     detail=f"NudeNet check requested but {nsfw_mod.URL_ENV} {state}",
                 )
+            # EraX runs as NudeNet's fill-in; a malformed URL would only fail
+            # the scan after the whole NudeNet pass.
+            if erax_mod.resolve_enabled(req.nsfw):
+                try:
+                    erax_mod.endpoint()
+                except ModelUnavailable as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"EraX fill-in configured but {erax_mod.URL_ENV} is not a valid http(s) URL",
+                    ) from exc
         if guard_mod.resolve_enabled(req.guard):
             try:
                 url = guard_mod.endpoint()

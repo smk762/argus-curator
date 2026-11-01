@@ -514,6 +514,10 @@ class ImageResult(BaseModel):
     erax: EraxResult | None = None
     # True when ``nsfw`` was filled from EraX because NudeNet did not score it.
     erax_filled: bool = False
+    # True when NudeNet's check failed and ``nsfw`` holds EraX's hits alone.
+    # EraX has no buttocks class, so the NudeNet filters still exclude the
+    # image as unchecked unless those hits reach a threshold.
+    nudenet_failed: bool = False
     # SingGuard policy verdict (None = not checked, or the check failed).
     guard: GuardResult | None = None
     # Only when GuardConfig.variants ran: every policy's verdict by name, the
