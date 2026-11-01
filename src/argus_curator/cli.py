@@ -170,6 +170,9 @@ def scan(
     nudenet_url: str | None = Option(
         None, "--nudenet-url", help="NudeNet server origin, e.g. http://nudenet:8080 (ARGUS_CURATOR_NUDENET_URL)"
     ),
+    erax_url: str | None = Option(
+        None, "--erax-url", help="EraX-NSFW server origin, e.g. http://erax:8080 (ARGUS_CURATOR_ERAX_URL)"
+    ),
     nsfw_threshold: float | None = Option(
         None, "--nsfw-threshold", help="Drop images whose exposed-nudity score is at or above this (0.2..1)"
     ),
@@ -254,6 +257,7 @@ def scan(
         raise typer.Exit(1)
     import os
 
+    from argus_curator import erax as erax_mod
     from argus_curator import fairface as fairface_mod
     from argus_curator import garments as garments_mod
     from argus_curator import guard as guard_mod
@@ -267,6 +271,7 @@ def scan(
         (places365_model, scenes_mod.MODEL_ENV),
         (garments_model, garments_mod.MODEL_ENV),
         (nudenet_url, nsfw_mod.URL_ENV),
+        (erax_url, erax_mod.URL_ENV),
         (singguard_url, guard_mod.URL_ENV),
     ):
         if model_file is not None:
@@ -383,6 +388,8 @@ def scan(
     if nsfw_on:
         try:
             nudenet_endpoint = nsfw_mod.endpoint()
+            if erax_mod.resolve_enabled(nsfw_cfg):
+                erax_mod.endpoint()
         except Exception as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc
@@ -475,10 +482,13 @@ def scan(
         common = sorted(garment_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
         typer.echo(f"  Garments (images):     {'  '.join(f'{k}={n}' for k, n in common)}")
     if summary.nsfw_config.enabled:
-        checked = [r for r in summary.results if r.nsfw is not None]
+        # A row EraX filled after NudeNet failed was not checked by NudeNet,
+        # but its EraX hits still count as exposed.
+        scored = [r for r in summary.results if r.nsfw is not None]
+        checked = [r for r in scored if not r.nudenet_failed]
         # Count against the threshold the export will apply, over its classes.
         at = export_req.nsfw_threshold if export_req.nsfw_threshold is not None else 0.5
-        exposed = sum(1 for r in checked if nsfw_mod.exposed_score(r.nsfw.labels, export_req.nsfw_exposed_labels) >= at)
+        exposed = sum(1 for r in scored if nsfw_mod.exposed_score(r.nsfw.labels, export_req.nsfw_exposed_labels) >= at)
         unchecked = summary.total - len(checked)
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
         typer.echo(f"  NudeNet:               {len(checked)} checked, {exposed} with exposed score >= {at:g}{tail}")

@@ -79,7 +79,8 @@ filters are available over HTTP (`POST /scan/folder`, `GET /scan/{scan_id}`,
 
 - **Content checks need their servers, and both miss things.** NudeNet
   detects exposed body parts only, and misses stylised, partial or unusual
-  poses. SingGuard judges a whole policy (violence, gore, self-harm, …) but
+  poses; the optional EraX sidecar is a second pass on those misses.
+  SingGuard judges a whole policy (violence, gore, self-harm, …) but
   gives a verdict without a confidence, so nothing is "near the threshold" to
   review. Set NSFW thresholds conservatively and have a person review flagged
   and borderline images.
@@ -392,11 +393,14 @@ Configure the server in the environment (or `.env`), never per request:
 ARGUS_CURATOR_NUDENET_URL=http://192.168.1.50:8080   # its origin; /infer is appended
 ARGUS_CURATOR_NUDENET_TIMEOUT=30                     # seconds per image (default 30)
 ARGUS_CURATOR_NUDENET_WORKERS=4                      # concurrent requests (default 4)
+ARGUS_CURATOR_ERAX_URL=http://192.168.1.50:8081      # optional; empty turns EraX off
+ARGUS_CURATOR_ERAX_TIMEOUT=30
+ARGUS_CURATOR_ERAX_WORKERS=4
 ```
 
-Any host running `ghcr.io/notai-tech/nudenet` works, including one elsewhere on
-your LAN. `docker compose up` starts one alongside curator (pinned by digest)
-and uses it unless `.env` says otherwise.
+Any host speaking NudeNet's `/infer` API works, including the official
+`ghcr.io/notai-tech/nudenet` image (320n) or a 640m sidecar. `docker compose up`
+in argus-cull starts a 640m server and uses it unless `.env` says otherwise.
 
 **It is opt-out.** When a URL is configured, every scan checks its images,
 including ones that failed the quality filters, unless the scan opts out
@@ -433,6 +437,23 @@ checked, or whose check failed, is **excluded** whenever an NSFW filter is set
 and `nsfw-<class>` (e.g. `nsfw-belly-exposed`). Exporting with NSFW thresholds
 from a scan that did not run NudeNet is refused (400) rather than excluding
 everything. `GET /detectors` reports `nudenet` when a URL is configured.
+
+An optional [EraX-NSFW](https://huggingface.co/erax-ai/EraX-NSFW-V1.0) server
+(`ARGUS_CURATOR_ERAX_URL`) is a second detector for frames NudeNet does not
+score. It speaks the same `/infer` API with its own classes (`anus`,
+`make_love`, `nipple`, `penis`, `vagina`). When NudeNet's exposed score is 0
+or the check failed, those hits are mapped onto NudeNet's exposed labels
+(`nipple` → `FEMALE_BREAST_EXPOSED`, `make_love` → both genitalia classes)
+and recorded on `nsfw`, with the raw EraX result on `erax` and
+`erax_filled: true`. An image NudeNet already scored as exposed is left
+alone. A `nipple` inside a box NudeNet called `MALE_BREAST_EXPOSED` is not
+mapped (a bare male chest is fine); one NudeNet did not box still counts.
+When NudeNet's check failed, the filled image also gets `nudenet_failed:
+true` and the NudeNet filters exclude it as `nsfw-unchecked` unless the EraX
+hits reach a threshold (EraX has no buttocks class). EraX runs beside
+NudeNet on every image, and each nsfw row is streamed as soon as it is
+decided: at once when NudeNet scored it exposed, otherwise when EraX has
+answered too. `--no-nsfw` turns both off. `GET /detectors` reports `erax`.
 
 Each checked image also carries a **`content_rating`**, read off the same
 detections: `explicit` when an exposed class was reported (the five above, from
@@ -614,7 +635,7 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 | Route | Description |
 |---|---|
 | `GET  /health` | Liveness. `faces` is true when `POST /faces` can run (InsightFace and MiVOLO). |
-| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, mivolo, bodies, places365, garments, nudenet, singguard, … }` |
+| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, mivolo, bodies, places365, garments, nudenet, erax, singguard, … }` |
 | `POST /faces` | One image in memory (raw bytes or multipart). `{ source: mivolo, faces: [{ age_estimate_years, bbox }] }`. Writes nothing. |
 | `GET  /guard/policies` | Each SingGuard policy a scan can name: `{ singguard, policies: [{ name, recorded, source, text, error }] }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |

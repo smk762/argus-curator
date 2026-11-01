@@ -3,7 +3,7 @@
 Routes (section 4 of the brief):
 
     GET  /health
-    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet, singguard }
+    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet, erax, singguard }
     POST /faces            -> { source, faces: [{age_estimate_years, bbox}] }  (memory only)
     POST /scan/folder      -> ScanSummary
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
@@ -44,6 +44,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from argus_curator import __version__, export, scanner
+from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator.attributes import fairface_available, mivolo_available
@@ -201,8 +202,9 @@ def _detectors() -> dict[str, bool | list[str]]:
         "bodies": bodies_available(),
         "places365": scenes_available(),
         "garments": garments_available(),
-        # A NudeNet server URL is configured; reachability is not probed here.
+        # A NudeNet / EraX server URL is configured; reachability is not probed here.
         "nudenet": nsfw_mod.configured(),
+        "erax": erax_mod.configured(),
         "singguard": guard_mod.configured(),
         # Policy names a scan can pass as guard.policy; empty without a server.
         "singguard_policies": list(guard_mod.POLICIES) if guard_mod.configured() else [],
@@ -626,6 +628,16 @@ def create_app(
                     status_code=400,
                     detail=f"NudeNet check requested but {nsfw_mod.URL_ENV} {state}",
                 )
+            # EraX runs as NudeNet's fill-in; a malformed URL would only fail
+            # the scan after the whole NudeNet pass.
+            if erax_mod.resolve_enabled(req.nsfw):
+                try:
+                    erax_mod.endpoint()
+                except ModelUnavailable as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"EraX fill-in configured but {erax_mod.URL_ENV} is not a valid http(s) URL",
+                    ) from exc
         if guard_mod.resolve_enabled(req.guard):
             try:
                 url = guard_mod.endpoint()

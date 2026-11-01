@@ -255,7 +255,8 @@ def _nsfw_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
     for label, threshold in (req.nsfw_label_thresholds or {}).items():
         if r.nsfw.labels.get(label, 0.0) >= threshold:
             return f"nsfw-{label.lower().replace('_', '-')}"
-    return None
+    # NudeNet never saw it; EraX alone under the thresholds is not a pass.
+    return "nsfw-unchecked" if r.nudenet_failed else None
 
 
 def _rating_exclusion(r: ImageResult, req: ExportRequest) -> str | None:

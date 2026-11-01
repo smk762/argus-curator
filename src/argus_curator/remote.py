@@ -1,4 +1,4 @@
-"""Shared plumbing for the checks curator runs on a remote server (NudeNet, SingGuard).
+"""Shared plumbing for the checks curator runs on a remote server (NudeNet, EraX, SingGuard).
 
 The HTTP clients themselves are argus-cortex's (:mod:`argus_cortex.moderation`);
 this module holds what is curator's: configuration from the environment, and
@@ -15,12 +15,14 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
 import structlog
+from argus_cortex.moderation import ModerationConfigError
 
 from argus_curator.models import ImageResult
-from argus_curator.runtime import ScanCancelled
+from argus_curator.runtime import ModelUnavailable, ScanCancelled
 
 logger = structlog.get_logger()
 
@@ -47,6 +49,43 @@ def float_env(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+C = TypeVar("C")
+
+
+@dataclass(frozen=True)
+class RemoteService(Generic[C]):
+    """One remote server's environment configuration and the client built from it.
+
+    *make_client* takes ``(base_url, timeout)`` and raises
+    :class:`ModerationConfigError` on a malformed URL.
+    """
+
+    url_env: str
+    timeout_env: str
+    workers_env: str
+    make_client: Callable[[str, float], C]
+    default_timeout: float = 30.0
+    default_workers: int = 4
+
+    def client(self) -> C | None:
+        """A client for the configured server, or ``None`` when its URL is not set."""
+        base = env_value(self.url_env)
+        if base is None:
+            return None
+        try:
+            return self.make_client(base, float_env(self.timeout_env, self.default_timeout))
+        except ModerationConfigError as exc:
+            raise ModelUnavailable(f"{self.url_env} must be an http(s) URL, got {base!r}") from exc
+
+    def configured(self) -> bool:
+        """The URL is set. A malformed one still counts, so that it fails the
+        scan loudly instead of silently switching the check off."""
+        return env_set(self.url_env)
+
+    def workers(self) -> int:
+        return int(float_env(self.workers_env, self.default_workers))
 
 
 def check_all(
