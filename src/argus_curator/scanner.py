@@ -661,6 +661,9 @@ def scan_items(
 
         try:
             fill_in = erax_mod.resolve_enabled(nsfw_cfg)
+            if fill_in:
+                # A malformed EraX URL fails here, not after the whole NudeNet pass.
+                erax_mod.client()
             ran["nsfw"] = nsfw_mod.check_images(
                 results,
                 items,
@@ -671,7 +674,10 @@ def scan_items(
                 on_done=None if fill_in else on_nsfw,
             )
             if ran["nsfw"] and fill_in:
-                ran["erax"] = erax_mod.check_images(results, items)
+                # Through emit, so a stop is noticed within the EraX pass too.
+                ran["erax"] = erax_mod.check_images(
+                    results, items, progress=lambda phase_done, phase_total: emit("erax", phase_done, phase_total)
+                )
                 erax_mod.fill_nsfw(results)
                 for index, row in enumerate(results, start=1):
                     on_nsfw(row, index, len(results))

@@ -15,15 +15,14 @@ Configured by ``ARGUS_CURATOR_ERAX_URL``. Empty or unset turns it off.
 
 from __future__ import annotations
 
-import math
-import re
-import uuid
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
 from argus_cortex.moderation import ModerationConfigError
 from argus_cortex.moderation._http import CheckFailed, post_json, service_url
-from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE, to_result
+
+# The request shape and number check are NudeNet's: EraX speaks the same API.
+from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE, _is_number, _multipart, to_result
 
 from argus_curator.models import EraxDetection, EraxLabel, EraxResult, ImageResult, NsfwConfig
 from argus_curator.remote import check_all, env_set, env_value, float_env
@@ -52,10 +51,6 @@ _TO_NUDENET: dict[EraxLabel, tuple[str, ...]] = {
 
 class EraxCheckFailed(CheckFailed):
     """One image could not be checked by EraX."""
-
-
-def _is_number(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def to_erax_result(raw: list) -> EraxResult:
@@ -120,21 +115,10 @@ def fill_nsfw(results: list[ImageResult]) -> int:
     return filled
 
 
-def _multipart(data: bytes, filename: str) -> tuple[bytes, str]:
-    filename = re.sub(r"[^A-Za-z0-9._-]", "_", filename)[-100:] or "image"
-    boundary = uuid.uuid4().hex
-    head = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="f1"; filename="{filename}"\r\n'
-        "Content-Type: application/octet-stream\r\n\r\n"
-    ).encode()
-    return head + data + f"\r\n--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
-
-
 class EraxClient:
     """An EraX server at *base_url* (its origin, e.g. ``http://erax:8080``)."""
 
-    def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: str, timeout: float = DEFAULT_TIMEOUT) -> None:
         self.url = service_url(base_url, "/infer", "EraX")
         self.timeout = timeout
 

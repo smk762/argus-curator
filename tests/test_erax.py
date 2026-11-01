@@ -15,7 +15,7 @@ from PIL import Image
 
 from argus_curator import erax, nsfw
 from argus_curator.models import EraxConfig, FaceConfig, ImageResult, NsfwConfig, ScanConfig, TargetProfile
-from argus_curator.runtime import ModelUnavailable
+from argus_curator.runtime import ModelUnavailable, ScanCancelled
 from argus_curator.scanner import scan_items
 
 _DETECTIONS = {
@@ -199,3 +199,43 @@ def test_scan_without_erax_url_leaves_nudenet_alone(monkeypatch: pytest.MonkeyPa
     assert summary.erax_config.enabled is False
     assert summary.results[0].nsfw.exposed_score == 0.0
     assert summary.results[0].erax is None
+
+
+def test_scan_fails_on_malformed_erax_url_before_nudenet(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    class _EmptyNudeNet:
+        def check(self, data: bytes, filename: str = "image"):
+            calls.append(filename)
+            return nsfw.to_result([])
+
+    monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
+    monkeypatch.setenv(erax.URL_ENV, "file:///etc/passwd")
+    monkeypatch.setattr(nsfw, "client", lambda: _EmptyNudeNet())
+    items = [("a.png", "/d/a", _png(20, (600, 600)))]
+    with pytest.raises(ModelUnavailable):
+        scan_items(items, TargetProfile(), ScanConfig(), FaceConfig())
+    assert calls == []
+
+
+def test_cancel_is_noticed_during_erax(erax_server: type[_EraX], monkeypatch: pytest.MonkeyPatch) -> None:
+    class _EmptyNudeNet:
+        def check(self, data: bytes, filename: str = "image"):
+            return nsfw.to_result([])
+
+    monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
+    monkeypatch.setattr(nsfw, "client", lambda: _EmptyNudeNet())
+    monkeypatch.setenv(erax.WORKERS_ENV, "1")
+    items = [(f"{i}.png", f"/d/{i}", _png(20, (600, 600))) for i in range(12)]
+    stop = {"now": False}
+    real = erax.EraxClient.check
+
+    def check_then_stop(self, data: bytes, filename: str = "image"):
+        stop["now"] = True
+        return real(self, data, filename)
+
+    monkeypatch.setattr(erax.EraxClient, "check", check_then_stop)
+    with pytest.raises(ScanCancelled):
+        scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), cancelled=lambda: stop["now"])
+    # Stopped at the next progress step, not after every image went to EraX.
+    assert len(erax_server.seen) < len(items)
