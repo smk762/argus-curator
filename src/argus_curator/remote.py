@@ -1,4 +1,4 @@
-"""Shared plumbing for the checks curator runs on a remote server (NudeNet, SingGuard).
+"""Shared plumbing for the checks curator runs on a remote server (NudeNet, EraX, SingGuard).
 
 The HTTP clients themselves are argus-cortex's (:mod:`argus_cortex.moderation`);
 this module holds what is curator's: configuration from the environment, and

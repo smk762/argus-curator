@@ -252,6 +252,34 @@ class NsfwConfig(BaseModel):
     enabled: bool | None = None
 
 
+EraxLabel = Literal["anus", "make_love", "nipple", "penis", "vagina"]
+
+
+class EraxDetection(BaseModel):
+    """One EraX-NSFW detection. ``bbox`` is ``[x, y, w, h]`` in source pixels."""
+
+    label: EraxLabel
+    score: float
+    bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
+
+
+class EraxResult(BaseModel):
+    """EraX-NSFW's view of one image. Classes are EraX's own, not NudeNet's."""
+
+    detections: list[EraxDetection] = Field(default_factory=list)
+    labels: dict[EraxLabel, float] = Field(default_factory=dict)
+
+
+class EraxConfig(BaseModel):
+    """Optional EraX-NSFW fill-in via a remote server (see erax.py).
+
+    The URL (ARGUS_CURATOR_ERAX_URL) is process configuration, like NudeNet.
+    A finished scan records whether the check ran as True or False.
+    """
+
+    enabled: bool | None = None
+
+
 # "default" is the operator's policy (ARGUS_CURATOR_SINGGUARD_POLICY_FILE, else
 # SingGuard's own rules); "adult" is curator's built-in policy that allows
 # consensual adult nudity and still flags minors (see guard.ADULT_POLICY).
@@ -482,6 +510,10 @@ class ImageResult(BaseModel):
     garments: list[GarmentDetection] | None = None
     # NudeNet nudity detection (None = not checked, or the check failed).
     nsfw: NsfwResult | None = None
+    # EraX-NSFW (None = not checked, or the check failed). Own classes.
+    erax: EraxResult | None = None
+    # True when ``nsfw`` was filled from EraX because NudeNet did not score it.
+    erax_filled: bool = False
     # SingGuard policy verdict (None = not checked, or the check failed).
     guard: GuardResult | None = None
     # Only when GuardConfig.variants ran: every policy's verdict by name, the
@@ -523,6 +555,7 @@ class ScanSummary(BaseModel):
     scenes_config: SceneConfig = Field(default_factory=SceneConfig)
     garments_config: GarmentConfig = Field(default_factory=GarmentConfig)
     nsfw_config: NsfwConfig = Field(default_factory=NsfwConfig)
+    erax_config: EraxConfig = Field(default_factory=EraxConfig)
     guard_config: GuardConfig = Field(default_factory=GuardConfig)
 
     total: int

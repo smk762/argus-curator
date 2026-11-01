@@ -37,6 +37,7 @@ from PIL import Image, ImageFilter
 
 from argus_curator.models import (
     SUPPORTED_EXTS,
+    EraxConfig,
     FaceConfig,
     GarmentConfig,
     GuardConfig,
@@ -457,6 +458,7 @@ def scan_items(
     every progress step and between phases; once it answers True the scan
     raises :class:`ScanCancelled` as soon as the work in flight is done.
     """
+    from argus_curator import erax as erax_mod
     from argus_curator import guard as guard_mod
     from argus_curator import nsfw as nsfw_mod
 
@@ -493,7 +495,7 @@ def scan_items(
         return [results_by_rel[rel] for rel, _, _ in items if rel in results_by_rel]
 
     # Whether each opt-out check actually ran, read when a snapshot is saved.
-    ran = {"nsfw": False, "guard": False}
+    ran = {"nsfw": False, "erax": False, "guard": False}
     # The set age given to the frames with no face, or why none was.
     # Until the identities phase a saved snapshot says the age is still to come.
     set_age: dict[str, Any] = {
@@ -506,7 +508,7 @@ def scan_items(
 
     def snapshot() -> ScanSummary:
         rows = ordered()
-        nsfw_ran, guard_ran = ran["nsfw"], ran["guard"]
+        nsfw_ran, erax_ran, guard_ran = ran["nsfw"], ran["erax"], ran["guard"]
         rejected = [r for r in rows if not r.passed]
         passed = [r for r in rows if r.passed]
         duplicates = [r for r in passed if r.is_duplicate]
@@ -519,6 +521,7 @@ def scan_items(
             scenes_config=scene_cfg,
             garments_config=garment_cfg,
             nsfw_config=NsfwConfig(enabled=nsfw_ran),
+            erax_config=EraxConfig(enabled=erax_ran),
             guard_config=guard_cfg.model_copy(update={"enabled": guard_ran}),
             total=total,
             passed=len(passed),
@@ -657,13 +660,21 @@ def scan_items(
                 nsfw_batch.clear()
 
         try:
+            fill_in = erax_mod.resolve_enabled(nsfw_cfg)
             ran["nsfw"] = nsfw_mod.check_images(
                 results,
                 items,
                 nsfw_cfg,
                 progress=(lambda phase_done, phase_total: emit("nsfw", phase_done, phase_total)) if progress else None,
-                on_done=on_nsfw,
+                # Hold chunks until EraX has filled misses, so the first nsfw
+                # batch already has the exposed score a viewer uses to unblur.
+                on_done=None if fill_in else on_nsfw,
             )
+            if ran["nsfw"] and fill_in:
+                ran["erax"] = erax_mod.check_images(results, items)
+                erax_mod.fill_nsfw(results)
+                for index, row in enumerate(results, start=1):
+                    on_nsfw(row, index, len(results))
         finally:
             # Over whether it ran or not: a client must not wait for a result that will not come.
             finish("nsfw")

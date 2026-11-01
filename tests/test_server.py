@@ -97,6 +97,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "places365",
         "garments",
         "nudenet",
+        "erax",
         "singguard",
         "singguard_policies",
     }
