@@ -39,6 +39,7 @@ from argus_curator.models import (
     SUPPORTED_EXTS,
     EraxConfig,
     FaceConfig,
+    FaceDetection,
     GarmentConfig,
     GuardConfig,
     ImageResult,
@@ -435,9 +436,14 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     _mark_duplicates(results, summary.config)
     summary.similar_clusters = _assign_clusters(results)
 
+    members_of: dict[str, list[tuple[str, FaceDetection]]] = {}
+    for r in results:
+        for f in r.faces:
+            if f.cluster_id is not None:
+                members_of.setdefault(f.cluster_id, []).append((r.rel_path, f))
     clusters = []
     for cluster in summary.face_clusters:
-        members = [(r.rel_path, f) for r in results for f in r.faces if f.cluster_id == cluster.cluster_id]
+        members = members_of.get(cluster.cluster_id, [])
         if not members:
             continue
         cluster.size = len(members)

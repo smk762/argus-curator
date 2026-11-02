@@ -368,7 +368,7 @@ def hard_exclusion(result: ImageResult) -> str | None:
     if minor_exposed(result):
         return "minor-exposed"
     if is_prefiltered(result):
-        return result.reject_reason or "prefilter"
+        return result.reject_reason
     return None
 
 

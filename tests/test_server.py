@@ -363,7 +363,8 @@ def test_unknown_scan_404(client: TestClient) -> None:
     assert client.get("/scan/does-not-exist").status_code == 404
 
 
-def test_delete_removes_any_image_in_the_scan(tmp_path: Path) -> None:
+def _seed_delete_scan(tmp_path: Path) -> tuple[Path, Path]:
+    """A cached scan of two under-18 exposed images and one adult; returns (root, cache)."""
     from argus_curator.models import (
         FaceAttributes,
         FaceConfig,
@@ -423,7 +424,13 @@ def test_delete_removes_any_image_in_the_scan(tmp_path: Path) -> None:
             ],
         )
     )
-    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    return root, cache
+
+
+def test_delete_removes_any_image_in_the_scan(tmp_path: Path) -> None:
+    root, cache = _seed_delete_scan(tmp_path)
+    minor, minor_b, adult = root / "minor.png", root / "minor-b.png", root / "adult.png"
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root), allow_delete=True))
     assert client.get("/health").json()["delete_any"] is True
     # All or nothing: one path outside the scan refuses the whole batch.
     refused = client.post("/scan/scan/delete", json={"rel_paths": ["minor.png", "stranger.png"]})
@@ -444,6 +451,35 @@ def test_delete_removes_any_image_in_the_scan(tmp_path: Path) -> None:
     assert not minor.exists() and not minor_b.exists()
     gone = client.get("/image", params={"path": "minor.png", "scan_id": "scan"})
     assert gone.status_code == 404
+
+
+def test_delete_without_the_gate_takes_only_under_18_exposed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CURATOR_ALLOW_DELETE", raising=False)
+    monkeypatch.delenv("CURATOR_DEVMODE", raising=False)
+    root, cache = _seed_delete_scan(tmp_path)
+    minor, adult = root / "minor.png", root / "adult.png"
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/health").json()["delete_any"] is False
+    # One adult image in the batch refuses the whole batch.
+    refused = client.post("/scan/scan/delete", json={"rel_paths": ["minor.png", "adult.png"]})
+    assert refused.status_code == 403
+    assert "--allow-delete" in refused.json()["detail"]
+    assert minor.exists() and adult.exists()
+    # The under-18 exposed image is always deletable.
+    ok = client.post("/scan/scan/delete", json={"rel_path": "minor.png"})
+    assert ok.status_code == 200 and not minor.exists()
+
+
+@pytest.mark.parametrize("env", ["CURATOR_ALLOW_DELETE", "CURATOR_DEVMODE"])
+def test_delete_gate_opens_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env: str) -> None:
+    monkeypatch.delenv("CURATOR_ALLOW_DELETE", raising=False)
+    monkeypatch.delenv("CURATOR_DEVMODE", raising=False)
+    monkeypatch.setenv(env, "1")
+    root, cache = _seed_delete_scan(tmp_path)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/health").json()["delete_any"] is True
+    resp = client.post("/scan/scan/delete", json={"rel_path": "adult.png"})
+    assert resp.status_code == 200 and not (root / "adult.png").exists()
 
 
 def _png_bytes() -> bytes:
