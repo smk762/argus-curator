@@ -216,6 +216,19 @@ def scan(
     guard_rules: str | None = Option(
         None, "--guard-rules", help="Drop images where one of these SingGuard rules fired, comma-separated (e.g. A,C)"
     ),
+    drop_nsfw: bool = Option(
+        False,
+        "--drop-nsfw",
+        help="Reject images NudeNet reads as exposed (>= 0.2) before scenes, garments and SingGuard",
+    ),
+    drop_no_face: bool = Option(
+        False, "--drop-no-face", help="Reject images with no face before scenes, garments and SingGuard (needs --faces)"
+    ),
+    drop_no_age: bool = Option(
+        False,
+        "--drop-no-age",
+        help="Reject images with no MiVOLO, body-only or set age before scenes, garments and SingGuard (needs --mivolo)",
+    ),
     xmp: bool = Option(
         False, "--xmp", help="Write an XMP sidecar beside each exported file (face regions, names, content rating)"
     ),
@@ -245,10 +258,12 @@ def scan(
         GarmentConfig,
         GuardConfig,
         NsfwConfig,
+        PrefilterConfig,
         ScanConfig,
         SceneConfig,
         TargetProfile,
     )
+    from argus_curator.prefilter import missing as prefilter_missing
     from argus_curator.scanner import scan_folder as _scan
     from argus_curator.store import ScanStore
 
@@ -302,6 +317,20 @@ def scan(
         set_age=set_age,
         mivolo_body=mivolo_body,
     )
+
+    prefilter_cfg = PrefilterConfig(drop_nsfw=drop_nsfw, drop_no_face=drop_no_face, drop_no_age=drop_no_age)
+    nsfw_wanted = nsfw_mod.resolve_enabled(NsfwConfig(enabled=nsfw))
+    if (gap := prefilter_missing(prefilter_cfg, faces_cfg, nsfw_wanted)) is not None:
+        rule, setting = gap
+        if rule == "drop_no_age":
+            needs = "--mivolo"  # which turns face detection on too
+        else:
+            needs = {
+                "faces.enabled": "--faces",
+                "nsfw": f"NudeNet (--nudenet-url or {nsfw_mod.URL_ENV}, without --no-nsfw)",
+            }[setting]
+        typer.echo(f"Error: --{rule.replace('_', '-')} needs {needs}", err=True)
+        raise typer.Exit(2)
 
     scene_cfg = SceneConfig(enabled=scenes, top_k=scene_top_k, device=device)
     # Record garments at least as low as the export floor asks for: a scan
@@ -438,6 +467,7 @@ def scan(
         garment_cfg=garment_cfg,
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
+        prefilter_cfg=prefilter_cfg,
     )
 
     typer.echo("=" * 56)
