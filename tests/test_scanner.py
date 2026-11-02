@@ -319,3 +319,45 @@ def test_cancelled_scan_raises_and_drops_queued_work(dataset: Path, monkeypatch:
 def test_a_scan_nobody_stops_finishes(dataset: Path) -> None:
     summary = scan_folder(dataset, faces_cfg=FaceConfig(enabled=False), cancelled=lambda: False)
     assert summary.total == 5
+
+
+def test_drop_results_regroups_when_the_representative_is_gone() -> None:
+    from argus_curator.models import FaceCluster, FaceConfig, FaceDetection, ImageResult, ScanSummary
+    from argus_curator.scanner import _assign_clusters, _mark_duplicates, drop_results
+
+    phash = "0" * 16
+    rows = [
+        ImageResult(
+            rel_path=name,
+            abs_path=f"/x/{name}",
+            score=score,
+            passed=True,
+            phash=phash,
+            faces=[FaceDetection(bbox=[0, 0, 10, 10], det_score=0.9, cluster_id="face_1")],
+        )
+        for name, score in (("best.png", 0.9), ("b.png", 0.8), ("c.png", 0.7))
+    ]
+    _mark_duplicates(rows, ScanConfig())
+    _assign_clusters(rows)
+    assert rows[1].duplicate_of == "best.png"
+    summary = ScanSummary(
+        scan_id="s",
+        folder="/x",
+        target_profile=TargetProfile(),
+        config=ScanConfig(),
+        faces_config=FaceConfig(),
+        total=3,
+        passed=3,
+        rejected=0,
+        duplicates=2,
+        similar_clusters=1,
+        face_clusters=[FaceCluster(cluster_id="face_1", size=3, representative_rel_path="best.png")],
+        results=rows,
+    )
+    drop_results(summary, ["best.png"])
+    by = {r.rel_path: r for r in summary.results}
+    assert not by["b.png"].is_duplicate and by["b.png"].is_representative
+    assert by["c.png"].duplicate_of == "b.png"
+    assert summary.total == 2 and summary.duplicates == 1 and summary.similar_clusters == 1
+    assert summary.face_clusters[0].size == 2
+    assert summary.face_clusters[0].representative_rel_path in {"b.png", "c.png"}
