@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`DELETE /scan/{id}` removes one cached scan.** Until now the only way to
+  drop a scan was `POST /scans/purge`, which empties the whole cache. The
+  running scan is refused with 409; `/health` reports `scan_delete: true`.
+
+### Fixed
+
+- **Tests no longer write scans into the real cache.** The CLI scan tests
+  saved to `~/.cache/argus_curator/scans`, the directory a local curator
+  serves, so its scan list filled with `/tmp/pytest-of-*` folders. The test
+  fixture now points `CURATOR_CACHE_DIR` at a temporary directory.
+
 ## [0.11.1] - 2026-11-01
 
 ### Added
