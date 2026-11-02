@@ -1306,8 +1306,37 @@ def test_purge_stops_the_scan_and_empties_the_cache(
     assert client.get("/scans").json() == {"active": None, "scans": []}
 
 
+def test_delete_removes_one_scan(contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _exports = contained
+    store = client.app.state.scan_store
+    for i in range(2):
+        store.save(_summary(f"old{i}", "/data/images", total=1))
+
+    resp = client.delete("/scan/old0")
+    assert resp.status_code == 200 and resp.json() == {"scan_id": "old0", "deleted": True}
+    assert [row["scan_id"] for row in client.get("/scans").json()["scans"]] == ["old1"]
+    assert client.get("/scan/old0").status_code == 404
+    assert client.delete("/scan/old0").status_code == 404
+
+    # The running scan is refused, and stays running.
+    started = threading.Event()
+    _slow_scan(monkeypatch, started)
+    worker = threading.Thread(
+        target=lambda: client.post("/scan/folder/stream", json={"folder": "", "faces": {"enabled": False}}).text
+    )
+    worker.start()
+    assert started.wait(5)
+    scan_id = client.get("/scans").json()["active"]["scan_id"]
+    resp = client.delete(f"/scan/{scan_id}")
+    assert resp.status_code == 409
+    assert client.get("/scans").json()["active"]["scan_id"] == scan_id
+    client.post(f"/scan/{scan_id}/cancel")
+    worker.join(5)
+
+
 def test_health_says_it_can_stop_and_purge(client: TestClient) -> None:
     assert client.get("/health").json()["scan_control"] is True
+    assert client.get("/health").json()["scan_delete"] is True
 
 
 def test_cancel_and_purge_are_writes(contained: tuple[TestClient, Path]) -> None:
@@ -1316,6 +1345,7 @@ def test_cancel_and_purge_are_writes(contained: tuple[TestClient, Path]) -> None
     evil = {"Origin": "https://evil.example"}
     assert client.post("/scans/purge", headers=evil).status_code == 403
     assert client.post("/scan/x/cancel", headers=evil).status_code == 403
+    assert client.delete("/scan/x", headers=evil).status_code == 403
 
 
 def _face(years: float | None, source: str | None = "mivolo"):

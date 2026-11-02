@@ -704,6 +704,11 @@ library, pass `cancelled=` (a callable returning True to stop) to
 `scan_folder()`; it raises `ScanCancelled`. `GET /health` says
 `scan_control: true` on a server that has these routes.
 
+`DELETE /scan/{id}` removes one cached scan and leaves the source images
+alone. It answers 409 for the scan still running (cancel it first) and 404
+for an unknown id. `GET /health` says `scan_delete: true` on a server that
+has it.
+
 `POST /scan/folder` body:
 
 ```jsonc
