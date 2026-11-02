@@ -43,6 +43,7 @@ from argus_curator.models import (
     GuardConfig,
     ImageResult,
     NsfwConfig,
+    PrefilterConfig,
     ScanConfig,
     ScanSummary,
     SceneConfig,
@@ -433,6 +434,7 @@ def scan_items(
     garment_cfg: GarmentConfig | None = None,
     nsfw_cfg: NsfwConfig | None = None,
     guard_cfg: GuardConfig | None = None,
+    prefilter_cfg: PrefilterConfig | None = None,
     folder: str = "",
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
@@ -451,6 +453,11 @@ def scan_items(
     safe to. Identities follow at once, and with ``FaceConfig.set_age`` the
     frames with no face get the set's age then, before SingGuard reads it as
     context; scenes and garments come after, since nothing waits on them. A caller can drive a live progress UI (see the SSE endpoint).
+    *prefilter_cfg* (opt-in) turns matching passing images into
+    ``prefilter:*`` rejects right after identities, so scenes, garments and
+    SingGuard never run on them; their chunk goes out under phase
+    ``prefilter``. It raises ValueError when a rule needs a face check
+    *faces_cfg* does not run.
     *chunk* receives the images finished since the previous call, and *save*
     receives a partial summary so a scan can be reopened while it is still
     running. ``pending_checks`` names the checks (``faces``, ``nsfw``,
@@ -473,6 +480,12 @@ def scan_items(
     garment_cfg = garment_cfg or GarmentConfig()
     nsfw_cfg = nsfw_cfg or NsfwConfig()
     guard_cfg = guard_cfg or GuardConfig()
+    prefilter_cfg = prefilter_cfg or PrefilterConfig()
+    from argus_curator import prefilter as prefilter_mod
+
+    # A rule whose check will not run would drop nothing (nsfw) or everything (faces).
+    if (why := prefilter_mod.problem(prefilter_cfg, faces_cfg, nsfw_mod.resolve_enabled(nsfw_cfg))) is not None:
+        raise ValueError(why)
     requested = requested_checks(faces_cfg, nsfw_cfg, guard_cfg)
     completed: set[str] = set()
 
@@ -523,6 +536,7 @@ def scan_items(
             nsfw_config=NsfwConfig(enabled=nsfw_ran),
             erax_config=EraxConfig(enabled=erax_ran),
             guard_config=guard_cfg.model_copy(update={"enabled": guard_ran}),
+            prefilter_config=prefilter_cfg,
             total=total,
             passed=len(passed),
             rejected=len(rejected),
@@ -782,6 +796,15 @@ def scan_items(
         emit("identities", total, total)
         deliver("identities", total, total, results, force=True)
 
+    # Prefilter (opt-in): drop what the caller has no use for before the
+    # heavy phases, SingGuard above all. Read after identities, so a frame
+    # with no face counts the set's age. A dropped image stays in the results
+    # as a reject; scenes, garments and SingGuard pass it by.
+    dropped = prefilter_mod.apply(results, prefilter_cfg)
+    if dropped:
+        logger.info("prefilter", dropped=len(dropped))
+        deliver("prefilter", total, total, dropped, force=True)
+
     # Places365 scene tags (optional): whole-image, independent of faces.
     if scene_cfg.enabled:
         from argus_curator import scenes as scenes_mod
@@ -852,6 +875,7 @@ def scan_folder(
     garment_cfg: GarmentConfig | None = None,
     nsfw_cfg: NsfwConfig | None = None,
     guard_cfg: GuardConfig | None = None,
+    prefilter_cfg: PrefilterConfig | None = None,
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
     chunk: ChunkFn | None = None,
@@ -889,6 +913,7 @@ def scan_folder(
         garment_cfg=garment_cfg,
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
+        prefilter_cfg=prefilter_cfg,
         folder=str(root.resolve()),
         scan_id=scan_id,
         progress=progress,

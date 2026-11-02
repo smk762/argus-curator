@@ -15,7 +15,8 @@ from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
 from argus_curator.garments import outfit, outfit_similarity
 from argus_curator.models import ExportRequest, FaceAttributes, GuardResult, ImageResult, ScanSummary
-from argus_curator.nsfw import exposed_score
+from argus_curator.nsfw import exposed_reading, exposed_score
+from argus_curator.prefilter import is_prefiltered
 
 # A MiVOLO age under this, together with any reported exposed detection, is never kept.
 MINOR_AGE_YEARS = 18.0
@@ -134,7 +135,8 @@ def minor_exposed(result: ImageResult) -> bool:
     with no person box, or a young age with no box to place it, flags any
     exposure.
     """
-    if result.nsfw is None or exposed_score(result.nsfw.labels) < MIN_REPORTED_SCORE:
+    reading = exposed_reading(result)
+    if result.nsfw is None or reading is None or reading < MIN_REPORTED_SCORE:
         return False
     face_years = [_mivolo_years(face.attributes) for face in result.faces]
     years = [*face_years, _mivolo_years(result.primary_face_attributes)]
@@ -357,6 +359,19 @@ def garment_floor_problem(req: ExportRequest, recorded_from: float) -> str | Non
     return None
 
 
+def hard_exclusion(result: ImageResult) -> str | None:
+    """Why no request can keep *result* (a named selection included), or ``None``.
+
+    An under-18 face with a reported exposed score first, then an image the scan
+    prefilter dropped (its own ``reject_reason``).
+    """
+    if minor_exposed(result):
+        return "minor-exposed"
+    if is_prefiltered(result):
+        return result.reject_reason or "prefilter"
+    return None
+
+
 def decide_selection(
     results: list[ImageResult],
     req: ExportRequest,
@@ -369,7 +384,9 @@ def decide_selection(
     SingGuard filters, then an optional diversity cap.
 
     An under-18 face with a reported exposed score is rejected first, whatever
-    the request asked to keep.
+    the request asked to keep. An image the scan prefilter dropped comes next:
+    it is never kept, ``include_rejected`` notwithstanding, and its keep reason
+    is its own ``reject_reason`` (``prefilter:nsfw`` and so on).
     """
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
@@ -377,8 +394,8 @@ def decide_selection(
 
     eligible: list[ImageResult] = []
     for r in results:
-        if minor_exposed(r):
-            keep_reason[r.rel_path] = "minor-exposed"
+        if (hard := hard_exclusion(r)) is not None:
+            keep_reason[r.rel_path] = hard
         elif r.score < req.min_score:
             keep_reason[r.rel_path] = "below-score"
         elif not r.passed and not req.include_rejected:

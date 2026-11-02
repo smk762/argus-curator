@@ -310,6 +310,28 @@ class GuardConfig(BaseModel):
         return self
 
 
+class PrefilterConfig(BaseModel):
+    """Opt-in drops applied before the late scan phases (see prefilter.py).
+
+    Right after the identities phase, a passing image that matches a rule is
+    turned into a reject (``passed`` False, ``reject_reason``
+    ``prefilter:nsfw`` / ``prefilter:no-face`` / ``prefilter:no-age``, the
+    first that applies in that order). It stays in the results, but scenes,
+    garments and SingGuard never run on it. Hard rejects keep their own reason.
+
+    ``drop_nsfw``: an exposed NudeNet reading of at least 0.2 (an image NudeNet
+    and EraX could not score is kept; needs the NudeNet check). ``drop_no_face``:
+    no face detected (needs face detection; an image whose detection failed,
+    ``face_error``, is kept). ``drop_no_age``: no MiVOLO age on any face, no
+    body-only age, and no set age (needs MiVOLO; a failed detection has no age,
+    so it is dropped).
+    """
+
+    drop_nsfw: bool = False
+    drop_no_face: bool = False
+    drop_no_age: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Per-image result
 # ---------------------------------------------------------------------------
@@ -485,6 +507,10 @@ class ImageResult(BaseModel):
     # Faces (M2)
     faces: list[FaceDetection] = Field(default_factory=list)
     face_count: int = 0
+    # Why face detection failed on this image (the detector raised, or the
+    # image could not be decoded), else None. With it set, ``face_count`` 0
+    # means unchecked, not faceless.
+    face_error: str | None = None
     # Person boxes from Cheetah when FaceConfig.mivolo_body ran. Empty means it
     # was not asked, or it found none — unlike garments, this is never None.
     people: list[PersonDetection] = Field(default_factory=list)
@@ -561,6 +587,8 @@ class ScanSummary(BaseModel):
     nsfw_config: NsfwConfig = Field(default_factory=NsfwConfig)
     erax_config: EraxConfig = Field(default_factory=EraxConfig)
     guard_config: GuardConfig = Field(default_factory=GuardConfig)
+    # Defaulted so scans cached before the prefilter existed still load.
+    prefilter_config: PrefilterConfig = Field(default_factory=PrefilterConfig)
 
     total: int
     passed: int
@@ -598,6 +626,7 @@ class ScanRequest(BaseModel):
     garments: GarmentConfig = Field(default_factory=GarmentConfig)
     nsfw: NsfwConfig = Field(default_factory=NsfwConfig)
     guard: GuardConfig = Field(default_factory=GuardConfig)
+    prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
 
 
 class ExportRequest(BaseModel):

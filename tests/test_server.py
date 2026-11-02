@@ -162,6 +162,78 @@ def test_scan_refuses_an_unknown_guard_policy(contained: tuple[TestClient, Path]
     assert resp.status_code == 422
 
 
+def test_health_declares_prefilter(client: TestClient) -> None:
+    assert client.get("/health").json()["prefilter"] is True
+
+
+@pytest.mark.parametrize(
+    ("prefilter", "faces", "needs"),
+    [
+        ({"drop_no_face": True}, {"enabled": False}, "faces.enabled"),
+        ({"drop_no_age": True}, {"enabled": False}, "faces.enabled"),
+        ({"drop_no_age": True}, {"enabled": True}, "faces.mivolo"),
+        ({"drop_nsfw": True}, {"enabled": False}, "NudeNet"),
+    ],
+)
+def test_scan_refuses_a_prefilter_its_face_checks_cannot_answer(
+    contained: tuple[TestClient, Path], prefilter: dict, faces: dict, needs: str
+) -> None:
+    client, _exports = contained
+    for endpoint in ("/scan/folder", "/scan/folder/stream"):
+        resp = client.post(endpoint, json={"folder": "", "faces": faces, "prefilter": prefilter})
+        assert resp.status_code == 400, endpoint
+        assert needs in resp.json()["detail"], endpoint
+    assert client.get("/scans").json()["active"] is None  # refused before the scan slot was taken
+
+
+def test_scan_records_the_prefilter(contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _exports = contained
+    from argus_curator import nsfw as nsfw_mod
+
+    # NudeNet "runs" but scores nothing: every image is unscored and kept.
+    monkeypatch.setenv("ARGUS_CURATOR_NUDENET_URL", "http://nudenet:8080")
+    monkeypatch.setattr(nsfw_mod, "check_images", lambda *a, **k: True)
+    resp = client.post("/scan/folder", json={"folder": "", "prefilter": {"drop_nsfw": True}})
+    assert resp.status_code == 200
+    summary = resp.json()
+    assert summary["prefilter_config"] == {"drop_nsfw": True, "drop_no_face": False, "drop_no_age": False}
+    assert summary["passed"] == 3
+    again = client.get(f"/scan/{summary['scan_id']}").json()
+    assert again["prefilter_config"] == summary["prefilter_config"]
+
+
+def test_prefiltered_images_are_never_kept_or_exported(contained: tuple[TestClient, Path], tmp_path: Path) -> None:
+    """Even with include_rejected, a high score, or the image named in a selection."""
+    from argus_curator.store import ScanStore
+
+    client, exports = contained
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    store = ScanStore(str(tmp_path / "cache"))
+    summary = store.load(scan_id)
+    by = {r.rel_path: r for r in summary.results}
+    dropped, blurry = by["personA/s2/img.png"], by["personB/blurry.png"]
+    dropped.passed, dropped.reject_reason, dropped.score = False, "prefilter:nsfw", 0.99
+    blurry.score = 0.99
+    store.save(summary)
+
+    loose = {"min_score": 0.0, "include_rejected": True, "keep_similar": True}
+    rows = {r["rel_path"]: r["keep_reason"] for r in client.post(f"/scan/{scan_id}/select", json=loose).json()["rows"]}
+    assert rows["personA/s2/img.png"] == "prefilter:nsfw"
+    assert rows["personB/blurry.png"] == ""  # an ordinary hard reject is still kept under include_rejected
+
+    exp = client.post("/export", json={"scan_id": scan_id, "dest": "out", "mode": "copy", **loose}).json()
+    assert "personA/s2/img.png" not in exp["selected_rel_paths"]
+    assert "personA/s2/img.png" not in exp["exported_paths"]
+    assert "personB/blurry.png" in exp["exported_paths"]
+
+    named = client.post(
+        "/export",
+        json={"scan_id": scan_id, "dest": "named", "selection": ["personA/s2/img.png", "personB/blurry.png"]},
+    ).json()
+    assert list(named["exported_paths"]) == ["personB/blurry.png"]
+    assert not (exports / "named" / "personA").exists()
+
+
 def test_scan_then_paginate_then_export(contained: tuple[TestClient, Path]) -> None:
     client, exports = contained
     resp = client.post(

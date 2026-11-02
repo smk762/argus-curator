@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Scan prefilter.** `ScanRequest.prefilter` (`PrefilterConfig`: `drop_nsfw`,
+  `drop_no_face`, `drop_no_age`, all off by default; CLI `--drop-nsfw`,
+  `--drop-no-face`, `--drop-no-age`) turns matching passing images into rejects
+  right after identities, before scenes, garments and SingGuard, so none of
+  those run on them. `reject_reason` is `prefilter:nsfw` (exposed reading of
+  0.2 or more; an unscored image is kept), `prefilter:no-face` (an image whose
+  face detection failed is kept) or `prefilter:no-age` (no MiVOLO, body-only or set age), the first that applies.
+  The images stay in the results, and a streaming scan sends them in a
+  `prefilter` chunk. Unlike a hard reject, a dropped image is never kept or
+  exported, even with `include_rejected` and a score over `min_score` or when
+  named in an export `selection`; its keep reason is its `reject_reason`. A rule without its check (`drop_nsfw`
+  without NudeNet, a face rule without face detection, `drop_no_age` without
+  MiVOLO) is refused with HTTP 400 (CLI exit 2).
+- `ImageResult.face_error`: why face detection failed on an image (the
+  detector raised, or it could not be decoded). With it set, `face_count` 0
+  means unchecked, not faceless. The summary records
+  `prefilter_config`; `GET /health` reports `prefilter: true`.
+
 ## [0.11.1] - 2026-11-01
 
 ### Added
