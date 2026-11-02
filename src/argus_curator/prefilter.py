@@ -15,6 +15,7 @@ from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
 from argus_curator.guard_context import body_only_ages, mivolo_ages
 from argus_curator.models import FaceConfig, ImageResult, PrefilterConfig
+from argus_curator.nsfw import exposed_reading
 
 PREFIX = "prefilter:"
 NSFW = f"{PREFIX}nsfw"
@@ -35,9 +36,6 @@ def has_age(result: ImageResult) -> bool:
 def reason(result: ImageResult, cfg: PrefilterConfig) -> str | None:
     """The first rule *cfg* turns on that drops *result*, in nsfw, no-face, no-age order."""
     if cfg.drop_nsfw:
-        # Here, not at the top: selection imports this module for the keep decision.
-        from argus_curator.selection import exposed_reading
-
         reading = exposed_reading(result)
         # An image NudeNet and EraX could not score is kept: no reading, no drop.
         if reading is not None and reading >= MIN_REPORTED_SCORE:

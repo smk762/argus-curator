@@ -85,3 +85,15 @@ def check_images(
         on_done=on_done,
     )
     return True
+
+
+def exposed_reading(result: ImageResult) -> float | None:
+    """The image's exposed-nudity reading, or ``None`` when NudeNet (and EraX) did not score it.
+
+    The higher of the recorded ``exposed_score`` and the exposed classes' label
+    scores. Compared against ``MIN_REPORTED_SCORE`` (0.2) by :func:`selection.minor_exposed`
+    and the scan prefilter.
+    """
+    if result.nsfw is None:
+        return None
+    return max(result.nsfw.exposed_score, exposed_score(result.nsfw.labels))

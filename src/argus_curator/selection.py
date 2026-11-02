@@ -15,7 +15,7 @@ from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
 from argus_curator.garments import outfit, outfit_similarity
 from argus_curator.models import ExportRequest, FaceAttributes, GuardResult, ImageResult, ScanSummary
-from argus_curator.nsfw import exposed_score
+from argus_curator.nsfw import exposed_reading, exposed_score
 from argus_curator.prefilter import is_prefiltered
 
 # A MiVOLO age under this, together with any reported exposed detection, is never kept.
@@ -122,18 +122,6 @@ def _mivolo_years(attrs: FaceAttributes | None) -> float | None:
 
 def _young_mivolo(years: float | None) -> bool:
     return years is not None and years < MINOR_AGE_YEARS
-
-
-def exposed_reading(result: ImageResult) -> float | None:
-    """The image's exposed-nudity reading, or ``None`` when NudeNet (and EraX) did not score it.
-
-    The higher of the recorded ``exposed_score`` and the exposed classes' label
-    scores. Compared against ``MIN_REPORTED_SCORE`` (0.2) by :func:`minor_exposed`
-    and the scan prefilter.
-    """
-    if result.nsfw is None:
-        return None
-    return max(result.nsfw.exposed_score, exposed_score(result.nsfw.labels))
 
 
 def minor_exposed(result: ImageResult) -> bool:
@@ -371,6 +359,19 @@ def garment_floor_problem(req: ExportRequest, recorded_from: float) -> str | Non
     return None
 
 
+def hard_exclusion(result: ImageResult) -> str | None:
+    """Why no request can keep *result* (a named selection included), or ``None``.
+
+    An under-18 face with a reported exposed score first, then an image the scan
+    prefilter dropped (its own ``reject_reason``).
+    """
+    if minor_exposed(result):
+        return "minor-exposed"
+    if is_prefiltered(result):
+        return result.reject_reason or "prefilter"
+    return None
+
+
 def decide_selection(
     results: list[ImageResult],
     req: ExportRequest,
@@ -393,10 +394,8 @@ def decide_selection(
 
     eligible: list[ImageResult] = []
     for r in results:
-        if minor_exposed(r):
-            keep_reason[r.rel_path] = "minor-exposed"
-        elif is_prefiltered(r):
-            keep_reason[r.rel_path] = r.reject_reason or "prefilter"
+        if (hard := hard_exclusion(r)) is not None:
+            keep_reason[r.rel_path] = hard
         elif r.score < req.min_score:
             keep_reason[r.rel_path] = "below-score"
         elif not r.passed and not req.include_rejected:
