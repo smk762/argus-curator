@@ -40,7 +40,8 @@ def reason(result: ImageResult, cfg: PrefilterConfig) -> str | None:
         # An image NudeNet and EraX could not score is kept: no reading, no drop.
         if reading is not None and reading >= MIN_REPORTED_SCORE:
             return NSFW
-    if cfg.drop_no_face and result.face_count == 0:
+    # A failed detection is unchecked, not faceless (see ImageResult.face_error).
+    if cfg.drop_no_face and result.face_count == 0 and result.face_error is None:
         return NO_FACE
     if cfg.drop_no_age and not has_age(result):
         return NO_AGE
@@ -61,11 +62,33 @@ def apply(results: list[ImageResult], cfg: PrefilterConfig) -> list[ImageResult]
     return dropped
 
 
-def problem(cfg: PrefilterConfig, faces: FaceConfig) -> str | None:
-    """Why *cfg* cannot run with *faces*, or ``None``: the face rules need the face checks."""
+# What each requirement means, for the messages below.
+_NEEDS = {
+    "faces.enabled": "face detection",
+    "faces.mivolo": "MiVOLO ages",
+    "nsfw": "the NudeNet check (ARGUS_CURATOR_NUDENET_URL set, nsfw.enabled not false)",
+}
+
+
+def missing(cfg: PrefilterConfig, faces: FaceConfig, nsfw_enabled: bool) -> tuple[str, str] | None:
+    """The first rule *cfg* turns on whose check will not run, and the setting it needs.
+
+    *nsfw_enabled* is whether the scan runs NudeNet (:func:`nsfw.resolve_enabled`).
+    Without it ``drop_nsfw`` would drop nothing, and without face detection
+    every image would look faceless.
+    """
     if (cfg.drop_no_face or cfg.drop_no_age) and not faces.enabled:
-        which = "drop_no_face" if cfg.drop_no_face else "drop_no_age"
-        return f"prefilter.{which} needs face detection (faces.enabled)"
+        return ("drop_no_face" if cfg.drop_no_face else "drop_no_age"), "faces.enabled"
     if cfg.drop_no_age and not faces.mivolo:
-        return "prefilter.drop_no_age needs MiVOLO ages (faces.mivolo)"
+        return "drop_no_age", "faces.mivolo"
+    if cfg.drop_nsfw and not nsfw_enabled:
+        return "drop_nsfw", "nsfw"
     return None
+
+
+def problem(cfg: PrefilterConfig, faces: FaceConfig, nsfw_enabled: bool) -> str | None:
+    """Why *cfg* cannot run, or ``None`` (see :func:`missing`)."""
+    if (gap := missing(cfg, faces, nsfw_enabled)) is None:
+        return None
+    rule, setting = gap
+    return f"prefilter.{rule} needs {_NEEDS[setting]}" + ("" if setting == "nsfw" else f" ({setting})")

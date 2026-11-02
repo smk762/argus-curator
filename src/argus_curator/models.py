@@ -320,9 +320,11 @@ class PrefilterConfig(BaseModel):
     garments and SingGuard never run on it. Hard rejects keep their own reason.
 
     ``drop_nsfw``: an exposed NudeNet reading of at least 0.2 (an image NudeNet
-    and EraX could not score is kept). ``drop_no_face``: no face detected
-    (needs face detection). ``drop_no_age``: no MiVOLO age on any face, no
-    body-only age, and no set age (needs MiVOLO).
+    and EraX could not score is kept; needs the NudeNet check). ``drop_no_face``:
+    no face detected (needs face detection; an image whose detection failed,
+    ``face_error``, is kept). ``drop_no_age``: no MiVOLO age on any face, no
+    body-only age, and no set age (needs MiVOLO; a failed detection has no age,
+    so it is dropped).
     """
 
     drop_nsfw: bool = False
@@ -505,6 +507,10 @@ class ImageResult(BaseModel):
     # Faces (M2)
     faces: list[FaceDetection] = Field(default_factory=list)
     face_count: int = 0
+    # Why face detection failed on this image (the detector raised, or the
+    # image could not be decoded), else None. With it set, ``face_count`` 0
+    # means unchecked, not faceless.
+    face_error: str | None = None
     # Person boxes from Cheetah when FaceConfig.mivolo_body ran. Empty means it
     # was not asked, or it found none — unlike garments, this is never None.
     people: list[PersonDetection] = Field(default_factory=list)

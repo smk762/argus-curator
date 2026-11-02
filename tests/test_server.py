@@ -172,6 +172,7 @@ def test_health_declares_prefilter(client: TestClient) -> None:
         ({"drop_no_face": True}, {"enabled": False}, "faces.enabled"),
         ({"drop_no_age": True}, {"enabled": False}, "faces.enabled"),
         ({"drop_no_age": True}, {"enabled": True}, "faces.mivolo"),
+        ({"drop_nsfw": True}, {"enabled": False}, "NudeNet"),
     ],
 )
 def test_scan_refuses_a_prefilter_its_face_checks_cannot_answer(
@@ -185,9 +186,13 @@ def test_scan_refuses_a_prefilter_its_face_checks_cannot_answer(
     assert client.get("/scans").json()["active"] is None  # refused before the scan slot was taken
 
 
-def test_scan_records_the_prefilter(contained: tuple[TestClient, Path]) -> None:
+def test_scan_records_the_prefilter(contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch) -> None:
     client, _exports = contained
-    # drop_nsfw needs no check of its own: with NudeNet off every image is unscored and kept.
+    from argus_curator import nsfw as nsfw_mod
+
+    # NudeNet "runs" but scores nothing: every image is unscored and kept.
+    monkeypatch.setenv("ARGUS_CURATOR_NUDENET_URL", "http://nudenet:8080")
+    monkeypatch.setattr(nsfw_mod, "check_images", lambda *a, **k: True)
     resp = client.post("/scan/folder", json={"folder": "", "prefilter": {"drop_nsfw": True}})
     assert resp.status_code == 200
     summary = resp.json()

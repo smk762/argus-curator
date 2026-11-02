@@ -483,12 +483,9 @@ def scan_items(
     prefilter_cfg = prefilter_cfg or PrefilterConfig()
     from argus_curator import prefilter as prefilter_mod
 
-    # Without face detection every image would look faceless and be dropped.
-    if (why := prefilter_mod.problem(prefilter_cfg, faces_cfg)) is not None:
+    # A rule whose check will not run would drop nothing (nsfw) or everything (faces).
+    if (why := prefilter_mod.problem(prefilter_cfg, faces_cfg, nsfw_mod.resolve_enabled(nsfw_cfg))) is not None:
         raise ValueError(why)
-    if prefilter_cfg.drop_nsfw and not nsfw_mod.resolve_enabled(nsfw_cfg):
-        # Allowed (an unscored image is kept), but then the rule can drop nothing.
-        logger.warning("prefilter_nsfw_without_nudenet")
     requested = requested_checks(faces_cfg, nsfw_cfg, guard_cfg)
     completed: set[str] = set()
 

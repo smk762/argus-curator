@@ -406,7 +406,10 @@ def detect_faces(
         bgr = _to_bgr(data_by_rel[rel])
         if bgr is None and strict:
             raise ValueError(f"cannot decode {rel} for face detection")
-        if bgr is not None:
+        if bgr is None:
+            logger.warning("face_detect_failed", rel_path=rel, error="cannot decode")
+            r.face_error = "cannot decode the image for face detection"
+        else:
             with gpu_lease(cfg.device, "faces", wait_s=lease_wait_s):
                 _detect_one(app, sessions, bgr, rel, r, cfg, found, strict, body_detector)
         if on_done is not None:
@@ -438,6 +441,7 @@ def _detect_one(
         if strict:
             raise
         logger.warning("face_detect_failed", rel_path=rel, error=str(exc))
+        r.face_error = str(exc)[:300] or type(exc).__name__
         detections = []
     if detections is None:
         detections = []

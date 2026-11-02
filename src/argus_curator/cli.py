@@ -263,7 +263,7 @@ def scan(
         SceneConfig,
         TargetProfile,
     )
-    from argus_curator.prefilter import problem as prefilter_problem
+    from argus_curator.prefilter import missing as prefilter_missing
     from argus_curator.scanner import scan_folder as _scan
     from argus_curator.store import ScanStore
 
@@ -319,10 +319,17 @@ def scan(
     )
 
     prefilter_cfg = PrefilterConfig(drop_nsfw=drop_nsfw, drop_no_face=drop_no_face, drop_no_age=drop_no_age)
-    if prefilter_problem(prefilter_cfg, faces_cfg) is not None:
-        no_face = drop_no_face and not faces_cfg.enabled
-        flag, needs = ("--drop-no-face", "--faces") if no_face else ("--drop-no-age", "--mivolo")
-        typer.echo(f"Error: {flag} needs {needs}", err=True)
+    nsfw_wanted = nsfw_mod.resolve_enabled(NsfwConfig(enabled=nsfw))
+    if (gap := prefilter_missing(prefilter_cfg, faces_cfg, nsfw_wanted)) is not None:
+        rule, setting = gap
+        if rule == "drop_no_age":
+            needs = "--mivolo"  # which turns face detection on too
+        else:
+            needs = {
+                "faces.enabled": "--faces",
+                "nsfw": f"NudeNet (--nudenet-url or {nsfw_mod.URL_ENV}, without --no-nsfw)",
+            }[setting]
+        typer.echo(f"Error: --{rule.replace('_', '-')} needs {needs}", err=True)
         raise typer.Exit(2)
 
     scene_cfg = SceneConfig(enabled=scenes, top_k=scene_top_k, device=device)

@@ -330,6 +330,29 @@ def test_sweep_without_attributes_leaves_them_unset(monkeypatch: pytest.MonkeyPa
     assert clusters[0].attributes is None
 
 
+def test_a_failed_detection_records_face_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A detector error or an undecodable image leaves face_count 0 but says why, so 0 is not read as faceless."""
+
+    class _Raises(_App):
+        def get(self, bgr: np.ndarray) -> list[_Face]:
+            if bgr.shape[1] == 300:
+                raise RuntimeError("onnx blew up")
+            return super().get(bgr)
+
+    monkeypatch.setattr(faces, "_get_app", lambda cfg, **_k: _Raises({400: []}))
+    items = [
+        ("bad.png", "/d/bad.png", _png(300)),
+        ("junk.png", "/d/junk.png", b"not an image"),
+        ("ok.png", "/d/ok.png", _png(400)),
+    ]
+    results = [ImageResult(rel_path=rel, abs_path=abs_, passed=True) for rel, abs_, _ in items]
+    faces.detect_and_cluster(results, items, FaceConfig(enabled=True))
+    bad, junk, ok = results
+    assert bad.face_count == 0 and bad.face_error == "onnx blew up"
+    assert junk.face_count == 0 and junk.face_error is not None
+    assert ok.face_count == 0 and ok.face_error is None  # checked, and genuinely faceless
+
+
 def test_attribute_models_imply_face_detection() -> None:
     assert FaceConfig(fairface=True).enabled
     assert FaceConfig(mivolo=True).enabled

@@ -599,9 +599,9 @@ def create_app(
         Without this the scan would score every image first and only then fail.
         The detail names the env var, not the server's filesystem layout.
         """
-        # The face rules need the face checks: without them every image would
-        # look faceless and be dropped.
-        if (why := prefilter_mod.problem(req.prefilter, req.faces)) is not None:
+        # A prefilter rule needs its check: without it drop_nsfw drops nothing
+        # and the face rules drop every image.
+        if (why := prefilter_mod.problem(req.prefilter, req.faces, nsfw_mod.resolve_enabled(req.nsfw))) is not None:
             raise HTTPException(status_code=400, detail=why)
         wanted = (
             (req.faces.fairface, fairface_available, "FairFace", "ARGUS_CURATOR_FAIRFACE_MODEL", "fairface-convert"),

@@ -133,6 +133,8 @@ def test_bad_nsfw_label_thresholds_fail_before_scanning(dataset: Path, value: st
         (["--drop-no-face"], "--drop-no-face needs --faces"),
         (["--drop-no-age"], "--drop-no-age needs --mivolo"),
         (["--faces", "--drop-no-age"], "--drop-no-age needs --mivolo"),
+        (["--drop-nsfw"], "--drop-nsfw needs NudeNet"),
+        (["--drop-nsfw", "--nudenet-url", "http://n:1", "--no-nsfw"], "--drop-nsfw needs NudeNet"),
     ],
 )
 def test_prefilter_without_its_face_check_fails_before_scanning(dataset: Path, args: list[str], message: str) -> None:
@@ -141,8 +143,14 @@ def test_prefilter_without_its_face_check_fails_before_scanning(dataset: Path, a
     assert message in result.output and "Scanning" not in result.output
 
 
-def test_drop_nsfw_is_recorded_on_the_summary(dataset: Path, tmp_path: Path) -> None:
+def test_drop_nsfw_is_recorded_on_the_summary(dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator import nsfw as nsfw_mod
+
+    # NudeNet "runs" but scores nothing, so the scan records the rule and drops nothing.
+    monkeypatch.setattr(nsfw_mod, "check_images", lambda *a, **k: True)
     out = tmp_path / "s.json"
-    result = runner.invoke(app, ["scan", str(dataset), "--drop-nsfw", "--json", str(out)])
+    result = runner.invoke(
+        app, ["scan", str(dataset), "--drop-nsfw", "--nudenet-url", "http://n:1", "--json", str(out)]
+    )
     assert result.exit_code == 0, result.output
     assert json.loads(out.read_text())["prefilter_config"]["drop_nsfw"] is True

@@ -131,11 +131,33 @@ def test_apply_rejects_in_place_and_leaves_hard_rejects_alone() -> None:
 
 
 def test_problem_names_the_missing_face_check() -> None:
-    assert prefilter.problem(PrefilterConfig(drop_nsfw=True), FaceConfig()) is None
-    assert "faces.enabled" in prefilter.problem(PrefilterConfig(drop_no_face=True), FaceConfig())
-    assert "faces.enabled" in prefilter.problem(PrefilterConfig(drop_no_age=True), FaceConfig())
-    assert "faces.mivolo" in prefilter.problem(PrefilterConfig(drop_no_age=True), FaceConfig(enabled=True))
-    assert prefilter.problem(_ALL, FaceConfig(mivolo=True)) is None
+    assert prefilter.problem(PrefilterConfig(drop_nsfw=True), FaceConfig(), True) is None
+    assert "faces.enabled" in prefilter.problem(PrefilterConfig(drop_no_face=True), FaceConfig(), True)
+    assert "faces.enabled" in prefilter.problem(PrefilterConfig(drop_no_age=True), FaceConfig(), True)
+    assert "faces.mivolo" in prefilter.problem(PrefilterConfig(drop_no_age=True), FaceConfig(enabled=True), True)
+    assert prefilter.problem(_ALL, FaceConfig(mivolo=True), True) is None
+
+
+def test_problem_names_the_missing_nudenet_check() -> None:
+    """Without NudeNet every image is unscored, so drop_nsfw would drop nothing."""
+    why = prefilter.problem(PrefilterConfig(drop_nsfw=True), FaceConfig(), False)
+    assert why is not None and "NudeNet" in why and "ARGUS_CURATOR_NUDENET_URL" in why
+    assert prefilter.missing(_ALL, FaceConfig(mivolo=True), False) == ("drop_nsfw", "nsfw")
+    assert prefilter.problem(PrefilterConfig(drop_no_face=True), FaceConfig(enabled=True), False) is None
+
+
+def test_scan_refuses_drop_nsfw_without_nudenet(dataset: Path) -> None:
+    with pytest.raises(ValueError, match="NudeNet"):
+        scan_folder(dataset, nsfw_cfg=NsfwConfig(enabled=False), prefilter_cfg=PrefilterConfig(drop_nsfw=True))
+
+
+def test_a_failed_face_detection_is_not_dropped_as_faceless() -> None:
+    """face_count 0 with face_error set means unchecked; drop_no_age still applies (no age either way)."""
+    failed = _row(exposed=0.0, faces=[])
+    failed.face_error = "detector raised"
+    assert prefilter.reason(failed, PrefilterConfig(drop_no_face=True)) is None
+    assert prefilter.reason(failed, _ALL) == "prefilter:no-age"
+    assert prefilter.reason(_row(exposed=0.0, faces=[]), PrefilterConfig(drop_no_face=True)) == "prefilter:no-face"
 
 
 def test_scan_refuses_a_face_rule_without_face_detection(dataset: Path) -> None:

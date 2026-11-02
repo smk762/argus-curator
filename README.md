@@ -611,8 +611,8 @@ the request as `"prefilter": {...}` and on the CLI as a flag:
 
 | Rule | Drops a passing image when | Needs |
 |---|---|---|
-| `drop_nsfw` (`--drop-nsfw`) | its exposed NudeNet reading is 0.2 or more (an image NudeNet and EraX could not score is kept) | nothing |
-| `drop_no_face` (`--drop-no-face`) | no face was detected | face detection |
+| `drop_nsfw` (`--drop-nsfw`) | its exposed NudeNet reading is 0.2 or more (an image NudeNet and EraX could not score is kept) | the NudeNet check |
+| `drop_no_face` (`--drop-no-face`) | no face was detected (an image whose detection failed, with `face_error` set, is kept) | face detection |
 | `drop_no_age` (`--drop-no-age`) | no face has a MiVOLO age, no body-only age was read, and it has no [set age](#an-age-for-the-frames-with-no-face) | MiVOLO |
 
 The rules run once, right after identities (so a set age counts), on the
@@ -624,8 +624,9 @@ dropped image is never kept or exported: not with `include_rejected`
 (`--include-rejected`), whatever its score, and not when named in an export's
 `selection`. Its keep reason (`/scan/{id}/select`, the CSV report) is its
 `reject_reason`, e.g. `prefilter:nsfw`. A streaming scan sends the
-dropped images in a `prefilter` chunk. A face rule without the face check it
-needs is refused with HTTP 400 (CLI exit 2). The summary records the rules as
+dropped images in a `prefilter` chunk. A rule without the check it needs
+(`drop_nsfw` with NudeNet off or no `ARGUS_CURATOR_NUDENET_URL`) is refused
+with HTTP 400 (CLI exit 2). The summary records the rules as
 `prefilter_config`, and `/health` reports `prefilter`.
 
 ```bash

@@ -1431,6 +1431,18 @@
           "title": "Face Count",
           "type": "integer"
         },
+        "face_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Error"
+        },
         "faces": {
           "items": {
             "$ref": "#/$defs/FaceDetection"
@@ -2007,7 +2019,7 @@
       "type": "object"
     },
     "PrefilterConfig": {
-      "description": "Opt-in drops applied before the late scan phases (see prefilter.py).\n\nRight after the identities phase, a passing image that matches a rule is\nturned into a reject (``passed`` False, ``reject_reason``\n``prefilter:nsfw`` / ``prefilter:no-face`` / ``prefilter:no-age``, the\nfirst that applies in that order). It stays in the results, but scenes,\ngarments and SingGuard never run on it. Hard rejects keep their own reason.\n\n``drop_nsfw``: an exposed NudeNet reading of at least 0.2 (an image NudeNet\nand EraX could not score is kept). ``drop_no_face``: no face detected\n(needs face detection). ``drop_no_age``: no MiVOLO age on any face, no\nbody-only age, and no set age (needs MiVOLO).",
+      "description": "Opt-in drops applied before the late scan phases (see prefilter.py).\n\nRight after the identities phase, a passing image that matches a rule is\nturned into a reject (``passed`` False, ``reject_reason``\n``prefilter:nsfw`` / ``prefilter:no-face`` / ``prefilter:no-age``, the\nfirst that applies in that order). It stays in the results, but scenes,\ngarments and SingGuard never run on it. Hard rejects keep their own reason.\n\n``drop_nsfw``: an exposed NudeNet reading of at least 0.2 (an image NudeNet\nand EraX could not score is kept; needs the NudeNet check). ``drop_no_face``:\nno face detected (needs face detection; an image whose detection failed,\n``face_error``, is kept). ``drop_no_age``: no MiVOLO age on any face, no\nbody-only age, and no set age (needs MiVOLO; a failed detection has no age,\nso it is dropped).",
       "properties": {
         "drop_no_age": {
           "default": false,
