@@ -4,7 +4,9 @@ Applied once, right after the identities phase (so a set age counts), to the
 images that still pass. A dropped image becomes a reject with a
 ``prefilter:<rule>`` reason and stays in the results; scenes and garments
 skip it like any reject, and SingGuard skips it too (other rejects it still
-judges), which is where the time goes.
+judges), which is where the time goes. Unlike other rejects, a dropped image
+is never kept or exported, ``include_rejected`` or a named selection
+notwithstanding (see :func:`selection.decide_selection`).
 """
 
 from __future__ import annotations
@@ -13,7 +15,6 @@ from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
 from argus_curator.guard_context import body_only_ages, mivolo_ages
 from argus_curator.models import FaceConfig, ImageResult, PrefilterConfig
-from argus_curator.selection import exposed_reading
 
 PREFIX = "prefilter:"
 NSFW = f"{PREFIX}nsfw"
@@ -34,6 +35,9 @@ def has_age(result: ImageResult) -> bool:
 def reason(result: ImageResult, cfg: PrefilterConfig) -> str | None:
     """The first rule *cfg* turns on that drops *result*, in nsfw, no-face, no-age order."""
     if cfg.drop_nsfw:
+        # Here, not at the top: selection imports this module for the keep decision.
+        from argus_curator.selection import exposed_reading
+
         reading = exposed_reading(result)
         # An image NudeNet and EraX could not score is kept: no reading, no drop.
         if reading is not None and reading >= MIN_REPORTED_SCORE:

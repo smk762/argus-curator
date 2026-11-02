@@ -197,6 +197,38 @@ def test_scan_records_the_prefilter(contained: tuple[TestClient, Path]) -> None:
     assert again["prefilter_config"] == summary["prefilter_config"]
 
 
+def test_prefiltered_images_are_never_kept_or_exported(contained: tuple[TestClient, Path], tmp_path: Path) -> None:
+    """Even with include_rejected, a high score, or the image named in a selection."""
+    from argus_curator.store import ScanStore
+
+    client, exports = contained
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    store = ScanStore(str(tmp_path / "cache"))
+    summary = store.load(scan_id)
+    by = {r.rel_path: r for r in summary.results}
+    dropped, blurry = by["personA/s2/img.png"], by["personB/blurry.png"]
+    dropped.passed, dropped.reject_reason, dropped.score = False, "prefilter:nsfw", 0.99
+    blurry.score = 0.99
+    store.save(summary)
+
+    loose = {"min_score": 0.0, "include_rejected": True, "keep_similar": True}
+    rows = {r["rel_path"]: r["keep_reason"] for r in client.post(f"/scan/{scan_id}/select", json=loose).json()["rows"]}
+    assert rows["personA/s2/img.png"] == "prefilter:nsfw"
+    assert rows["personB/blurry.png"] == ""  # an ordinary hard reject is still kept under include_rejected
+
+    exp = client.post("/export", json={"scan_id": scan_id, "dest": "out", "mode": "copy", **loose}).json()
+    assert "personA/s2/img.png" not in exp["selected_rel_paths"]
+    assert "personA/s2/img.png" not in exp["exported_paths"]
+    assert "personB/blurry.png" in exp["exported_paths"]
+
+    named = client.post(
+        "/export",
+        json={"scan_id": scan_id, "dest": "named", "selection": ["personA/s2/img.png", "personB/blurry.png"]},
+    ).json()
+    assert list(named["exported_paths"]) == ["personB/blurry.png"]
+    assert not (exports / "named" / "personA").exists()
+
+
 def test_scan_then_paginate_then_export(contained: tuple[TestClient, Path]) -> None:
     client, exports = contained
     resp = client.post(

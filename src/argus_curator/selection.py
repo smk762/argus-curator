@@ -16,6 +16,7 @@ from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_curator.garments import outfit, outfit_similarity
 from argus_curator.models import ExportRequest, FaceAttributes, GuardResult, ImageResult, ScanSummary
 from argus_curator.nsfw import exposed_score
+from argus_curator.prefilter import is_prefiltered
 
 # A MiVOLO age under this, together with any reported exposed detection, is never kept.
 MINOR_AGE_YEARS = 18.0
@@ -382,7 +383,9 @@ def decide_selection(
     SingGuard filters, then an optional diversity cap.
 
     An under-18 face with a reported exposed score is rejected first, whatever
-    the request asked to keep.
+    the request asked to keep. An image the scan prefilter dropped comes next:
+    it is never kept, ``include_rejected`` notwithstanding, and its keep reason
+    is its own ``reject_reason`` (``prefilter:nsfw`` and so on).
     """
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
@@ -392,6 +395,8 @@ def decide_selection(
     for r in results:
         if minor_exposed(r):
             keep_reason[r.rel_path] = "minor-exposed"
+        elif is_prefiltered(r):
+            keep_reason[r.rel_path] = r.reject_reason or "prefilter"
         elif r.score < req.min_score:
             keep_reason[r.rel_path] = "below-score"
         elif not r.passed and not req.include_rejected:

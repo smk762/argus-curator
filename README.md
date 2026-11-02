@@ -619,7 +619,11 @@ The rules run once, right after identities (so a set age counts), on the
 images that passed the hard filters. A dropped image stays in the results as
 a reject with `reject_reason` `prefilter:nsfw`, `prefilter:no-face` or
 `prefilter:no-age` (the first that applies, in that order); hard rejects keep
-their own reason and are still judged by SingGuard. A streaming scan sends the
+their own reason and are still judged by SingGuard. Unlike a hard reject, a
+dropped image is never kept or exported: not with `include_rejected`
+(`--include-rejected`), whatever its score, and not when named in an export's
+`selection`. Its keep reason (`/scan/{id}/select`, the CSV report) is its
+`reject_reason`, e.g. `prefilter:nsfw`. A streaming scan sends the
 dropped images in a `prefilter` chunk. A face rule without the face check it
 needs is refused with HTTP 400 (CLI exit 2). The summary records the rules as
 `prefilter_config`, and `/health` reports `prefilter`.

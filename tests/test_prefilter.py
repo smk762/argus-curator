@@ -340,3 +340,16 @@ def test_prefilter_config_round_trips_on_the_summary() -> None:
     # A summary stored before the prefilter existed still loads, with every rule off.
     del dumped["prefilter_config"]
     assert ScanSummary.model_validate(dumped).prefilter_config == PrefilterConfig()
+
+
+def test_decide_selection_never_keeps_a_prefiltered_row() -> None:
+    from argus_curator.models import ExportRequest
+    from argus_curator.selection import decide_selection
+
+    dropped = ImageResult(rel_path="d.png", abs_path="/d/d", score=0.99, reject_reason="prefilter:no-age")
+    blurry = ImageResult(rel_path="b.png", abs_path="/d/b", score=0.99, reject_reason="blurry")
+    kept = ImageResult(rel_path="k.png", abs_path="/d/k", score=0.99, passed=True)
+    req = ExportRequest(dest="/out", min_score=0.0, include_rejected=True, keep_similar=True)
+    selected, reasons = decide_selection([dropped, blurry, kept], req, 0.0)
+    assert [r.rel_path for r in selected] == ["b.png", "k.png"]
+    assert reasons["d.png"] == "prefilter:no-age"

@@ -22,6 +22,7 @@ from argus_cortex.moderation import rule_letter
 from argus_cortex.xmp import XmpData, XmpError, XmpRegion, XmpRegions, sidecar_path, write_xmp
 
 from argus_curator.models import ExportRequest, ExportResult, FaceDetection, ImageResult, ManifestRow, ScanSummary
+from argus_curator.prefilter import is_prefiltered
 from argus_curator.selection import decide_selection, minor_exposed
 
 logger = structlog.get_logger()
@@ -401,12 +402,17 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
 
     if req.selection is not None:
         wanted = set(req.selection)
-        # A named list does not override the under-18 exposed rejection.
-        selected = [r for r in results if r.rel_path in wanted and not minor_exposed(r)]
-        keep_reason = {
-            r.rel_path: "minor-exposed" if minor_exposed(r) else ("" if r.rel_path in wanted else "not-selected")
-            for r in results
-        }
+
+        def named_reason(r: ImageResult) -> str:
+            # A named list overrides neither the under-18 exposed rejection nor the prefilter.
+            if minor_exposed(r):
+                return "minor-exposed"
+            if is_prefiltered(r):
+                return r.reject_reason or "prefilter"
+            return "" if r.rel_path in wanted else "not-selected"
+
+        keep_reason = {r.rel_path: named_reason(r) for r in results}
+        selected = [r for r in results if keep_reason[r.rel_path] == ""]
     else:
         selected, keep_reason = decide_selection(results, req, summary.config.diversity_weight)
 

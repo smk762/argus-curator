@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.2 or more; an unscored image is kept), `prefilter:no-face` or
   `prefilter:no-age` (no MiVOLO, body-only or set age), the first that applies.
   The images stay in the results, and a streaming scan sends them in a
-  `prefilter` chunk. A face rule without face detection (or `drop_no_age`
+  `prefilter` chunk. Unlike a hard reject, a dropped image is never kept or
+  exported, even with `include_rejected` and a score over `min_score` or when
+  named in an export `selection`; its keep reason is its `reject_reason`. A face rule without face detection (or `drop_no_age`
   without MiVOLO) is refused with HTTP 400. The summary records
   `prefilter_config`; `GET /health` reports `prefilter: true`.
 
