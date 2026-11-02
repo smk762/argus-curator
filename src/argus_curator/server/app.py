@@ -495,6 +495,8 @@ def create_app(
             # A client asks, rather than sniffing the version: this server can
             # stop a running scan and purge the scan cache (0.6 and later).
             "scan_control": True,
+            # DELETE /scan/{id} removes one cached scan (0.12 and later).
+            "scan_delete": True,
             # FaceConfig.set_age: frames with no face can take the set's age (0.7 and later).
             "set_age": True,
             # GET /guard/policies serves each policy's text (0.8 and later).
@@ -830,6 +832,20 @@ def create_app(
             raise HTTPException(status_code=409, detail="the running scan has not stopped yet; try again")
         deleted = await asyncio.to_thread(store.delete_all)
         return {"cancelled": cancelled, "deleted": deleted}
+
+    @app.delete("/scan/{scan_id}")
+    async def delete_scan(scan_id: str) -> dict[str, Any]:
+        """Remove one cached scan. Source images are not touched.
+
+        The running scan is refused: stop it with ``POST /scan/{id}/cancel``
+        first, or its next snapshot would write the file back.
+        """
+        active = gate.snapshot()
+        if active is not None and active["scan_id"] == scan_id:
+            raise HTTPException(status_code=409, detail="that scan is still running; stop it first")
+        if not await asyncio.to_thread(store.delete, scan_id):
+            raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
+        return {"scan_id": scan_id, "deleted": True}
 
     @app.get("/scan/{scan_id}", response_model=ScanSummary)
     async def get_scan(

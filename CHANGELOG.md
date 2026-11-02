@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   means unchecked, not faceless.
 - `GET /health` reports `delete_any: true`, so a client such as argus-cull can
   tell this curator deletes any image in a scan without sniffing the version.
+- **`DELETE /scan/{id}` removes one cached scan.** Until now the only way to
+  drop a scan was `POST /scans/purge`, which empties the whole cache. The
+  running scan is refused with 409; `/health` reports `scan_delete: true`.
 
 ### Changed
 
@@ -37,6 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gone. A batch is still all or nothing (a path not in the scan is a 404 and
   deletes nothing), and a running scan is still a 409. The under-18 exposed
   rule still decides which thumbnails are blurred.
+
+### Fixed
+
+- **Tests no longer write scans into the real cache.** The CLI scan tests
+  saved to `~/.cache/argus_curator/scans`, the directory a local curator
+  serves, so its scan list filled with `/tmp/pytest-of-*` folders. The test
+  fixture now points `CURATOR_CACHE_DIR` at a temporary directory.
 
 ## [0.11.1] - 2026-11-01
 
