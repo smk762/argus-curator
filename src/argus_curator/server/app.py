@@ -47,6 +47,7 @@ from argus_curator import __version__, export, scanner
 from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
+from argus_curator import prefilter as prefilter_mod
 from argus_curator.attributes import fairface_available, mivolo_available
 from argus_curator.bodies import bodies_available
 from argus_curator.faces import faces_available
@@ -498,6 +499,9 @@ def create_app(
             "set_age": True,
             # GET /guard/policies serves each policy's text (0.8 and later).
             "guard_policy_text": True,
+            # ScanRequest.prefilter: drop nsfw / faceless / ageless images before
+            # scenes, garments and SingGuard (reject_reason "prefilter:*").
+            "prefilter": True,
             # POST /scan/{id}/delete takes any image in the scan, not only an
             # under-18 exposed one (0.12 and later).
             "delete_any": True,
@@ -598,6 +602,10 @@ def create_app(
         Without this the scan would score every image first and only then fail.
         The detail names the env var, not the server's filesystem layout.
         """
+        # A prefilter rule needs its check: without it drop_nsfw drops nothing
+        # and the face rules drop every image.
+        if (why := prefilter_mod.problem(req.prefilter, req.faces, nsfw_mod.resolve_enabled(req.nsfw))) is not None:
+            raise HTTPException(status_code=400, detail=why)
         wanted = (
             (req.faces.fairface, fairface_available, "FairFace", "ARGUS_CURATOR_FAIRFACE_MODEL", "fairface-convert"),
             (req.faces.mivolo, mivolo_available, "MiVOLO", "ARGUS_CURATOR_MIVOLO_MODEL", "mivolo-convert"),
@@ -706,6 +714,7 @@ def create_app(
                 garment_cfg=req.garments,
                 nsfw_cfg=req.nsfw,
                 guard_cfg=req.guard,
+                prefilter_cfg=req.prefilter,
                 scan_id=scan_id,
                 progress=lambda payload: _note_progress(scan_id, requested, payload),
                 cancelled=lambda: gate.cancelled(scan_id),
@@ -762,6 +771,7 @@ def create_app(
                     garment_cfg=req.garments,
                     nsfw_cfg=req.nsfw,
                     guard_cfg=req.guard,
+                    prefilter_cfg=req.prefilter,
                     scan_id=scan_id,
                     progress=on_progress,
                     chunk=on_chunk,
