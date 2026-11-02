@@ -51,6 +51,7 @@ from argus_cortex.moderation.policies import policy_text as cortex_policy_text
 from argus_curator.guard_context import CONTEXT_KINDS, body_only_ages, image_context, mivolo_ages
 from argus_curator.models import GuardConfig, GuardPolicy, GuardResult, ImageResult
 from argus_curator.nsfw import exposed_score
+from argus_curator.prefilter import is_prefiltered
 from argus_curator.remote import check_all, env_set, env_value, float_env
 from argus_curator.runtime import ModelUnavailable
 from argus_curator.selection import minor_exposed
@@ -264,9 +265,13 @@ def check_images(
     With ``cfg.variants``, every image is then judged again under each variant,
     one pass per policy, and ``guard_variants`` holds every verdict by policy
     name, the official one included. Progress counts images times policies.
+
+    Images the scan prefilter dropped are not judged (nor counted); other
+    rejects are, since a blurry explicit image is still explicit.
     """
     if not resolve_enabled(cfg):
         return False
+    results = [r for r in results if not is_prefiltered(r)]
     names = [cfg.policy, *cfg.variants]
     clients = {name: client(name) for name in names}
     if clients[cfg.policy] is None:

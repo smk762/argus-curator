@@ -47,6 +47,10 @@ def hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempP
     """
     for name in _CONFIG_ENV:
         monkeypatch.delenv(name, raising=False)
+    # The CLI saves each scan to the default store. Unset, that is
+    # ~/.cache/argus_curator/scans, which a running curator serves from, so its
+    # scan list filled with pytest folders.
+    monkeypatch.setenv("CURATOR_CACHE_DIR", str(tmp_path_factory.mktemp("scans")))
     from argus_curator import runtime
 
     monkeypatch.setattr(runtime, "MODEL_DIR", tmp_path_factory.mktemp("models"))

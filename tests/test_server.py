@@ -162,6 +162,78 @@ def test_scan_refuses_an_unknown_guard_policy(contained: tuple[TestClient, Path]
     assert resp.status_code == 422
 
 
+def test_health_declares_prefilter(client: TestClient) -> None:
+    assert client.get("/health").json()["prefilter"] is True
+
+
+@pytest.mark.parametrize(
+    ("prefilter", "faces", "needs"),
+    [
+        ({"drop_no_face": True}, {"enabled": False}, "faces.enabled"),
+        ({"drop_no_age": True}, {"enabled": False}, "faces.enabled"),
+        ({"drop_no_age": True}, {"enabled": True}, "faces.mivolo"),
+        ({"drop_nsfw": True}, {"enabled": False}, "NudeNet"),
+    ],
+)
+def test_scan_refuses_a_prefilter_its_face_checks_cannot_answer(
+    contained: tuple[TestClient, Path], prefilter: dict, faces: dict, needs: str
+) -> None:
+    client, _exports = contained
+    for endpoint in ("/scan/folder", "/scan/folder/stream"):
+        resp = client.post(endpoint, json={"folder": "", "faces": faces, "prefilter": prefilter})
+        assert resp.status_code == 400, endpoint
+        assert needs in resp.json()["detail"], endpoint
+    assert client.get("/scans").json()["active"] is None  # refused before the scan slot was taken
+
+
+def test_scan_records_the_prefilter(contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _exports = contained
+    from argus_curator import nsfw as nsfw_mod
+
+    # NudeNet "runs" but scores nothing: every image is unscored and kept.
+    monkeypatch.setenv("ARGUS_CURATOR_NUDENET_URL", "http://nudenet:8080")
+    monkeypatch.setattr(nsfw_mod, "check_images", lambda *a, **k: True)
+    resp = client.post("/scan/folder", json={"folder": "", "prefilter": {"drop_nsfw": True}})
+    assert resp.status_code == 200
+    summary = resp.json()
+    assert summary["prefilter_config"] == {"drop_nsfw": True, "drop_no_face": False, "drop_no_age": False}
+    assert summary["passed"] == 3
+    again = client.get(f"/scan/{summary['scan_id']}").json()
+    assert again["prefilter_config"] == summary["prefilter_config"]
+
+
+def test_prefiltered_images_are_never_kept_or_exported(contained: tuple[TestClient, Path], tmp_path: Path) -> None:
+    """Even with include_rejected, a high score, or the image named in a selection."""
+    from argus_curator.store import ScanStore
+
+    client, exports = contained
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    store = ScanStore(str(tmp_path / "cache"))
+    summary = store.load(scan_id)
+    by = {r.rel_path: r for r in summary.results}
+    dropped, blurry = by["personA/s2/img.png"], by["personB/blurry.png"]
+    dropped.passed, dropped.reject_reason, dropped.score = False, "prefilter:nsfw", 0.99
+    blurry.score = 0.99
+    store.save(summary)
+
+    loose = {"min_score": 0.0, "include_rejected": True, "keep_similar": True}
+    rows = {r["rel_path"]: r["keep_reason"] for r in client.post(f"/scan/{scan_id}/select", json=loose).json()["rows"]}
+    assert rows["personA/s2/img.png"] == "prefilter:nsfw"
+    assert rows["personB/blurry.png"] == ""  # an ordinary hard reject is still kept under include_rejected
+
+    exp = client.post("/export", json={"scan_id": scan_id, "dest": "out", "mode": "copy", **loose}).json()
+    assert "personA/s2/img.png" not in exp["selected_rel_paths"]
+    assert "personA/s2/img.png" not in exp["exported_paths"]
+    assert "personB/blurry.png" in exp["exported_paths"]
+
+    named = client.post(
+        "/export",
+        json={"scan_id": scan_id, "dest": "named", "selection": ["personA/s2/img.png", "personB/blurry.png"]},
+    ).json()
+    assert list(named["exported_paths"]) == ["personB/blurry.png"]
+    assert not (exports / "named" / "personA").exists()
+
+
 def test_scan_then_paginate_then_export(contained: tuple[TestClient, Path]) -> None:
     client, exports = contained
     resp = client.post(
@@ -291,7 +363,7 @@ def test_unknown_scan_404(client: TestClient) -> None:
     assert client.get("/scan/does-not-exist").status_code == 404
 
 
-def test_delete_removes_only_an_under_18_exposed_file(tmp_path: Path) -> None:
+def test_delete_removes_any_image_in_the_scan(tmp_path: Path) -> None:
     from argus_curator.models import (
         FaceAttributes,
         FaceConfig,
@@ -352,16 +424,24 @@ def test_delete_removes_only_an_under_18_exposed_file(tmp_path: Path) -> None:
         )
     )
     client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
-    refused = client.post("/scan/scan/delete", json={"rel_paths": ["minor.png", "adult.png"]})
-    assert refused.status_code == 403
-    assert minor.exists() and adult.exists()
+    assert client.get("/health").json()["delete_any"] is True
+    # All or nothing: one path outside the scan refuses the whole batch.
+    refused = client.post("/scan/scan/delete", json={"rel_paths": ["minor.png", "stranger.png"]})
+    assert refused.status_code == 404
+    assert minor.exists() and minor_b.exists() and adult.exists()
+    assert client.get("/scan/scan").json()["total"] == 3
+    # An image that is not under-18 exposed can be deleted too.
+    adult_gone = client.post("/scan/scan/delete", json={"rel_paths": ["adult.png"]})
+    assert adult_gone.status_code == 200
+    assert adult_gone.json() == {"rel_paths": ["adult.png"], "total": 2, "rel_path": "adult.png"}
+    assert not adult.exists()
+    after = client.get("/scan/scan").json()
+    assert after["total"] == 2 and after["passed"] == 2 and after["rejected"] == 0
+    assert "adult.png" not in {r["rel_path"] for r in after["results"]}
     deleted = client.post("/scan/scan/delete", json={"rel_paths": ["minor.png", "minor-b.png"]})
     assert deleted.status_code == 200
-    assert deleted.json()["total"] == 1
+    assert deleted.json()["total"] == 0
     assert not minor.exists() and not minor_b.exists()
-    assert adult.exists()
-    hidden = client.get("/image", params={"path": "adult.png", "scan_id": "scan"})
-    assert hidden.status_code == 200
     gone = client.get("/image", params={"path": "minor.png", "scan_id": "scan"})
     assert gone.status_code == 404
 
@@ -1226,8 +1306,37 @@ def test_purge_stops_the_scan_and_empties_the_cache(
     assert client.get("/scans").json() == {"active": None, "scans": []}
 
 
+def test_delete_removes_one_scan(contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _exports = contained
+    store = client.app.state.scan_store
+    for i in range(2):
+        store.save(_summary(f"old{i}", "/data/images", total=1))
+
+    resp = client.delete("/scan/old0")
+    assert resp.status_code == 200 and resp.json() == {"scan_id": "old0", "deleted": True}
+    assert [row["scan_id"] for row in client.get("/scans").json()["scans"]] == ["old1"]
+    assert client.get("/scan/old0").status_code == 404
+    assert client.delete("/scan/old0").status_code == 404
+
+    # The running scan is refused, and stays running.
+    started = threading.Event()
+    _slow_scan(monkeypatch, started)
+    worker = threading.Thread(
+        target=lambda: client.post("/scan/folder/stream", json={"folder": "", "faces": {"enabled": False}}).text
+    )
+    worker.start()
+    assert started.wait(5)
+    scan_id = client.get("/scans").json()["active"]["scan_id"]
+    resp = client.delete(f"/scan/{scan_id}")
+    assert resp.status_code == 409
+    assert client.get("/scans").json()["active"]["scan_id"] == scan_id
+    client.post(f"/scan/{scan_id}/cancel")
+    worker.join(5)
+
+
 def test_health_says_it_can_stop_and_purge(client: TestClient) -> None:
     assert client.get("/health").json()["scan_control"] is True
+    assert client.get("/health").json()["scan_delete"] is True
 
 
 def test_cancel_and_purge_are_writes(contained: tuple[TestClient, Path]) -> None:
@@ -1236,6 +1345,7 @@ def test_cancel_and_purge_are_writes(contained: tuple[TestClient, Path]) -> None
     evil = {"Origin": "https://evil.example"}
     assert client.post("/scans/purge", headers=evil).status_code == 403
     assert client.post("/scan/x/cancel", headers=evil).status_code == 403
+    assert client.delete("/scan/x", headers=evil).status_code == 403
 
 
 def _face(years: float | None, source: str | None = "mivolo"):

@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-02
+
+### Added
+
+- **Scan prefilter.** `ScanRequest.prefilter` (`PrefilterConfig`: `drop_nsfw`,
+  `drop_no_face`, `drop_no_age`, all off by default; CLI `--drop-nsfw`,
+  `--drop-no-face`, `--drop-no-age`) turns matching passing images into rejects
+  right after identities, before scenes, garments and SingGuard, so none of
+  those run on them. `reject_reason` is `prefilter:nsfw` (exposed reading of 0.2
+  or more; an unscored image is kept), `prefilter:no-face` (an image whose face
+  detection failed is kept) or `prefilter:no-age` (no MiVOLO, body-only or set
+  age), the first that applies. The images stay in the results, and a streaming
+  scan sends them in a `prefilter` chunk. Unlike a hard reject, a dropped image
+  is never kept or exported, even with `include_rejected` and a score over
+  `min_score` or when named in an export `selection`; its keep reason is its
+  `reject_reason`. A rule without its check (`drop_nsfw` without NudeNet, a face
+  rule without face detection, `drop_no_age` without MiVOLO) is refused with
+  HTTP 400 (CLI exit 2). The summary records `prefilter_config`; `GET /health`
+  reports `prefilter: true`.
+- `ImageResult.face_error`: why face detection failed on an image (the
+  detector raised, or it could not be decoded). With it set, `face_count` 0
+  means unchecked, not faceless.
+- `GET /health` reports `delete_any: true`, so a client such as argus-cull can
+  tell this curator deletes any image in a scan without sniffing the version.
+- **`DELETE /scan/{id}` removes one cached scan.** Until now the only way to
+  drop a scan was `POST /scans/purge`, which empties the whole cache. The
+  running scan is refused with 409; `/health` reports `scan_delete: true`.
+
+### Changed
+
+- `POST /scan/{scan_id}/delete` takes any image in the scan, not only one
+  MiVOLO reads as under 18 with an exposed score; the 403 for other images is
+  gone. A batch is still all or nothing (a path not in the scan is a 404 and
+  deletes nothing), and a running scan is still a 409. The under-18 exposed
+  rule still decides which thumbnails are blurred.
+
+### Fixed
+
+- **Tests no longer write scans into the real cache.** The CLI scan tests
+  saved to `~/.cache/argus_curator/scans`, the directory a local curator
+  serves, so its scan list filled with `/tmp/pytest-of-*` folders. The test
+  fixture now points `CURATOR_CACHE_DIR` at a temporary directory.
+
 ## [0.11.1] - 2026-11-01
 
 ### Added
@@ -650,7 +693,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/smk762/argus-curator/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/smk762/argus-curator/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/smk762/argus-curator/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/smk762/argus-curator/compare/v0.10.1...v0.10.2
