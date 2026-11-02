@@ -29,8 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ImageResult.face_error`: why face detection failed on an image (the
   detector raised, or it could not be decoded). With it set, `face_count` 0
   means unchecked, not faceless.
-- `GET /health` reports `delete_any: true`, so a client such as argus-cull can
-  tell this curator deletes any image in a scan without sniffing the version.
+- `serve --allow-delete` (or `CURATOR_ALLOW_DELETE=1`, or `CURATOR_DEVMODE=1`)
+  lets `POST /scan/{id}/delete` remove any image in a scan. `GET /health`
+  reports `delete_any`, true only on such a server, so a client such as
+  argus-cull can tell without sniffing the version.
 - **`DELETE /scan/{id}` removes one cached scan.** Until now the only way to
   drop a scan was `POST /scans/purge`, which empties the whole cache. The
   running scan is refused with 409; `/health` reports `scan_delete: true`.
@@ -38,9 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `POST /scan/{scan_id}/delete` takes any image in the scan, not only one
-  MiVOLO reads as under 18 with an exposed score; the 403 for other images is
-  gone. A batch is still all or nothing (a path not in the scan is a 404 and
-  deletes nothing), and a running scan is still a 409. The under-18 exposed
+  MiVOLO reads as under 18 with an exposed score, on a server started with
+  `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1`. Without
+  it, other images are still a 403 and under-18 exposed ones stay deletable. A batch is still checked as a whole first (a path not in the scan is a 404
+  and deletes nothing); if an unlink then fails part-way, the files already
+  removed drop out of the cached scan and the 400 lists them, and a running scan is still a 409. The under-18 exposed
   rule still decides which thumbnails are blurred.
 
 ### Fixed

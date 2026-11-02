@@ -319,8 +319,9 @@ def scan(
     )
 
     prefilter_cfg = PrefilterConfig(drop_nsfw=drop_nsfw, drop_no_face=drop_no_face, drop_no_age=drop_no_age)
-    nsfw_wanted = nsfw_mod.resolve_enabled(NsfwConfig(enabled=nsfw))
-    if (gap := prefilter_missing(prefilter_cfg, faces_cfg, nsfw_wanted)) is not None:
+    nsfw_cfg = NsfwConfig(enabled=nsfw)
+    nsfw_on = nsfw_mod.resolve_enabled(nsfw_cfg)
+    if (gap := prefilter_missing(prefilter_cfg, faces_cfg, nsfw_on)) is not None:
         rule, setting = gap
         if rule == "drop_no_age":
             needs = "--mivolo"  # which turns face detection on too
@@ -412,8 +413,6 @@ def scan(
             typer.echo(f"Error: no {name} model (run `argus-curator {command}` or set {env})", err=True)
             raise typer.Exit(1)
 
-    nsfw_cfg = NsfwConfig(enabled=nsfw)
-    nsfw_on = nsfw_mod.resolve_enabled(nsfw_cfg)
     if nsfw_on:
         try:
             nudenet_endpoint = nsfw_mod.endpoint()
@@ -617,6 +616,12 @@ def serve(
         None, "--export-root", help="Root that export destinations resolve under (ARGUS_CURATOR_EXPORT_ROOT)"
     ),
     allow_move: bool = Option(False, "--allow-move", help='Permit destructive mode="move" exports (default: rejected)'),
+    allow_delete: bool = Option(
+        False,
+        "--allow-delete",
+        help="Let POST /scan/{id}/delete remove any scanned image (CURATOR_ALLOW_DELETE / CURATOR_DEVMODE; "
+        "default: only under-18 exposed images)",
+    ),
 ) -> None:
     """Start the argus-curator micro-server (FastAPI) on :8101.
 
@@ -639,6 +644,7 @@ def serve(
         source_root=source_root,
         export_root=export_root,
         allow_move=allow_move or None,  # None -> fall back to CURATOR_ALLOW_MOVE
+        allow_delete=allow_delete or None,  # None -> CURATOR_ALLOW_DELETE / CURATOR_DEVMODE
     )
     uvicorn.run(application, host=host, port=port)
 
