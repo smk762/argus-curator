@@ -123,6 +123,18 @@ def _young_mivolo(years: float | None) -> bool:
     return years is not None and years < MINOR_AGE_YEARS
 
 
+def exposed_reading(result: ImageResult) -> float | None:
+    """The image's exposed-nudity reading, or ``None`` when NudeNet (and EraX) did not score it.
+
+    The higher of the recorded ``exposed_score`` and the exposed classes' label
+    scores. Compared against ``MIN_REPORTED_SCORE`` (0.2) by :func:`minor_exposed`
+    and the scan prefilter.
+    """
+    if result.nsfw is None:
+        return None
+    return max(result.nsfw.exposed_score, exposed_score(result.nsfw.labels))
+
+
 def minor_exposed(result: ImageResult) -> bool:
     """True when a MiVOLO age under 18 shares the frame with an exposed detection.
 
@@ -134,7 +146,8 @@ def minor_exposed(result: ImageResult) -> bool:
     with no person box, or a young age with no box to place it, flags any
     exposure.
     """
-    if result.nsfw is None or exposed_score(result.nsfw.labels) < MIN_REPORTED_SCORE:
+    reading = exposed_reading(result)
+    if result.nsfw is None or reading is None or reading < MIN_REPORTED_SCORE:
         return False
     face_years = [_mivolo_years(face.attributes) for face in result.faces]
     years = [*face_years, _mivolo_years(result.primary_face_attributes)]

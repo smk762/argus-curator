@@ -602,6 +602,33 @@ unchecked image is excluded whenever a SingGuard filter is set
 (e.g. `guard-rule-c`), or `guard-rule-unknown` for an unsafe verdict that names
 no rule. `GET /detectors` reports `singguard`.
 
+### Prefilter: drop before the slow checks
+
+SingGuard takes seconds an image, and scenes and garments add their own pass.
+When some images are of no use whatever the later checks say, the prefilter
+drops them first, so those passes never run on them. Each rule is opt-in, on
+the request as `"prefilter": {...}` and on the CLI as a flag:
+
+| Rule | Drops a passing image when | Needs |
+|---|---|---|
+| `drop_nsfw` (`--drop-nsfw`) | its exposed NudeNet reading is 0.2 or more (an image NudeNet and EraX could not score is kept) | nothing |
+| `drop_no_face` (`--drop-no-face`) | no face was detected | face detection |
+| `drop_no_age` (`--drop-no-age`) | no face has a MiVOLO age, no body-only age was read, and it has no [set age](#an-age-for-the-frames-with-no-face) | MiVOLO |
+
+The rules run once, right after identities (so a set age counts), on the
+images that passed the hard filters. A dropped image stays in the results as
+a reject with `reject_reason` `prefilter:nsfw`, `prefilter:no-face` or
+`prefilter:no-age` (the first that applies, in that order); hard rejects keep
+their own reason and are still judged by SingGuard. A streaming scan sends the
+dropped images in a `prefilter` chunk. A face rule without the face check it
+needs is refused with HTTP 400 (CLI exit 2). The summary records the rules as
+`prefilter_config`, and `/health` reports `prefilter`.
+
+```bash
+# Faces with an age only, and no SingGuard pass on nudity NudeNet already saw
+argus-curator scan /data/inbox --mivolo --drop-nsfw --drop-no-age --csv report.csv
+```
+
 ### HTTP server (:8101, peer to argus-lens)
 
 ```bash

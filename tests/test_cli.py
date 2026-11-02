@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -124,3 +125,24 @@ def test_bad_nsfw_label_thresholds_fail_before_scanning(dataset: Path, value: st
     result = runner.invoke(app, ["scan", str(dataset), "--nsfw-label", value, "--nudenet-url", "http://n:1"])
     assert result.exit_code == 2, result.output
     assert "Scanning" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--drop-no-face"], "--drop-no-face needs --faces"),
+        (["--drop-no-age"], "--drop-no-age needs --mivolo"),
+        (["--faces", "--drop-no-age"], "--drop-no-age needs --mivolo"),
+    ],
+)
+def test_prefilter_without_its_face_check_fails_before_scanning(dataset: Path, args: list[str], message: str) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), *args])
+    assert result.exit_code == 2, result.output
+    assert message in result.output and "Scanning" not in result.output
+
+
+def test_drop_nsfw_is_recorded_on_the_summary(dataset: Path, tmp_path: Path) -> None:
+    out = tmp_path / "s.json"
+    result = runner.invoke(app, ["scan", str(dataset), "--drop-nsfw", "--json", str(out)])
+    assert result.exit_code == 0, result.output
+    assert json.loads(out.read_text())["prefilter_config"]["drop_nsfw"] is True

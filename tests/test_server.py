@@ -162,6 +162,41 @@ def test_scan_refuses_an_unknown_guard_policy(contained: tuple[TestClient, Path]
     assert resp.status_code == 422
 
 
+def test_health_declares_prefilter(client: TestClient) -> None:
+    assert client.get("/health").json()["prefilter"] is True
+
+
+@pytest.mark.parametrize(
+    ("prefilter", "faces", "needs"),
+    [
+        ({"drop_no_face": True}, {"enabled": False}, "faces.enabled"),
+        ({"drop_no_age": True}, {"enabled": False}, "faces.enabled"),
+        ({"drop_no_age": True}, {"enabled": True}, "faces.mivolo"),
+    ],
+)
+def test_scan_refuses_a_prefilter_its_face_checks_cannot_answer(
+    contained: tuple[TestClient, Path], prefilter: dict, faces: dict, needs: str
+) -> None:
+    client, _exports = contained
+    for endpoint in ("/scan/folder", "/scan/folder/stream"):
+        resp = client.post(endpoint, json={"folder": "", "faces": faces, "prefilter": prefilter})
+        assert resp.status_code == 400, endpoint
+        assert needs in resp.json()["detail"], endpoint
+    assert client.get("/scans").json()["active"] is None  # refused before the scan slot was taken
+
+
+def test_scan_records_the_prefilter(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    # drop_nsfw needs no check of its own: with NudeNet off every image is unscored and kept.
+    resp = client.post("/scan/folder", json={"folder": "", "prefilter": {"drop_nsfw": True}})
+    assert resp.status_code == 200
+    summary = resp.json()
+    assert summary["prefilter_config"] == {"drop_nsfw": True, "drop_no_face": False, "drop_no_age": False}
+    assert summary["passed"] == 3
+    again = client.get(f"/scan/{summary['scan_id']}").json()
+    assert again["prefilter_config"] == summary["prefilter_config"]
+
+
 def test_scan_then_paginate_then_export(contained: tuple[TestClient, Path]) -> None:
     client, exports = contained
     resp = client.post(

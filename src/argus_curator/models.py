@@ -310,6 +310,26 @@ class GuardConfig(BaseModel):
         return self
 
 
+class PrefilterConfig(BaseModel):
+    """Opt-in drops applied before the late scan phases (see prefilter.py).
+
+    Right after the identities phase, a passing image that matches a rule is
+    turned into a reject (``passed`` False, ``reject_reason``
+    ``prefilter:nsfw`` / ``prefilter:no-face`` / ``prefilter:no-age``, the
+    first that applies in that order). It stays in the results, but scenes,
+    garments and SingGuard never run on it. Hard rejects keep their own reason.
+
+    ``drop_nsfw``: an exposed NudeNet reading of at least 0.2 (an image NudeNet
+    and EraX could not score is kept). ``drop_no_face``: no face detected
+    (needs face detection). ``drop_no_age``: no MiVOLO age on any face, no
+    body-only age, and no set age (needs MiVOLO).
+    """
+
+    drop_nsfw: bool = False
+    drop_no_face: bool = False
+    drop_no_age: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Per-image result
 # ---------------------------------------------------------------------------
@@ -561,6 +581,8 @@ class ScanSummary(BaseModel):
     nsfw_config: NsfwConfig = Field(default_factory=NsfwConfig)
     erax_config: EraxConfig = Field(default_factory=EraxConfig)
     guard_config: GuardConfig = Field(default_factory=GuardConfig)
+    # Defaulted so scans cached before the prefilter existed still load.
+    prefilter_config: PrefilterConfig = Field(default_factory=PrefilterConfig)
 
     total: int
     passed: int
@@ -598,6 +620,7 @@ class ScanRequest(BaseModel):
     garments: GarmentConfig = Field(default_factory=GarmentConfig)
     nsfw: NsfwConfig = Field(default_factory=NsfwConfig)
     guard: GuardConfig = Field(default_factory=GuardConfig)
+    prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
 
 
 class ExportRequest(BaseModel):

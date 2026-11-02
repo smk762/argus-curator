@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Scan prefilter.** `ScanRequest.prefilter` (`PrefilterConfig`: `drop_nsfw`,
+  `drop_no_face`, `drop_no_age`, all off by default; CLI `--drop-nsfw`,
+  `--drop-no-face`, `--drop-no-age`) turns matching passing images into rejects
+  right after identities, before scenes, garments and SingGuard, so none of
+  those run on them. `reject_reason` is `prefilter:nsfw` (exposed reading of
+  0.2 or more; an unscored image is kept), `prefilter:no-face` or
+  `prefilter:no-age` (no MiVOLO, body-only or set age), the first that applies.
+  The images stay in the results, and a streaming scan sends them in a
+  `prefilter` chunk. A face rule without face detection (or `drop_no_age`
+  without MiVOLO) is refused with HTTP 400. The summary records
+  `prefilter_config`; `GET /health` reports `prefilter: true`.
+
 ## [0.11.1] - 2026-11-01
 
 ### Added
