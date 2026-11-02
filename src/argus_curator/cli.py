@@ -319,8 +319,9 @@ def scan(
     )
 
     prefilter_cfg = PrefilterConfig(drop_nsfw=drop_nsfw, drop_no_face=drop_no_face, drop_no_age=drop_no_age)
-    nsfw_wanted = nsfw_mod.resolve_enabled(NsfwConfig(enabled=nsfw))
-    if (gap := prefilter_missing(prefilter_cfg, faces_cfg, nsfw_wanted)) is not None:
+    nsfw_cfg = NsfwConfig(enabled=nsfw)
+    nsfw_on = nsfw_mod.resolve_enabled(nsfw_cfg)
+    if (gap := prefilter_missing(prefilter_cfg, faces_cfg, nsfw_on)) is not None:
         rule, setting = gap
         if rule == "drop_no_age":
             needs = "--mivolo"  # which turns face detection on too
@@ -412,8 +413,6 @@ def scan(
             typer.echo(f"Error: no {name} model (run `argus-curator {command}` or set {env})", err=True)
             raise typer.Exit(1)
 
-    nsfw_cfg = NsfwConfig(enabled=nsfw)
-    nsfw_on = nsfw_mod.resolve_enabled(nsfw_cfg)
     if nsfw_on:
         try:
             nudenet_endpoint = nsfw_mod.endpoint()

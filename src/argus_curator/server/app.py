@@ -867,8 +867,8 @@ def create_app(
             return _scan_root_or_400(summary)
         return _root_or_400(default_source, "source", "CURATOR_SOURCE_PATH")
 
-    def _image_file(path: str, scan_id: str | None) -> Path:
-        target = _resolve_within(_media_root(scan_id), path)
+    def _image_file(path: str, scan_id: str | None, root: Path | None = None) -> Path:
+        target = _resolve_within(root if root is not None else _media_root(scan_id), path)
         if not target.is_file():
             raise HTTPException(status_code=404, detail=f"not found: {path}")
         if target.suffix.lower() not in _IMAGE_TYPES:
@@ -925,13 +925,14 @@ def create_app(
         summary = store.load(scan_id)
         if summary is None:
             raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
-        _scan_root_or_400(summary)
+        root = _scan_root_or_400(summary)
         by_path = {r.rel_path: r for r in summary.results}
         missing = [path for path in paths if path not in by_path]
         if missing:
             raise HTTPException(status_code=404, detail=f"not in scan: {missing[0]}")
 
-        targets = [(path, _image_file(path, scan_id)) for path in paths]
+        # The scan is loaded once; every path resolves against its root.
+        targets = [(path, _image_file(path, scan_id, root)) for path in paths]
         # Files removed before a failure are gone from disk, so the cache drops
         # their rows too, even when a later unlink fails.
         gone: list[str] = []
@@ -947,8 +948,13 @@ def create_app(
         except OSError as exc:
             failure = exc
         if gone:
-            scanner.drop_results(summary, gone)
-            await asyncio.to_thread(store.save, summary)
+
+            def _drop_and_save() -> None:
+                # Regrouping near-duplicates is O(n^2) on pHash: off the event loop.
+                scanner.drop_results(summary, gone)
+                store.save(summary)
+
+            await asyncio.to_thread(_drop_and_save)
         if failure is not None:
             raise HTTPException(status_code=400, detail=f"could not delete: {failure}; deleted: {gone}") from failure
         body: dict[str, Any] = {"rel_paths": paths, "total": summary.total}

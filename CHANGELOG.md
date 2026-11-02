@@ -39,8 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `POST /scan/{scan_id}/delete` takes any image in the scan, not only one
   MiVOLO reads as under 18 with an exposed score; the 403 for other images is
-  gone. A batch is still all or nothing (a path not in the scan is a 404 and
-  deletes nothing), and a running scan is still a 409. The under-18 exposed
+  gone. A batch is still checked as a whole first (a path not in the scan is a 404
+  and deletes nothing); if an unlink then fails part-way, the files already
+  removed drop out of the cached scan and the 400 lists them, and a running scan is still a 409. The under-18 exposed
   rule still decides which thumbnails are blurred.
 
 ### Fixed
