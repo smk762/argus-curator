@@ -616,6 +616,12 @@ def serve(
         None, "--export-root", help="Root that export destinations resolve under (ARGUS_CURATOR_EXPORT_ROOT)"
     ),
     allow_move: bool = Option(False, "--allow-move", help='Permit destructive mode="move" exports (default: rejected)'),
+    allow_delete: bool = Option(
+        False,
+        "--allow-delete",
+        help="Let POST /scan/{id}/delete remove any scanned image (CURATOR_ALLOW_DELETE / CURATOR_DEVMODE; "
+        "default: only under-18 exposed images)",
+    ),
 ) -> None:
     """Start the argus-curator micro-server (FastAPI) on :8101.
 
@@ -638,6 +644,7 @@ def serve(
         source_root=source_root,
         export_root=export_root,
         allow_move=allow_move or None,  # None -> fall back to CURATOR_ALLOW_MOVE
+        allow_delete=allow_delete or None,  # None -> CURATOR_ALLOW_DELETE / CURATOR_DEVMODE
     )
     uvicorn.run(application, host=host, port=port)
 

@@ -651,7 +651,10 @@ must itself lie under the source root — a `scan_id` is data from a store the
 CLI also writes to, so its folder is re-checked rather than trusted (the same
 check applies to `/thumb?scan_id=`). The destructive `mode: "move"` is
 rejected unless the server is started with `--allow-move`
-(`CURATOR_ALLOW_MOVE=1`). `--cors` allows only the localhost dev frontend
+(`CURATOR_ALLOW_MOVE=1`). Likewise `POST /scan/{id}/delete` removes only
+images MiVOLO reads as under 18 with an exposed score unless the server is
+started with `--allow-delete` (`CURATOR_ALLOW_DELETE=1`, or `CURATOR_DEVMODE=1`),
+which lets it delete any scanned image. `--cors` allows only the localhost dev frontend
 (:3000); allow-list other origins with `--cors-origin <origin>`
 (`CURATOR_CORS_ORIGINS`), or use `--cors-any` for a credential-less wildcard
 on public demos. A literal `*` in the allow-list is treated as `--cors-any`
@@ -676,7 +679,7 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 | `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount |
 | `GET  /image?path=<rel>&scan_id=<id>` | Original image bytes, same containment as `/thumb` |
 | `POST /scan/{scan_id}/select` | Dry-run of the export filter → `{total, kept, rows: [{rel_path, abs_path, keep_reason}]}`. Writes nothing |
-| `POST /scan/{scan_id}/delete` | Delete source files in the scan (`rel_path` or `rel_paths`, all or nothing: a path not in the scan is a 404, a running scan a 409) and drop their rows → `{rel_paths, total}`. `/health` reports `delete_any` |
+| `POST /scan/{scan_id}/delete` | Delete source files in the scan (`rel_path` or `rel_paths`, all or nothing: a path not in the scan is a 404, a running scan a 409) and drop their rows → `{rel_paths, total}`. Any image needs `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1` (else 403 unless under-18 exposed); `/health` reports `delete_any` |
 | `POST /upload` | Multipart image upload (`files` + `folder`) into a folder under the source root |
 | `POST /export` | Structure-preserving transfer + manifest → `ExportResult` |
 | `POST /scan/folder/stream` | Same as `/scan/folder`, streaming live progress over SSE |

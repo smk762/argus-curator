@@ -380,6 +380,7 @@ def create_app(
     source_root: str | None = None,
     export_root: str | None = None,
     allow_move: bool | None = None,
+    allow_delete: bool | None = None,
 ) -> FastAPI:
     """Create the curator FastAPI application.
 
@@ -387,7 +388,9 @@ def create_app(
     *source_root* and export destinations under *export_root* (both refusing
     traversal escapes), and the endpoints refuse outright when their root is
     not configured. ``mode="move"`` — the one destructive transfer mode — is
-    rejected unless *allow_move* is enabled.
+    rejected unless *allow_move* is enabled. ``POST /scan/{id}/delete`` takes
+    any image in the scan only with *allow_delete* (``CURATOR_ALLOW_DELETE=1``
+    or ``CURATOR_DEVMODE=1``); without it, only an under-18 exposed image.
     """
     app = FastAPI(
         title="Argus Curator",
@@ -450,6 +453,10 @@ def create_app(
     default_export = export_root or os.environ.get("ARGUS_CURATOR_EXPORT_ROOT") or os.environ.get("CURATOR_EXPORT_PATH")
     if allow_move is None:
         allow_move = env_flag("CURATOR_ALLOW_MOVE")
+    if allow_delete is None:
+        # Two flags, either one enough: devmode is the broad "this is my own
+        # box" switch, allow-delete the narrow one for a deployment.
+        allow_delete = env_flag("CURATOR_ALLOW_DELETE") or env_flag("CURATOR_DEVMODE")
 
     def _root_or_400(configured: str | None, kind: str, env: str) -> Path:
         if not configured:
@@ -505,8 +512,10 @@ def create_app(
             # scenes, garments and SingGuard (reject_reason "prefilter:*").
             "prefilter": True,
             # POST /scan/{id}/delete takes any image in the scan, not only an
-            # under-18 exposed one (0.12 and later).
-            "delete_any": True,
+            # under-18 exposed one (0.12 and later, and only when the server
+            # was started with --allow-delete / CURATOR_ALLOW_DELETE=1 or
+            # CURATOR_DEVMODE=1).
+            "delete_any": allow_delete,
             # POST /faces is up when InsightFace and MiVOLO can run (darkroom probes this).
             # Off the event loop: the first probe imports the whole InsightFace stack.
             "faces": await asyncio.to_thread(lambda: faces_available() and mivolo_available()),
@@ -912,8 +921,10 @@ def create_app(
     async def delete_image(scan_id: str, req: DeleteRequest) -> dict[str, Any]:
         """Delete source files that belong to this scan.
 
-        One path or a batch, any image in the scan. If any path is not in the
-        scan, nothing is deleted. A scan that is still running is refused too,
+        One path or a batch. With *allow_delete*, any image in the scan;
+        without it, only an image MiVOLO reads as under 18 with an exposed
+        score, which a server must always be able to remove. If any path is
+        refused, nothing is deleted. A scan that is still running is refused too,
         because its next save would put the rows back.
         """
         paths = req.targets()
@@ -930,6 +941,15 @@ def create_app(
         missing = [path for path in paths if path not in by_path]
         if missing:
             raise HTTPException(status_code=404, detail=f"not in scan: {missing[0]}")
+        if not allow_delete and not all(minor_exposed(by_path[path]) for path in paths):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "deleting this image is disabled on this server (start with --allow-delete / "
+                    "CURATOR_ALLOW_DELETE=1 or CURATOR_DEVMODE=1); only an image with a MiVOLO age "
+                    "under 18 and an exposed score of at least 0.2 can be deleted without it"
+                ),
+            )
 
         # The scan is loaded once; every path resolves against its root.
         targets = [(path, _image_file(path, scan_id, root)) for path in paths]
