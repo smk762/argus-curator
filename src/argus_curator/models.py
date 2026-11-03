@@ -9,7 +9,8 @@ eventually, hoist it into a shared ``argus-core`` package).
 
 from __future__ import annotations
 
-from typing import Literal
+import json
+from typing import Any, Literal
 
 from argus_cortex.moderation import (  # re-exported: part of curator's wire contract
     DEFAULT_EXPOSED_LABELS,
@@ -91,6 +92,10 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # that accepts 2.x keeps working, and one that already required exported_path
 # (argus-forge's MAJORS_REQUIRING_EXPORTED_PATH) is unaffected.
 MANIFEST_VERSION = "2.1"
+
+# Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
+# written to disk verbatim, so a runaway payload must not fill the export root.
+RUN_STATS_MAX_BYTES = 5 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -722,6 +727,32 @@ class ExportRequest(BaseModel):
     # Iptc4xmpExt:PersonInImage. Two ids may share a name. Unnamed clusters get
     # an unnamed region and no person entry: "face_1" is not a person's name.
     face_names: dict[str, str] | None = None
+    # Transfer the sidecars beside each exported source image with it, in the
+    # same mode (but copied under mode="symlink", so writing a caption into the
+    # export never reaches the source), named after the destination file:
+    # <stem>.txt (lens captions), <file>.xmp (lens, digiKam), <stem>.xmp
+    # (Lightroom) and <stem>.json. Under mode="move" they would otherwise be
+    # orphaned in the source folder. With
+    # write_xmp, curator's data is merged onto the carried <file>.xmp.
+    carry_sidecars: bool = False
+    # Opaque client JSON (e.g. a cull session's stats), written pretty-printed
+    # to <dest>/run_stats.json when the export produced a destination folder
+    # (a file was transferred, or write_manifest is on). At most
+    # RUN_STATS_MAX_BYTES once serialised.
+    run_stats: dict[str, Any] | None = None
+
+    @field_validator("run_stats")
+    @classmethod
+    def _run_stats_size(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        try:
+            size = len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"run_stats is not JSON-serialisable: {exc}") from exc
+        if size > RUN_STATS_MAX_BYTES:
+            raise ValueError(f"run_stats is {size} bytes serialised; the limit is {RUN_STATS_MAX_BYTES}")
+        return value
 
     @field_validator("face_names")
     @classmethod
@@ -837,6 +868,15 @@ class ExportResult(BaseModel):
     # succeed while a sidecar fails (copied > xmp_written); the image still
     # landed, and the failure is logged rather than undoing it.
     xmp_written: int = 0
+    # Sidecar files transferred beside exported images (carry_sidecars). One
+    # image can carry several (.txt, .xmp, .json). A sidecar that fails to
+    # transfer does not undo its image: it is logged and counted in
+    # sidecars_failed instead.
+    sidecars_carried: int = 0
+    sidecars_failed: int = 0
+    # Where run_stats was written (<dest>/run_stats.json), or None when the
+    # request carried none, nothing was exported, or the write failed.
+    run_stats_path: str | None = None
 
 
 class SelectRow(BaseModel):

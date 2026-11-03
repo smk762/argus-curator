@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import shutil
 import unicodedata
 from collections import Counter
@@ -31,6 +32,17 @@ ProgressFn = Callable[[dict[str, Any]], None]
 
 MANIFEST_NAME = "manifest.jsonl"
 REPORT_NAME = "curation_report.csv"
+RUN_STATS_NAME = "run_stats.json"
+
+# Where each sidecar ExportRequest.carry_sidecars carries lives, as a function
+# of its image's path. Applied to the source to find it and to the destination
+# to name it, so a de-collided "IMG-1a2b3c4d.jpg" gets "IMG-1a2b3c4d.txt".
+_SIDECAR_NAMES: tuple[Callable[[Path], Path], ...] = (
+    lambda p: p.with_suffix(".txt"),  # argus-lens captions
+    sidecar_path,  # photo.jpg.xmp (lens, digiKam)
+    lambda p: p.with_suffix(".xmp"),  # photo.xmp (Lightroom)
+    lambda p: p.with_suffix(".json"),
+)
 
 
 def _norm_name(name: str) -> str:
@@ -51,7 +63,7 @@ def _suffixed(rel_path: str, digest_len: int) -> str:
     return f"{p.stem}-{digest[:digest_len]}{p.suffix}"
 
 
-def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool) -> dict[str, str]:
+def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_stem: bool = False) -> dict[str, str]:
     """Map each selected rel_path to its destination relative to the export root.
 
     With ``preserve_structure=False`` two rel_paths can share a basename
@@ -63,13 +75,20 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool) -> d
     as a whole: a generated name that still clashes with anything (e.g. a
     selected file literally named ``stem-<hash>.ext``) gets a longer digest, and
     the export fails loudly rather than overwrite if uniqueness is unreachable.
+
+    With *by_stem* (carried sidecars) names collide on their stem instead:
+    ``a/IMG.jpg`` and ``b/IMG.png`` would otherwise both carry to ``IMG.txt``,
+    one caption overwriting the other.
     """
     if preserve_structure:
         return {r.rel_path: r.rel_path for r in selected}
 
+    def key(name: str) -> str:
+        return _norm_name(PurePosixPath(name).stem if by_stem else name)
+
     by_name: dict[str, list[str]] = {}
     for r in selected:
-        by_name.setdefault(_norm_name(PurePosixPath(r.rel_path).name), []).append(r.rel_path)
+        by_name.setdefault(key(PurePosixPath(r.rel_path).name), []).append(r.rel_path)
 
     dests: dict[str, str] = {}
     digest_len: dict[str, int] = {}
@@ -84,8 +103,8 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool) -> d
     while pending:
         for rel in pending:
             dests[rel] = _suffixed(rel, digest_len[rel])
-        counts = Counter(_norm_name(d) for d in dests.values())
-        pending = {rel for rel in digest_len if counts[_norm_name(dests[rel])] > 1}
+        counts = Counter(key(d) for d in dests.values())
+        pending = {rel for rel in digest_len if counts[key(dests[rel])] > 1}
         stuck = sorted(rel for rel in pending if digest_len[rel] >= 40)
         if stuck:
             raise ValueError(f"cannot de-collide flattened basenames for: {stuck}")
@@ -104,6 +123,38 @@ def _transfer_one(src: Path, dst: Path, mode: str) -> None:
         dst.symlink_to(src.resolve())
     else:  # copy
         shutil.copy2(src, dst)
+
+
+def _carry_sidecars(src: Path, dst: Path, mode: str, rel_path: str) -> tuple[int, int]:
+    """Transfer the sidecars beside *src* to the matching names beside *dst*. Returns ``(carried, failed)``.
+
+    Same mode and the same overwrite semantics as the image (:func:`_transfer_one`):
+    an existing destination sidecar is replaced, as an existing destination
+    image would be. The exception is ``mode="symlink"``: sidecars are *copied*,
+    because downstream tools (argus-lens captioning) write ``<stem>.txt`` /
+    ``.json`` beside the exported image, and through a link that write would
+    land in the source library. Called only after the image landed; a sidecar that fails is
+    logged and counted, never undoing the image.
+    """
+    carried = failed = 0
+    seen: set[Path] = set()
+    for name in _SIDECAR_NAMES:
+        side = name(src)
+        if side in seen or not side.is_file():
+            continue
+        seen.add(side)
+        target = name(dst)
+        try:
+            if target.is_dir() and not target.is_symlink():
+                # copy2 / move would put the sidecar *inside* it, under a name no consumer looks for.
+                raise IsADirectoryError(f"destination is a directory: {target}")
+            # A symlinked image is read-only by nature; a symlinked sidecar would be a write path into the source.
+            _transfer_one(side, target, "copy" if mode == "symlink" else mode)
+            carried += 1
+        except Exception as exc:
+            logger.warning("export_sidecar_failed", rel_path=rel_path, sidecar=side.name, error=str(exc))
+            failed += 1
+    return carried, failed
 
 
 def write_manifest(
@@ -324,14 +375,20 @@ def _source_sidecar(src: Path) -> Path | None:
     return None
 
 
-def _write_export_sidecar(src: Path, dst: Path, data: XmpData) -> None:
+def _write_export_sidecar(src: Path, dst: Path, data: XmpData, carried: bool = False) -> None:
     """Merge *data* into *dst*'s sidecar, starting from *src*'s when *dst* has none yet.
 
     The seed is copied first so lens keywords and a photo app's stars survive.
     If the merge then fails, a sidecar we just created is removed: the export
     must not leave a broken ``photo.jpg.xmp`` that was not there before.
+
+    With *carried* the source's sidecars were already transferred beside *dst*
+    (under ``mode="move"`` they are no longer beside *src*), so a carried
+    ``photo.jpg.xmp`` is merged in place and a carried Lightroom ``photo.xmp``
+    is the seed. Under ``mode="symlink"`` the carried sidecars are copies, so
+    the merge never reaches the source.
     """
-    seed = _source_sidecar(src)
+    seed = (_source_sidecar(dst) if carried else None) or _source_sidecar(src)
     target = sidecar_path(dst)
     created = False
     if seed is not None and not target.exists():
@@ -412,7 +469,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
 
     selected_rel = {r.rel_path for r in selected}
     dest_root = Path(req.dest)
-    dest_paths = _plan_dest_paths(selected, req.preserve_structure)
+    dest_paths = _plan_dest_paths(selected, req.preserve_structure, by_stem=req.carry_sidecars)
 
     total = len(selected)
     if progress is not None:
@@ -421,6 +478,8 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
     copied = 0
     skipped = 0
     xmp_written = 0
+    sidecars_carried = 0
+    sidecars_failed = 0
     transferred: list[ImageResult] = []
     for i, r in enumerate(selected):
         src = Path(r.abs_path)
@@ -437,9 +496,16 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
                 logger.warning("export_transfer_failed", rel_path=r.rel_path, error=str(exc))
                 skipped += 1
             else:
+                # Carry first, then merge: write_xmp then lands on the carried
+                # sidecar, so under move nothing is left behind and the result
+                # is the source's sidecar plus curator's data.
+                if req.carry_sidecars:
+                    carried, failed = _carry_sidecars(src, dst, req.mode, r.rel_path)
+                    sidecars_carried += carried
+                    sidecars_failed += failed
                 if req.write_xmp and (data := xmp_data(r, req.face_names)) is not None:
                     try:
-                        _write_export_sidecar(src, dst, data)
+                        _write_export_sidecar(src, dst, data, carried=req.carry_sidecars)
                         xmp_written += 1
                     except (OSError, XmpError) as exc:
                         # The file landed; a sidecar that cannot be written does not undo that.
@@ -462,6 +528,18 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         write_manifest(transferred, summary, manifest_path, exported, exported_abs, req.mode)
         write_report(results, keep_reason, selected_rel, exported, dest_root / REPORT_NAME)
 
+    run_stats_path: Path | None = None
+    # Only where the export produced a folder: a run that transferred nothing
+    # and wrote no manifest should not create dest just to hold the stats.
+    if req.run_stats is not None and (transferred or req.write_manifest):
+        target = dest_root / RUN_STATS_NAME
+        try:
+            dest_root.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(req.run_stats, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            run_stats_path = target
+        except OSError as exc:
+            logger.warning("run_stats_write_failed", path=str(target), error=str(exc))
+
     captioned = False
     if req.caption_url and manifest_path is not None:
         captioned = _post_manifest_to_lens(manifest_path, req.caption_url)
@@ -473,6 +551,8 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         copied=copied,
         skipped=skipped,
         selected=len(selected),
+        sidecars_carried=sidecars_carried,
+        sidecars_failed=sidecars_failed,
     )
 
     return ExportResult(
@@ -486,4 +566,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         exported_abs_paths=exported_abs,
         captioned=captioned,
         xmp_written=xmp_written,
+        sidecars_carried=sidecars_carried,
+        sidecars_failed=sidecars_failed,
+        run_stats_path=str(run_stats_path) if run_stats_path else None,
     )

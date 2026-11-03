@@ -100,6 +100,11 @@
           "default": null,
           "title": "Caption Url"
         },
+        "carry_sidecars": {
+          "default": false,
+          "title": "Carry Sidecars",
+          "type": "boolean"
+        },
         "content_ratings": {
           "anyOf": [
             {
@@ -558,6 +563,19 @@
           "title": "Preserve Structure",
           "type": "boolean"
         },
+        "run_stats": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Stats"
+        },
         "scan_id": {
           "anyOf": [
             {
@@ -686,12 +704,34 @@
           "title": "Mode",
           "type": "string"
         },
+        "run_stats_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Stats Path"
+        },
         "selected_rel_paths": {
           "items": {
             "type": "string"
           },
           "title": "Selected Rel Paths",
           "type": "array"
+        },
+        "sidecars_carried": {
+          "default": 0,
+          "title": "Sidecars Carried",
+          "type": "integer"
+        },
+        "sidecars_failed": {
+          "default": 0,
+          "title": "Sidecars Failed",
+          "type": "integer"
         },
         "skipped": {
           "title": "Skipped",

@@ -60,6 +60,37 @@ def test_xmp_without_a_destination_fails_before_scanning(dataset: Path) -> None:
     assert "--copy-to" in result.output and "Scanning" not in result.output
 
 
+@pytest.mark.parametrize("flag", [["--carry-sidecars"], ["--run-stats", "stats.json"]])
+def test_export_extras_without_a_destination_fail_before_scanning(dataset: Path, flag: list[str]) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), *flag])
+    assert result.exit_code == 2, result.output
+    assert "--copy-to" in result.output and "Scanning" not in result.output
+
+
+def test_carry_sidecars_and_run_stats_on_a_copy(dataset: Path, tmp_path: Path) -> None:
+    (dataset / "personA" / "s2" / "img.txt").write_text("caption")
+    stats = tmp_path / "stats.json"
+    stats.write_text(json.dumps({"session": "cli"}))
+    dest = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["scan", str(dataset), "--min-score", "0", "--copy-to", str(dest)]
+        + ["--carry-sidecars", "--run-stats", str(stats)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Sidecars carried -> 1" in result.output
+    assert (dest / "personA" / "s2" / "img.txt").read_text() == "caption"
+    assert json.loads((dest / "run_stats.json").read_text()) == {"session": "cli"}
+
+
+def test_run_stats_must_be_a_json_object(dataset: Path, tmp_path: Path) -> None:
+    stats = tmp_path / "stats.json"
+    stats.write_text("[1, 2]")
+    result = runner.invoke(app, ["scan", str(dataset), "--copy-to", str(tmp_path / "out"), "--run-stats", str(stats)])
+    assert result.exit_code == 2, result.output
+    assert "JSON object" in result.output and "Scanning" not in result.output
+
+
 def test_nsfw_thresholds_without_nudenet_fail_before_scanning(dataset: Path) -> None:
     result = runner.invoke(app, ["scan", str(dataset), "--nsfw-threshold", "0.5"])
     assert result.exit_code == 1, result.output

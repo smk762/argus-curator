@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-03
+
+### Added
+
+- **Export carries sidecars.** `ExportRequest.carry_sidecars` (CLI
+  `--carry-sidecars`) transfers `<stem>.txt` (lens captions), `<file>.xmp`
+  (lens, digiKam), `<stem>.xmp` (Lightroom) and `<stem>.json` beside each
+  exported image with it, in the same mode, named after the destination file
+  (de-collided names included). Under `mode="symlink"` the sidecars are
+  copied, not linked, so a caption written into the export (argus-lens) never
+  reaches the source library. Under `mode="move"` they are no longer left
+  orphaned in the source folder. With `write_xmp`, curator's data is merged onto
+  the carried sidecar, so a move leaves one merged sidecar and nothing behind.
+  A failed sidecar is logged and counted and never undoes its image.
+  `ExportResult.sidecars_carried` / `sidecars_failed` count them.
+- **`run_stats.json`.** `ExportRequest.run_stats` (opaque client JSON, at most
+  5 MB serialised, else 422; CLI `--run-stats FILE`) is written pretty-printed to
+  `<dest>/run_stats.json` when the export produced a destination folder (a file
+  transferred, or `write_manifest` on). `ExportResult.run_stats_path` names it.
+- `GET /health` reports `export_sidecars: true`.
+
+### Changed
+
+- A server `mode="move"` export drops the moved images from the cached scan
+  (as `POST /scan/{id}/delete` does), so their thumbnails no longer 404. A move
+  export of the scan still running is refused with 409.
+
 ## [0.12.0] - 2026-11-02
 
 ### Added
@@ -697,7 +724,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/smk762/argus-curator/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/smk762/argus-curator/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/smk762/argus-curator/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/smk762/argus-curator/compare/v0.10.2...v0.11.0
