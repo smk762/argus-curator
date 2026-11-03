@@ -728,9 +728,11 @@ class ExportRequest(BaseModel):
     # an unnamed region and no person entry: "face_1" is not a person's name.
     face_names: dict[str, str] | None = None
     # Transfer the sidecars beside each exported source image with it, in the
-    # same mode, named after the destination file: <stem>.txt (lens captions),
-    # <file>.xmp (lens, digiKam), <stem>.xmp (Lightroom) and <stem>.json. Under
-    # mode="move" they would otherwise be orphaned in the source folder. With
+    # same mode (but copied under mode="symlink", so writing a caption into the
+    # export never reaches the source), named after the destination file:
+    # <stem>.txt (lens captions), <file>.xmp (lens, digiKam), <stem>.xmp
+    # (Lightroom) and <stem>.json. Under mode="move" they would otherwise be
+    # orphaned in the source folder. With
     # write_xmp, curator's data is merged onto the carried <file>.xmp.
     carry_sidecars: bool = False
     # Opaque client JSON (e.g. a cull session's stats), written pretty-printed

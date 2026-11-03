@@ -754,8 +754,11 @@ has it.
 #### Sidecars and run stats
 
 `carry_sidecars: true` (`--carry-sidecars`) transfers the sidecars beside each
-exported source image with it, in the same mode (copy, symlink or move), so a
-moved keep set does not leave its captions orphaned in the source folder. Each
+exported source image with it, in the same mode (copy or move), so a moved
+keep set does not leave its captions orphaned in the source folder. Under
+symlink the sidecars are *copied*, not linked: argus-lens and other tools write
+captions beside the exported image, and through a link that write would land in
+your source library. Each
 of these that exists is carried, named after the *destination* file (so a
 flattened, de-collided `img-1a2b3c4d.png` gets `img-1a2b3c4d.txt`):
 
@@ -777,8 +780,8 @@ With `write_xmp` as well, sidecars are carried first and curator's data is then
 merged onto the carried `photo.jpg.xmp` (or, when only a Lightroom `photo.xmp`
 was carried, onto a `photo.jpg.xmp` seeded from it). Under move that leaves one
 merged sidecar at the destination and nothing behind in the source folder.
-Under symlink the carried link is replaced by the merged file, so the source's
-sidecar is still never changed. argus-forge reads captions from beside the
+Under symlink the merge lands on the carried copy, so the source's sidecar is
+never changed. argus-forge reads captions from beside the
 manifest's `abs_path`, which under move is the destination, so a moved export
 with `carry_sidecars` keeps its captions in reach.
 

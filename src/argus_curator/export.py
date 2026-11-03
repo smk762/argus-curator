@@ -130,7 +130,10 @@ def _carry_sidecars(src: Path, dst: Path, mode: str, rel_path: str) -> tuple[int
 
     Same mode and the same overwrite semantics as the image (:func:`_transfer_one`):
     an existing destination sidecar is replaced, as an existing destination
-    image would be. Called only after the image landed; a sidecar that fails is
+    image would be. The exception is ``mode="symlink"``: sidecars are *copied*,
+    because downstream tools (argus-lens captioning) write ``<stem>.txt`` /
+    ``.json`` beside the exported image, and through a link that write would
+    land in the source library. Called only after the image landed; a sidecar that fails is
     logged and counted, never undoing the image.
     """
     carried = failed = 0
@@ -145,7 +148,8 @@ def _carry_sidecars(src: Path, dst: Path, mode: str, rel_path: str) -> tuple[int
             if target.is_dir() and not target.is_symlink():
                 # copy2 / move would put the sidecar *inside* it, under a name no consumer looks for.
                 raise IsADirectoryError(f"destination is a directory: {target}")
-            _transfer_one(side, target, mode)
+            # A symlinked image is read-only by nature; a symlinked sidecar would be a write path into the source.
+            _transfer_one(side, target, "copy" if mode == "symlink" else mode)
             carried += 1
         except Exception as exc:
             logger.warning("export_sidecar_failed", rel_path=rel_path, sidecar=side.name, error=str(exc))
@@ -381,8 +385,8 @@ def _write_export_sidecar(src: Path, dst: Path, data: XmpData, carried: bool = F
     With *carried* the source's sidecars were already transferred beside *dst*
     (under ``mode="move"`` they are no longer beside *src*), so a carried
     ``photo.jpg.xmp`` is merged in place and a carried Lightroom ``photo.xmp``
-    is the seed. A carried symlink is replaced by the merged file
-    (``write_xmp`` writes via ``os.replace``), so the source is never changed.
+    is the seed. Under ``mode="symlink"`` the carried sidecars are copies, so
+    the merge never reaches the source.
     """
     seed = (_source_sidecar(dst) if carried else None) or _source_sidecar(src)
     target = sidecar_path(dst)
