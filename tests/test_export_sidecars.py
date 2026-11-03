@@ -66,7 +66,8 @@ def test_sidecars_travel_with_their_image(tmp_path: Path, mode: str) -> None:
     }
     for key, path in expected.items():
         assert path.read_bytes() == contents[key], key
-        assert path.is_symlink() is (mode == "symlink")
+        # Sidecars are copied even under symlink: they are a write path, the image is not.
+        assert not path.is_symlink()
         # Under move nothing is left behind in the source folder.
         assert sides[key].exists() is (mode != "move")
 
@@ -179,7 +180,23 @@ def test_write_xmp_merges_onto_the_carried_sidecar_under_move(tmp_path: Path, li
     assert not sidecar_path(src).exists() and not src.with_suffix(".xmp").exists()
 
 
-def test_write_xmp_over_a_carried_symlink_leaves_the_source_alone(tmp_path: Path) -> None:
+def test_writing_a_caption_into_a_symlink_export_leaves_the_source_alone(tmp_path: Path) -> None:
+    img = _image(tmp_path / "src" / "photo.png")
+    sides = _with_sidecars(img)
+    dest = tmp_path / "out"
+    export_selection(
+        _summary(tmp_path, [img]),
+        ExportRequest(scan_id="s", dest=str(dest), mode="symlink", min_score=0.0, carry_sidecars=True),
+    )
+    assert (dest / "photo.png").is_symlink()
+    # What argus-lens does after captioning the manifest.
+    (dest / "photo.txt").write_text("new caption")
+    (dest / "photo.json").write_text('{"k": 2}')
+    assert sides["txt"].read_text() == "a caption"
+    assert sides["json"].read_text() == '{"k": 1}'
+
+
+def test_write_xmp_in_a_symlink_export_leaves_the_source_alone(tmp_path: Path) -> None:
     img = _image(tmp_path / "src" / "photo.png", nsfw=NsfwResult(labels={}, exposed_score=0.0))
     write_xmp(img.abs_path, XmpData(description="from lens"))
     before = sidecar_path(img.abs_path).read_bytes()

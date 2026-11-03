@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--carry-sidecars`) transfers `<stem>.txt` (lens captions), `<file>.xmp`
   (lens, digiKam), `<stem>.xmp` (Lightroom) and `<stem>.json` beside each
   exported image with it, in the same mode, named after the destination file
-  (de-collided names included). Under `mode="move"` they are no longer left
+  (de-collided names included). Under `mode="symlink"` the sidecars are
+  copied, not linked, so a caption written into the export (argus-lens) never
+  reaches the source library. Under `mode="move"` they are no longer left
   orphaned in the source folder. With `write_xmp`, curator's data is merged onto
   the carried sidecar, so a move leaves one merged sidecar and nothing behind.
   A failed sidecar is logged and counted and never undoes its image.
