@@ -745,7 +745,7 @@ class ExportRequest(BaseModel):
         if value is None:
             return None
         try:
-            size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+            size = len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"run_stats is not JSON-serialisable: {exc}") from exc
         if size > RUN_STATS_MAX_BYTES:

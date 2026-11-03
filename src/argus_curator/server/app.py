@@ -1120,8 +1120,11 @@ def create_app(
         if result.mode != "move" or not result.exported_paths:
             return
         try:
-            scanner.drop_results(summary, list(result.exported_paths))
-            store.save(summary)
+            # Re-read: the export can run for minutes, and saving the copy
+            # loaded before it would put back rows a delete removed meanwhile.
+            current = store.load(summary.scan_id) or summary
+            scanner.drop_results(current, list(result.exported_paths))
+            store.save(current)
         except Exception as exc:
             logger.warning("export_cache_drop_failed", scan_id=summary.scan_id, error=str(exc))
 

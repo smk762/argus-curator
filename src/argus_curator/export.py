@@ -63,7 +63,7 @@ def _suffixed(rel_path: str, digest_len: int) -> str:
     return f"{p.stem}-{digest[:digest_len]}{p.suffix}"
 
 
-def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool) -> dict[str, str]:
+def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_stem: bool = False) -> dict[str, str]:
     """Map each selected rel_path to its destination relative to the export root.
 
     With ``preserve_structure=False`` two rel_paths can share a basename
@@ -75,13 +75,20 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool) -> d
     as a whole: a generated name that still clashes with anything (e.g. a
     selected file literally named ``stem-<hash>.ext``) gets a longer digest, and
     the export fails loudly rather than overwrite if uniqueness is unreachable.
+
+    With *by_stem* (carried sidecars) names collide on their stem instead:
+    ``a/IMG.jpg`` and ``b/IMG.png`` would otherwise both carry to ``IMG.txt``,
+    one caption overwriting the other.
     """
     if preserve_structure:
         return {r.rel_path: r.rel_path for r in selected}
 
+    def key(name: str) -> str:
+        return _norm_name(PurePosixPath(name).stem if by_stem else name)
+
     by_name: dict[str, list[str]] = {}
     for r in selected:
-        by_name.setdefault(_norm_name(PurePosixPath(r.rel_path).name), []).append(r.rel_path)
+        by_name.setdefault(key(PurePosixPath(r.rel_path).name), []).append(r.rel_path)
 
     dests: dict[str, str] = {}
     digest_len: dict[str, int] = {}
@@ -96,8 +103,8 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool) -> d
     while pending:
         for rel in pending:
             dests[rel] = _suffixed(rel, digest_len[rel])
-        counts = Counter(_norm_name(d) for d in dests.values())
-        pending = {rel for rel in digest_len if counts[_norm_name(dests[rel])] > 1}
+        counts = Counter(key(d) for d in dests.values())
+        pending = {rel for rel in digest_len if counts[key(dests[rel])] > 1}
         stuck = sorted(rel for rel in pending if digest_len[rel] >= 40)
         if stuck:
             raise ValueError(f"cannot de-collide flattened basenames for: {stuck}")
@@ -458,7 +465,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
 
     selected_rel = {r.rel_path for r in selected}
     dest_root = Path(req.dest)
-    dest_paths = _plan_dest_paths(selected, req.preserve_structure)
+    dest_paths = _plan_dest_paths(selected, req.preserve_structure, by_stem=req.carry_sidecars)
 
     total = len(selected)
     if progress is not None:

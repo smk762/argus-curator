@@ -10,7 +10,7 @@ from argus_cortex.xmp import XmpData, read_xmp, sidecar_path, write_xmp
 from pydantic import ValidationError
 
 from argus_curator import scan_folder
-from argus_curator.export import RUN_STATS_NAME, export_selection
+from argus_curator.export import RUN_STATS_NAME, _plan_dest_paths, export_selection
 from argus_curator.models import RUN_STATS_MAX_BYTES, ExportRequest, ImageResult, NsfwResult, ScanSummary
 
 
@@ -234,3 +234,17 @@ def test_run_stats_size_is_capped() -> None:
     ExportRequest(dest="x", run_stats={"blob": "x" * (RUN_STATS_MAX_BYTES - 100)})
     with pytest.raises(ValidationError, match="run_stats"):
         ExportRequest(dest="x", run_stats={"blob": "x" * RUN_STATS_MAX_BYTES})
+
+
+def test_flattened_carry_decollides_on_stem(tmp_path: Path) -> None:
+    """a/IMG.jpg and b/IMG.png flatten to distinct basenames but would share IMG.txt."""
+    sel = [ImageResult(rel_path=p, abs_path=str(tmp_path / p)) for p in ("a/IMG.jpg", "b/IMG.png")]
+    assert _plan_dest_paths(sel, preserve_structure=False) == {"a/IMG.jpg": "IMG.jpg", "b/IMG.png": "IMG.png"}
+    dests = _plan_dest_paths(sel, preserve_structure=False, by_stem=True)
+    stems = {Path(d).stem.casefold() for d in dests.values()}
+    assert len(stems) == 2
+
+
+def test_run_stats_rejects_nan() -> None:
+    with pytest.raises(ValidationError):
+        ExportRequest(dest="/tmp/x", run_stats={"ratio": float("nan")})
