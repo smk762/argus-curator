@@ -313,6 +313,7 @@ def scan(
     from argus_curator import mivolo as mivolo_mod
     from argus_curator import nsfw as nsfw_mod
     from argus_curator import scenes as scenes_mod
+    from argus_curator import watermarks as watermarks_mod
 
     for model_file, env in (
         (fairface_model, fairface_mod.MODEL_ENV),
@@ -321,23 +322,29 @@ def scan(
         (garments_model, garments_mod.MODEL_ENV),
         (nudenet_url, nsfw_mod.URL_ENV),
         (erax_url, erax_mod.URL_ENV),
-        (watermark_url, "ARGUS_CURATOR_WATERMARK_URL"),
+        (watermark_url, watermarks_mod.URL_ENV),
         (singguard_url, guard_mod.URL_ENV),
     ):
         if model_file is not None:
             os.environ[env] = str(model_file)
 
+    # CropConfig validates max_cut whether or not detection is on, so check it first, not as a traceback.
+    if not 0.0 < max_cut < 0.5:
+        typer.echo("Error: --max-cut must be between 0 and 0.5", err=True)
+        raise typer.Exit(2)
     if detect_watermarks:
-        from argus_curator import watermarks as watermarks_mod
+        from argus_curator.runtime import ModelUnavailable
 
         if not watermarks_mod.configured():
             typer.echo(
                 f"Error: --detect-watermarks needs a detector: --watermark-url or {watermarks_mod.URL_ENV}", err=True
             )
             raise typer.Exit(2)
-        if not 0.0 < max_cut < 0.5:
-            typer.echo("Error: --max-cut must be between 0 and 0.5", err=True)
-            raise typer.Exit(2)
+        try:
+            watermarks_mod.client()
+        except ModelUnavailable as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(2) from exc
 
     profile = TargetProfile(
         target_style=style,

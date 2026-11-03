@@ -123,6 +123,9 @@ def _transfer_one(src: Path, dst: Path, mode: str) -> None:
             dst.unlink()
         dst.symlink_to(src.resolve())
     else:  # copy
+        if dst.is_symlink():
+            # A link left by an earlier symlink export: copying through it would overwrite its target.
+            dst.unlink()
         shutil.copy2(src, dst)
 
 

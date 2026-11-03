@@ -156,7 +156,8 @@ def detect_all(
                         for other in futures:
                             other.cancel()
                 done += 1
-                if progress is not None:
+                # Throttled as remote.check_all is: every 5 images (and the last) is plenty for a bar.
+                if progress is not None and (done == total or done % 5 == 0):
                     progress(done, total)
                 if cancelled is not None:
                     cancelled()

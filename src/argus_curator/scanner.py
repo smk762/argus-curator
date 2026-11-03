@@ -565,6 +565,7 @@ def scan_items(
         crop_cfg,
         progress=(lambda done, phase_total: emit("watermarks", done, phase_total)) if progress else None,
         cancelled=check_cancelled,
+        workers=cfg.max_workers,
     )
     items = crop.items
 

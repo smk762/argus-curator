@@ -16,6 +16,7 @@ import io
 import json
 import math
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
@@ -191,6 +192,7 @@ def apply(
     *,
     progress: Callable[[int, int], None] | None = None,
     cancelled: Callable[[], None] | None = None,
+    workers: int = 1,
 ) -> CropOutcome:
     """Crop the items that have a box, by hand or (with ``cfg.detect``) found.
 
@@ -198,7 +200,8 @@ def apply(
     or (with ``cfg.reject_overlay``) whose watermark no edge cut removes keeps
     its original bytes, so NudeNet still scores what is on disk, and is
     named in ``errors`` for the scan to reject. With *cfg* off the items come
-    back unchanged. *progress* and *cancelled* follow the detector pass.
+    back unchanged. *progress* and *cancelled* follow the detector pass;
+    *workers* images are cropped at a time.
     """
     if not cfg.enabled:
         return CropOutcome(items=items)
@@ -234,15 +237,18 @@ def apply(
                 boxes[rel] = plan
                 out.sources[rel] = "detected"
 
-    for rel, abs_path, data in items:
-        if (box := boxes.get(rel)) is not None:
-            try:
-                data = crop_bytes(data, box)
-                out.applied[rel] = box
-            except CropError as exc:
-                out.errors[rel] = str(exc)
-                out.sources.pop(rel, None)
-        out.items.append((rel, abs_path, data))
+    # Decode + re-encode is the slow part; Pillow drops the GIL for both, so crop side by side.
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = {rel: pool.submit(crop_bytes, data, boxes[rel]) for rel, _a, data in items if rel in boxes}
+        for rel, abs_path, data in items:
+            if (fut := futures.get(rel)) is not None:
+                try:
+                    data = fut.result()
+                    out.applied[rel] = boxes[rel]
+                except CropError as exc:
+                    out.errors[rel] = str(exc)
+                    out.sources.pop(rel, None)
+            out.items.append((rel, abs_path, data))
     for rel, why in out.errors.items():
         logger.warning("crop_failed", rel_path=rel, error=why)
     logger.info("crops_applied", applied=len(out.applied), failed=len(out.errors), checked=len(out.watermarks))

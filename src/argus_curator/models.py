@@ -91,6 +91,8 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # manifest is written. Additive plus a bug fix, so the major stays 2: a consumer
 # that accepts 2.x keeps working, and one that already required exported_path
 # (argus-forge's MAJORS_REQUIRING_EXPORTED_PATH) is unaffected.
+# 2.2: rows carry crop, the box baked into the exported file (in the source's
+# displayed pixels), or null when the file is the source as it was. Additive.
 MANIFEST_VERSION = "2.2"
 
 # Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
