@@ -34,7 +34,7 @@
       "type": "object"
     },
     "CropConfig": {
-      "description": "Opt-in crops (watermarks, borders) applied to the bytes in memory, never to the source.\n\nWith ``enabled``, an image with a box is cropped once after it is read, and\nevery check (scoring, faces, NudeNet, SingGuard ...) sees the cropped frame;\nface boxes and sizes are in its pixels. Export writes the cropped image, so\na cropped scan exports only by ``mode=\"copy\"``. ``boxes`` (keyed by\nrel_path) wins over a ``<image>.crop.json`` sidecar; ``sidecars`` False\nreads no sidecars. An image with no box is scanned as it is.",
+      "description": "Opt-in crops (watermarks, borders) applied to the bytes in memory, never to the source.\n\nWith ``enabled``, an image with a box is cropped once after it is read, and\nevery check (scoring, faces, NudeNet, SingGuard ...) sees the cropped frame;\nface boxes and sizes are in its pixels. Export writes the cropped image, so\na cropped scan exports only by ``mode=\"copy\"``.\n\nA box is given by hand (``boxes``, keyed by rel_path, wins over a\n``<image>.crop.json`` sidecar; ``sidecars`` False reads none) or, with\n``detect``, found: every image without a box by hand goes to the watermark\ndetector (``ARGUS_CURATOR_WATERMARK_URL``), and the hits of at least\n``min_conf`` are cut away along the frame's edges. Each edge may lose at\nmost ``max_cut`` of the frame's side; ``margin`` (pixels) is cut beyond a\nhit's edge. A hit that no such cut removes is an overlay: with\n``reject_overlay`` the image is a ``crop:overlay`` reject, else it is kept\nuncropped with its hits recorded. An image the detector could not check is\na ``crop:unchecked`` reject. An image with no box is scanned as it is.",
       "properties": {
         "boxes": {
           "additionalProperties": {
@@ -43,9 +43,39 @@
           "title": "Boxes",
           "type": "object"
         },
+        "detect": {
+          "default": false,
+          "title": "Detect",
+          "type": "boolean"
+        },
         "enabled": {
           "default": false,
           "title": "Enabled",
+          "type": "boolean"
+        },
+        "margin": {
+          "default": 4,
+          "minimum": 0,
+          "title": "Margin",
+          "type": "integer"
+        },
+        "max_cut": {
+          "default": 0.15,
+          "exclusiveMaximum": 0.5,
+          "exclusiveMinimum": 0.0,
+          "title": "Max Cut",
+          "type": "number"
+        },
+        "min_conf": {
+          "default": 0.4,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Conf",
+          "type": "number"
+        },
+        "reject_overlay": {
+          "default": true,
+          "title": "Reject Overlay",
           "type": "boolean"
         },
         "sidecars": {
@@ -1511,6 +1541,22 @@
           ],
           "default": null
         },
+        "crop_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "manual",
+                "detected"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Crop Source"
+        },
         "duplicate_of": {
           "anyOf": [
             {
@@ -1811,6 +1857,21 @@
           "default": 0,
           "title": "Similar Group",
           "type": "integer"
+        },
+        "watermarks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/WatermarkDetection"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Watermarks"
         },
         "width": {
           "default": 0,
@@ -3062,6 +3123,33 @@
         }
       },
       "title": "TargetProfile",
+      "type": "object"
+    },
+    "WatermarkDetection": {
+      "description": "One watermark the detector found: ``[x, y, w, h]`` in displayed pixels of the uncropped frame.",
+      "properties": {
+        "bbox": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Bbox",
+          "type": "array"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "score",
+        "bbox"
+      ],
+      "title": "WatermarkDetection",
       "type": "object"
     }
   },

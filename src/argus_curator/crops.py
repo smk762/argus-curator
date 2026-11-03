@@ -14,13 +14,18 @@ from __future__ import annotations
 
 import io
 import json
+import math
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from itertools import product
 from pathlib import Path
+from typing import Literal
 
 import structlog
 from PIL import Image, ImageOps
 from pydantic import ValidationError
 
-from argus_curator.models import CropBox, CropConfig, ImageResult
+from argus_curator.models import CropBox, CropConfig, ImageResult, WatermarkDetection
 
 logger = structlog.get_logger()
 
@@ -31,13 +36,16 @@ SIDECAR_SUFFIX = ".crop.json"
 # get this; it is well above what any check or trainer can tell apart.
 QUALITY = 95
 _EXIF_ORIENTATION = 0x0112
+# More hits than this is a tiled watermark: no edge cut removes it.
+MAX_HITS = 6
 
 
 class CropError(ValueError):
     """A box that cannot be read or does not fit its image.
 
-    The message is ``<kind> (<detail>)`` with kind ``unreadable``, ``invalid``
-    or ``failed``, so the scan's reject tally groups them as ``crop:<kind>``.
+    The message is ``<kind> (<detail>)`` with kind ``unreadable``, ``invalid``,
+    ``failed``, ``unchecked`` or ``overlay``, so the scan's reject tally groups
+    them as ``crop:<kind>``.
     """
 
 
@@ -124,36 +132,121 @@ def resolve_box(rel: str, abs_path: str, cfg: CropConfig) -> CropBox | None:
     return read_sidecar(abs_path) if cfg.sidecars else None
 
 
-def apply(
-    items: list[tuple[str, str, bytes]], cfg: CropConfig
-) -> tuple[list[tuple[str, str, bytes]], dict[str, CropBox], dict[str, str]]:
-    """Crop the boxed items. Returns ``(items, applied, errors)``.
+def plan_crop(
+    width: int, height: int, hits: list[WatermarkDetection], cfg: CropConfig
+) -> CropBox | Literal["overlay"] | None:
+    """The largest frame left after cutting every confident hit away along an edge.
 
-    ``applied`` maps rel_path to the box now baked into its bytes. ``errors``
-    maps rel_path to why its box could not be applied; that item keeps its
-    original bytes (so NudeNet still scores what is on disk) and the scan
-    rejects it. With *cfg* off the items come back unchanged.
+    Each hit is cut off by one of the four edges, plus ``cfg.margin``; every
+    way of assigning hits to edges is tried, and one where an edge loses more
+    than ``cfg.max_cut`` of the frame's side is out. ``None`` when no hit
+    reaches ``cfg.min_conf``, ``"overlay"`` when no allowed cut removes them all.
+    """
+    boxes = [h.bbox for h in hits if h.score >= cfg.min_conf]
+    if not boxes:
+        return None
+    if len(boxes) > MAX_HITS:
+        return "overlay"
+    m = cfg.margin
+    max_x, max_y = width * cfg.max_cut, height * cfg.max_cut
+    best: tuple[int, CropBox] | None = None
+    for edges in product(range(4), repeat=len(boxes)):
+        top, bottom, left, right = 0.0, float(height), 0.0, float(width)
+        for (x, y, w, h), edge in zip(boxes, edges, strict=True):
+            if edge == 0:
+                top = max(top, y + h + m)
+            elif edge == 1:
+                bottom = min(bottom, y - m)
+            elif edge == 2:
+                left = max(left, x + w + m)
+            else:
+                right = min(right, x - m)
+        t, b = max(0, math.ceil(top)), min(height, math.floor(bottom))
+        lf, r = max(0, math.ceil(left)), min(width, math.floor(right))
+        if t > max_y or height - b > max_y or lf > max_x or width - r > max_x or r <= lf or b <= t:
+            continue
+        area = (r - lf) * (b - t)
+        if best is None or area > best[0]:
+            best = (area, CropBox(left=lf, top=t, right=r, bottom=b))
+    return "overlay" if best is None else best[1]
+
+
+@dataclass
+class CropOutcome:
+    """What :func:`apply` did to a scan's items."""
+
+    items: list[tuple[str, str, bytes]]
+    # rel_path -> the box now baked into its bytes, and where the box came from.
+    applied: dict[str, CropBox] = field(default_factory=dict)
+    sources: dict[str, Literal["manual", "detected"]] = field(default_factory=dict)
+    # rel_path -> why it is a crop: reject (``<kind> (<detail>)``).
+    errors: dict[str, str] = field(default_factory=dict)
+    # rel_path -> the detector's hits, for every image it checked.
+    watermarks: dict[str, list[WatermarkDetection]] = field(default_factory=dict)
+
+
+def apply(
+    items: list[tuple[str, str, bytes]],
+    cfg: CropConfig,
+    *,
+    progress: Callable[[int, int], None] | None = None,
+    cancelled: Callable[[], None] | None = None,
+) -> CropOutcome:
+    """Crop the items that have a box, by hand or (with ``cfg.detect``) found.
+
+    An item whose crop cannot be applied, that the detector could not check,
+    or (with ``cfg.reject_overlay``) whose watermark no edge cut removes keeps
+    its original bytes, so NudeNet still scores what is on disk, and is
+    named in ``errors`` for the scan to reject. With *cfg* off the items come
+    back unchanged. *progress* and *cancelled* follow the detector pass.
     """
     if not cfg.enabled:
-        return items, {}, {}
-    out: list[tuple[str, str, bytes]] = []
-    applied: dict[str, CropBox] = {}
-    errors: dict[str, str] = {}
-    for rel, abs_path, data in items:
+        return CropOutcome(items=items)
+    out = CropOutcome(items=[])
+    boxes: dict[str, CropBox] = {}
+    for rel, abs_path, _data in items:
         try:
-            box = resolve_box(rel, abs_path, cfg)
-            if box is not None:
-                data = crop_bytes(data, box)
-                applied[rel] = box
+            if (box := resolve_box(rel, abs_path, cfg)) is not None:
+                boxes[rel] = box
+                out.sources[rel] = "manual"
         except CropError as exc:
-            errors[rel] = str(exc)
-            logger.warning("crop_failed", rel_path=rel, error=str(exc))
-        out.append((rel, abs_path, data))
+            out.errors[rel] = str(exc)
     unknown = sorted(set(cfg.boxes) - {rel for rel, _a, _d in items})
     if unknown:
         logger.warning("crop_boxes_unmatched", rel_paths=unknown[:20], count=len(unknown))
-    logger.info("crops_applied", applied=len(applied), failed=len(errors))
-    return out, applied, errors
+
+    if cfg.detect:
+        from argus_curator import watermarks
+
+        todo = {rel: data for rel, _a, data in items if rel not in boxes and rel not in out.errors}
+        for rel, checked in watermarks.detect_all(todo, progress, cancelled).items():
+            if isinstance(checked, str):
+                out.errors[rel] = f"unchecked ({checked})"
+                continue
+            hits, (w, h) = checked
+            out.watermarks[rel] = hits
+            plan = plan_crop(w, h, hits, cfg)
+            if plan == "overlay":
+                if cfg.reject_overlay:
+                    n = sum(1 for d in hits if d.score >= cfg.min_conf)
+                    out.errors[rel] = f"overlay ({n} watermark(s) no edge cut of {cfg.max_cut:.0%} removes)"
+            elif plan is not None:
+                boxes[rel] = plan
+                out.sources[rel] = "detected"
+
+    for rel, abs_path, data in items:
+        if (box := boxes.get(rel)) is not None:
+            try:
+                data = crop_bytes(data, box)
+                out.applied[rel] = box
+            except CropError as exc:
+                out.errors[rel] = str(exc)
+                out.sources.pop(rel, None)
+        out.items.append((rel, abs_path, data))
+    for rel, why in out.errors.items():
+        logger.warning("crop_failed", rel_path=rel, error=why)
+    logger.info("crops_applied", applied=len(out.applied), failed=len(out.errors), checked=len(out.watermarks))
+    return out
 
 
 def write_cropped(src: Path, dst: Path, box: CropBox) -> None:

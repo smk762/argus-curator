@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   / `crop:failed` reject that no export keeps. `ImageResult.crop`,
   `ScanSummary.crop_config`, `ExportResult.cropped`; `GET /health` reports
   `crops: true`.
+- **Watermark detection.** `CropConfig.detect` (CLI `--detect-watermarks`,
+  `--watermark-url`, `--max-cut`, `--keep-overlays`) sends each frame without
+  a box by hand, upright, to a NudeNet-shaped detector at
+  `ARGUS_CURATOR_WATERMARK_URL`, and cuts its hits (`min_conf` 0.4) away along
+  the frame's edges, at most `max_cut` (0.15) of a side per edge. A hit no
+  edge cut removes is a `crop:overlay` reject (`reject_overlay`, default on);
+  an image the detector could not check is `crop:unchecked`.
+  `ImageResult.watermarks` and `crop_source`; scan phase `watermarks`;
+  `/detectors` reports `watermark`, `/health` `watermark_detect`.
 - **Manifest 2.2.** Each row carries `crop`, the box baked into the exported
   file, or `null`.
 

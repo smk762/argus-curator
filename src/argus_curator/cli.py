@@ -173,6 +173,11 @@ def scan(
     erax_url: str | None = Option(
         None, "--erax-url", help="EraX-NSFW server origin, e.g. http://erax:8080 (ARGUS_CURATOR_ERAX_URL)"
     ),
+    watermark_url: str | None = Option(
+        None,
+        "--watermark-url",
+        help="Watermark detector origin, e.g. http://watermark:8080 (ARGUS_CURATOR_WATERMARK_URL)",
+    ),
     nsfw_threshold: float | None = Option(
         None, "--nsfw-threshold", help="Drop images whose exposed-nudity score is at or above this (0.2..1)"
     ),
@@ -236,6 +241,18 @@ def scan(
             "Crop each image that has a <image>.crop.json sidecar ({left, top, right, bottom}, displayed pixels) "
             "in memory before every check, and export it cropped (--copy-to only). Sources are never changed."
         ),
+    ),
+    detect_watermarks: bool = Option(
+        False,
+        "--detect-watermarks",
+        help=(
+            "Find watermarks with the detector (--watermark-url) and cut them away at the frame's edges; "
+            "implies --crops. A watermark no edge cut removes rejects the image (crop:overlay)."
+        ),
+    ),
+    max_cut: float = Option(0.15, "--max-cut", help="Most of a side one edge cut may take (--detect-watermarks)"),
+    keep_overlays: bool = Option(
+        False, "--keep-overlays", help="Keep images whose watermark cannot be cut away, uncropped, instead of rejecting"
     ),
     xmp: bool = Option(
         False, "--xmp", help="Write an XMP sidecar beside each exported file (face regions, names, content rating)"
@@ -304,10 +321,23 @@ def scan(
         (garments_model, garments_mod.MODEL_ENV),
         (nudenet_url, nsfw_mod.URL_ENV),
         (erax_url, erax_mod.URL_ENV),
+        (watermark_url, "ARGUS_CURATOR_WATERMARK_URL"),
         (singguard_url, guard_mod.URL_ENV),
     ):
         if model_file is not None:
             os.environ[env] = str(model_file)
+
+    if detect_watermarks:
+        from argus_curator import watermarks as watermarks_mod
+
+        if not watermarks_mod.configured():
+            typer.echo(
+                f"Error: --detect-watermarks needs a detector: --watermark-url or {watermarks_mod.URL_ENV}", err=True
+            )
+            raise typer.Exit(2)
+        if not 0.0 < max_cut < 0.5:
+            typer.echo("Error: --max-cut must be between 0 and 0.5", err=True)
+            raise typer.Exit(2)
 
     profile = TargetProfile(
         target_style=style,
@@ -362,6 +392,7 @@ def scan(
     # scan rather than after it: unknown labels, inverted ranges, missing models.
     dest = move_to or copy_to or symlink_to
     mode = "move" if move_to else ("symlink" if symlink_to else "copy")
+    crops = crops or detect_watermarks
     if crops and dest is not None and mode != "copy":
         typer.echo("Error: --crops writes cropped files; export with --copy-to", err=True)
         raise typer.Exit(1)
@@ -505,7 +536,7 @@ def scan(
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
-        crop_cfg=CropConfig(enabled=crops),
+        crop_cfg=CropConfig(enabled=crops, detect=detect_watermarks, max_cut=max_cut, reject_overlay=not keep_overlays),
     )
 
     typer.echo("=" * 56)

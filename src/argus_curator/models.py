@@ -352,20 +352,42 @@ class CropBox(BaseModel):
     bottom: int = Field(gt=0)
 
 
+class WatermarkDetection(BaseModel):
+    """One watermark the detector found: ``[x, y, w, h]`` in displayed pixels of the uncropped frame."""
+
+    label: str
+    score: float
+    bbox: list[float]
+
+
 class CropConfig(BaseModel):
     """Opt-in crops (watermarks, borders) applied to the bytes in memory, never to the source.
 
     With ``enabled``, an image with a box is cropped once after it is read, and
     every check (scoring, faces, NudeNet, SingGuard ...) sees the cropped frame;
     face boxes and sizes are in its pixels. Export writes the cropped image, so
-    a cropped scan exports only by ``mode="copy"``. ``boxes`` (keyed by
-    rel_path) wins over a ``<image>.crop.json`` sidecar; ``sidecars`` False
-    reads no sidecars. An image with no box is scanned as it is.
+    a cropped scan exports only by ``mode="copy"``.
+
+    A box is given by hand (``boxes``, keyed by rel_path, wins over a
+    ``<image>.crop.json`` sidecar; ``sidecars`` False reads none) or, with
+    ``detect``, found: every image without a box by hand goes to the watermark
+    detector (``ARGUS_CURATOR_WATERMARK_URL``), and the hits of at least
+    ``min_conf`` are cut away along the frame's edges. Each edge may lose at
+    most ``max_cut`` of the frame's side; ``margin`` (pixels) is cut beyond a
+    hit's edge. A hit that no such cut removes is an overlay: with
+    ``reject_overlay`` the image is a ``crop:overlay`` reject, else it is kept
+    uncropped with its hits recorded. An image the detector could not check is
+    a ``crop:unchecked`` reject. An image with no box is scanned as it is.
     """
 
     enabled: bool = False
     sidecars: bool = True
     boxes: dict[str, CropBox] = Field(default_factory=dict)
+    detect: bool = False
+    min_conf: float = Field(default=0.4, ge=0.0, le=1.0)
+    max_cut: float = Field(default=0.15, gt=0.0, lt=0.5)
+    margin: int = Field(default=4, ge=0)
+    reject_overlay: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +611,13 @@ class ImageResult(BaseModel):
     # The crop every check saw (CropConfig), in the source's displayed pixels.
     # width/height and every box are of the cropped frame. None = uncropped.
     crop: CropBox | None = None
+    # Where the crop came from: "manual" (a request box or a .crop.json
+    # sidecar) or "detected" (CropConfig.detect). None when uncropped.
+    crop_source: Literal["manual", "detected"] | None = None
+    # Watermarks the detector found (CropConfig.detect), on the uncropped
+    # frame; empty = none found. None = not checked (detection off, a box by
+    # hand, or the check failed).
+    watermarks: list[WatermarkDetection] | None = None
 
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""

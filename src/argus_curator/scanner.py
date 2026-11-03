@@ -539,10 +539,14 @@ def scan_items(
     # A rule whose check will not run would drop nothing (nsfw) or everything (faces).
     if (why := prefilter_mod.problem(prefilter_cfg, faces_cfg, nsfw_mod.resolve_enabled(nsfw_cfg))) is not None:
         raise ValueError(why)
+    if crop_cfg.enabled and crop_cfg.detect:
+        from argus_curator import watermarks as watermarks_mod
+
+        if not watermarks_mod.configured():
+            raise ValueError(f"watermark detection needs a detector: set {watermarks_mod.URL_ENV}")
+        watermarks_mod.client()  # a malformed URL fails here, not after the scan has started
     requested = requested_checks(faces_cfg, nsfw_cfg, guard_cfg)
     completed: set[str] = set()
-    # Every phase reads these bytes, so cropping them here is all a check needs.
-    items, cropped, crop_errors = crops_mod.apply(items, crop_cfg)
 
     def pending() -> list[str]:
         return pending_checks(requested, completed)
@@ -554,6 +558,15 @@ def scan_items(
         # remote.check_all holds is drained on the way out.
         check_cancelled()
         _emit(progress, phase, done, phase_total, pending())
+
+    # Every phase reads these bytes, so cropping them here is all a check needs.
+    crop = crops_mod.apply(
+        items,
+        crop_cfg,
+        progress=(lambda done, phase_total: emit("watermarks", done, phase_total)) if progress else None,
+        cancelled=check_cancelled,
+    )
+    items = crop.items
 
     results_by_rel: dict[str, ImageResult] = {}
     face_clusters: list[Any] = []
@@ -663,9 +676,11 @@ def scan_items(
         try:
             for fut in as_completed(futures):
                 row = fut.result()
-                if (box := cropped.get(row.rel_path)) is not None:
+                row.watermarks = crop.watermarks.get(row.rel_path)
+                if (box := crop.applied.get(row.rel_path)) is not None:
                     row.crop = box
-                elif (why := crop_errors.get(row.rel_path)) is not None:
+                    row.crop_source = crop.sources.get(row.rel_path)
+                elif (why := crop.errors.get(row.rel_path)) is not None:
                     # Never scanned (or exported) as if the watermark were gone.
                     row.passed = False
                     row.reject_reason = f"{crops_mod.PREFIX}{why}"

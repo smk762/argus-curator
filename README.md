@@ -670,12 +670,40 @@ With `carry_sidecars` and without `write_xmp`, a carried `.xmp` keeps face
 regions drawn on the uncropped frame; with `write_xmp` they are replaced by
 the cropped frame's.
 
+#### Finding watermarks
+
+With `"detect": true` the boxes are found rather than given. Every image
+without a box by hand goes to a watermark detector, `ARGUS_CURATOR_WATERMARK_URL`:
+a server speaking NudeNet's `POST /infer` shape, as the EraX sidecar does
+(argus-cull's `watermark` service runs fancyfeast's YOLO11x, the detector
+behind JoyCaption's watermark tags). Curator sends each frame upright, so the
+boxes come back in the pixels it crops by, and never imports Ultralytics.
+
+Each hit of at least `min_conf` (0.4) is cut away along one of the four
+edges, plus `margin` pixels (4). Every way of assigning the hits to edges is
+tried, and the one that keeps the most of the frame wins, provided no edge
+loses more than `max_cut` of its side (0.15). A hit that no such cut removes,
+or more than six hits (a tiled mark), is an overlay: with `reject_overlay`
+(the default) the image is a `crop:overlay` reject, else it is kept uncropped.
+An image the detector could not check is a `crop:unchecked` reject, so a
+detector that is down never lets a watermark through. `ImageResult.watermarks`
+lists the hits on the uncropped frame (empty: none found), and `crop_source`
+says whether a crop was `manual` or `detected`. A streaming scan reports the
+pass as phase `watermarks`, before scoring. Detection runs only when a scan
+asks for it; asking without a detector is HTTP 400. `/detectors` reports
+`watermark`, `/health` reports `watermark_detect`.
+
+```jsonc
+"crops": { "enabled": true, "detect": true, "max_cut": 0.15, "reject_overlay": true }
+```
+
 The summary records the setting as `crop_config`, and `/health` reports
-`crops`. On the CLI, `--crops` reads the sidecars:
+`crops`. On the CLI, `--crops` reads the sidecars, and `--detect-watermarks`
+(with `--watermark-url`, `--max-cut`, `--keep-overlays`) finds them:
 
 ```bash
 # Same folder with and without crops: two scans to compare verdicts
-argus-curator scan /data/inbox --crops --json cropped.json
+argus-curator scan /data/inbox --detect-watermarks --watermark-url http://watermark:8080 --json cropped.json
 argus-curator scan /data/inbox --json uncropped.json
 ```
 
