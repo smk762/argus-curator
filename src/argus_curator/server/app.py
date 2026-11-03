@@ -39,6 +39,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
+import structlog
 from argus_cortex.gpu import GpuLeaseTimeout
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -75,6 +76,8 @@ from argus_curator.selection import (
     nsfw_filter_problem,
 )
 from argus_curator.store import ScanStore
+
+logger = structlog.get_logger()
 
 THUMB_MAX = 384  # longest-edge px for /thumb webp output
 # How long a purge waits for a stopped scan to let go. The checks already with
@@ -511,6 +514,10 @@ def create_app(
             # ScanRequest.prefilter: drop nsfw / faceless / ageless images before
             # scenes, garments and SingGuard (reject_reason "prefilter:*").
             "prefilter": True,
+            # ExportRequest.carry_sidecars / run_stats, ExportResult.sidecars_carried
+            # / run_stats_path, and a move export dropping the moved rows from the
+            # cached scan (0.13 and later).
+            "export_sidecars": True,
             # POST /scan/{id}/delete takes any image in the scan, not only an
             # under-18 exposed one (0.12 and later, and only when the server
             # was started with --allow-delete / CURATOR_ALLOW_DELETE=1 or
@@ -1094,15 +1101,40 @@ def create_app(
                 status_code=403,
                 detail='mode "move" is disabled on this server (start with --allow-move / CURATOR_ALLOW_MOVE=1)',
             )
+        if req.mode == "move" and (active := gate.snapshot()) and active["scan_id"] == summary.scan_id:
+            # As with delete: the running scan's next save would put the moved rows back.
+            raise HTTPException(status_code=409, detail=_busy_detail(active))
         root = _root_or_400(default_export, "export", "CURATOR_EXPORT_PATH")
         dest = _resolve_within(root, req.dest)
         return summary, req.model_copy(update={"dest": str(dest)})
+
+    def _drop_moved(summary: ScanSummary, result: ExportResult) -> None:
+        """After a move export, drop the moved images from the cached scan, as delete does.
+
+        Their sources are gone, so a cached row would point thumbnails and a
+        re-export at files that no longer exist. Only rows whose transfer
+        succeeded go. Blocking (the near-duplicate regroup is O(n^2)): call it
+        off the event loop. The files have moved either way, so a failure to
+        update the cache is logged rather than failing the export.
+        """
+        if result.mode != "move" or not result.exported_paths:
+            return
+        try:
+            scanner.drop_results(summary, list(result.exported_paths))
+            store.save(summary)
+        except Exception as exc:
+            logger.warning("export_cache_drop_failed", scan_id=summary.scan_id, error=str(exc))
+
+    def _export_and_drop(summary: ScanSummary, req: ExportRequest, progress: Any = None) -> ExportResult:
+        result = export.export_selection(summary, req, progress=progress)
+        _drop_moved(summary, result)
+        return result
 
     @app.post("/export", response_model=ExportResult)
     async def run_export(req: ExportRequest) -> ExportResult:
         summary, req = _validate_export(req)
         try:
-            return await asyncio.to_thread(export.export_selection, summary, req)
+            return await asyncio.to_thread(_export_and_drop, summary, req)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"export failed: {exc}") from exc
 
@@ -1124,7 +1156,7 @@ def create_app(
 
         def run() -> None:
             try:
-                result = export.export_selection(summary, req, progress=on_progress)
+                result = _export_and_drop(summary, req, progress=on_progress)
                 events.put(("complete", result.model_dump(mode="json")))
             except Exception as exc:
                 events.put(("error", {"detail": f"export failed: {exc}"}))

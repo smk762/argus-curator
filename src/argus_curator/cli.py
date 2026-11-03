@@ -241,6 +241,14 @@ def scan(
             "Writes into the scanned folder"
         ),
     ),
+    carry_sidecars: bool = Option(
+        False,
+        "--carry-sidecars",
+        help="Transfer each exported image's <stem>.txt / <file>.xmp / <stem>.xmp / <stem>.json with it, in the same mode",
+    ),
+    run_stats: Path | None = Option(
+        None, "--run-stats", help="JSON file copied (pretty-printed) to <dest>/run_stats.json with the export"
+    ),
     face_names: str | None = Option(
         None, "--face-names", help="Person names for the sidecars by cluster, comma-separated (face_1=Ada,face_2=Bo)"
     ),
@@ -358,6 +366,22 @@ def scan(
     if xmp and dest is None:
         typer.echo("Error: --xmp writes beside exported files; add --copy-to, --move-to or --symlink-to", err=True)
         raise typer.Exit(2)
+    for flag, on in (("--carry-sidecars", carry_sidecars), ("--run-stats", run_stats is not None)):
+        if on and dest is None:
+            typer.echo(f"Error: {flag} needs an export; add --copy-to, --move-to or --symlink-to", err=True)
+            raise typer.Exit(2)
+    stats: dict | None = None
+    if run_stats is not None:
+        import json
+
+        try:
+            stats = json.loads(run_stats.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            typer.echo(f"Error: --run-stats: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        if not isinstance(stats, dict):
+            typer.echo("Error: --run-stats: the file must hold a JSON object", err=True)
+            raise typer.Exit(2)
     try:
         export_req = ExportRequest(
             dest=str(dest) if dest else str(source),
@@ -393,6 +417,8 @@ def scan(
             write_manifest=dest is not None,
             write_xmp=xmp,
             face_names=names,
+            carry_sidecars=carry_sidecars,
+            run_stats=stats,
         )
     except ValidationError as exc:
         for err in exc.errors():
@@ -594,6 +620,11 @@ def scan(
                 typer.echo(f"Manifest -> {result.manifest_path}")
             if xmp:
                 typer.echo(f"XMP sidecars -> {result.xmp_written} exported files")
+            if carry_sidecars:
+                failed = f" ({result.sidecars_failed} failed)" if result.sidecars_failed else ""
+                typer.echo(f"Sidecars carried -> {result.sidecars_carried}{failed}")
+            if result.run_stats_path:
+                typer.echo(f"Run stats -> {result.run_stats_path}")
 
     typer.echo(f"\nDone. scan_id={summary.scan_id}")
 
