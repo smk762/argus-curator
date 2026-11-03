@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 
@@ -672,6 +673,92 @@ def test_export_move_allowed_with_flag(dataset: Path, tmp_path: Path) -> None:
     assert resp.json()["copied"] >= 1
 
 
+def _move_client(dataset: Path, tmp_path: Path) -> tuple[TestClient, Path]:
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    app = create_app(
+        cache_dir=str(tmp_path / "cache"), source_root=str(dataset), export_root=str(exports), allow_move=True
+    )
+    return TestClient(app), exports
+
+
+@pytest.mark.parametrize("endpoint", ["/export", "/export/stream"])
+def test_move_export_drops_moved_rows_from_the_cached_scan(dataset: Path, tmp_path: Path, endpoint: str) -> None:
+    client, exports = _move_client(dataset, tmp_path)
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    scan_id, before = scan["scan_id"], scan["total"]
+    moved = "personA/s1/img.png"
+    (dataset / moved).with_suffix(".txt").write_text("caption")
+    resp = client.post(
+        endpoint,
+        json={
+            "scan_id": scan_id,
+            "selection": [moved],
+            "dest": "out",
+            "mode": "move",
+            "carry_sidecars": True,
+            "run_stats": {"kept": 1},
+        },
+    )
+    assert resp.status_code == 200
+    if endpoint == "/export":
+        body = resp.json()
+    else:
+        complete = resp.text.split("event: complete\ndata: ", 1)[1].split("\n", 1)[0]
+        body = json.loads(complete)
+    assert body["exported_paths"] == {moved: moved}
+    assert body["sidecars_carried"] == 1
+    assert body["run_stats_path"] == str((exports / "out" / "run_stats.json").resolve())
+    assert (exports / "out" / "personA" / "s1" / "img.txt").read_text() == "caption"
+
+    after = client.get(f"/scan/{scan_id}").json()
+    assert after["total"] == before - 1
+    assert moved not in {r["rel_path"] for r in after["results"]}
+    # The survivors still render.
+    other = after["results"][0]["rel_path"]
+    assert client.get("/thumb", params={"path": other, "scan_id": scan_id}).status_code == 200
+
+
+def test_copy_export_keeps_the_cached_scan(contained: tuple[TestClient, Path]) -> None:
+    client, _exports = contained
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    resp = client.post("/export", json={"scan_id": scan["scan_id"], "dest": "out", "min_score": 0.0})
+    assert resp.status_code == 200 and resp.json()["copied"] >= 1
+    assert client.get(f"/scan/{scan['scan_id']}").json()["total"] == scan["total"]
+
+
+def test_move_export_refused_while_that_scan_runs(dataset: Path, tmp_path: Path) -> None:
+    client, exports = _move_client(dataset, tmp_path)
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    gate = client.app.state.scan_gate
+    gate.start(scan_id, str(dataset), ["guard"])
+    try:
+        refused = client.post("/export", json={"scan_id": scan_id, "dest": "out", "mode": "move", "min_score": 0.0})
+        assert refused.status_code == 409
+        assert not (exports / "out").exists()
+        # A copy does not change the scan, so it is not refused.
+        copied = client.post("/export", json={"scan_id": scan_id, "dest": "out", "min_score": 0.0})
+        assert copied.status_code == 200
+    finally:
+        gate.finish(scan_id)
+
+
+def test_export_run_stats_over_the_cap_is_422(contained: tuple[TestClient, Path]) -> None:
+    from argus_curator.models import RUN_STATS_MAX_BYTES
+
+    client, exports = contained
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    resp = client.post(
+        "/export", json={"scan_id": scan_id, "dest": "out", "run_stats": {"blob": "x" * RUN_STATS_MAX_BYTES}}
+    )
+    assert resp.status_code == 422
+    assert not (exports / "out").exists()
+
+
+def test_health_declares_export_sidecars(client: TestClient) -> None:
+    assert client.get("/health").json()["export_sidecars"] is True
+
+
 def test_health_reports_roots_and_move_gate(contained: tuple[TestClient, Path]) -> None:
     client, exports = contained
     body = client.get("/health").json()
@@ -1086,6 +1173,8 @@ def test_select_request_has_every_export_filter() -> None:
         "caption_url",
         "write_xmp",
         "face_names",
+        "carry_sidecars",
+        "run_stats",
     }
     trims = {"max_keep", "diversify_scenes", "diversify_outfits"}
     assert set(SelectRequest.model_fields) == set(ExportRequest.model_fields) - not_filters - trims
