@@ -13,6 +13,7 @@ import imagehash
 from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS, rule_matches
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
+from argus_curator.crops import is_crop_reject
 from argus_curator.garments import outfit, outfit_similarity
 from argus_curator.models import ExportRequest, FaceAttributes, GuardResult, ImageResult, ScanSummary
 from argus_curator.nsfw import exposed_reading, exposed_score
@@ -363,11 +364,12 @@ def hard_exclusion(result: ImageResult) -> str | None:
     """Why no request can keep *result* (a named selection included), or ``None``.
 
     An under-18 face with a reported exposed score first, then an image the scan
-    prefilter dropped (its own ``reject_reason``).
+    prefilter dropped, then one whose crop could not be applied (both by their
+    own ``reject_reason``): exporting that one would ship the watermark.
     """
     if minor_exposed(result):
         return "minor-exposed"
-    if is_prefiltered(result):
+    if is_prefiltered(result) or is_crop_reject(result):
         return result.reject_reason
     return None
 

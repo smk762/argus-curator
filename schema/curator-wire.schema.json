@@ -1,5 +1,92 @@
 {
   "$defs": {
+    "CropBox": {
+      "description": "A crop in pixels of the image as displayed: after its EXIF orientation, ``right``/``bottom`` exclusive.\n\nRecorded beside a source as ``<image>.crop.json`` (``{\"left\": .., \"top\": ..,\n\"right\": .., \"bottom\": ..}``) or passed inline in :class:`CropConfig`. A box\nmust lie inside the frame and be non-empty; one that does not makes the\nimage a ``crop:`` reject rather than letting it through uncropped.",
+      "properties": {
+        "bottom": {
+          "exclusiveMinimum": 0,
+          "title": "Bottom",
+          "type": "integer"
+        },
+        "left": {
+          "minimum": 0,
+          "title": "Left",
+          "type": "integer"
+        },
+        "right": {
+          "exclusiveMinimum": 0,
+          "title": "Right",
+          "type": "integer"
+        },
+        "top": {
+          "minimum": 0,
+          "title": "Top",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "left",
+        "top",
+        "right",
+        "bottom"
+      ],
+      "title": "CropBox",
+      "type": "object"
+    },
+    "CropConfig": {
+      "description": "Opt-in crops (watermarks, borders) applied to the bytes in memory, never to the source.\n\nWith ``enabled``, an image with a box is cropped once after it is read, and\nevery check (scoring, faces, NudeNet, SingGuard ...) sees the cropped frame;\nface boxes and sizes are in its pixels. Export writes the cropped image, so\na cropped scan exports only by ``mode=\"copy\"``.\n\nA box is given by hand (``boxes``, keyed by rel_path, wins over a\n``<image>.crop.json`` sidecar; ``sidecars`` False reads none) or, with\n``detect``, found: every image without a box by hand goes to the watermark\ndetector (``ARGUS_CURATOR_WATERMARK_URL``), and the hits of at least\n``min_conf`` are cut away along the frame's edges. Each edge may lose at\nmost ``max_cut`` of the frame's side; ``margin`` (pixels) is cut beyond a\nhit's edge. A hit that no such cut removes is an overlay: with\n``reject_overlay`` the image is a ``crop:overlay`` reject, else it is kept\nuncropped with its hits recorded. An image the detector could not check is\na ``crop:unchecked`` reject. An image with no box is scanned as it is.",
+      "properties": {
+        "boxes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/CropBox"
+          },
+          "title": "Boxes",
+          "type": "object"
+        },
+        "detect": {
+          "default": false,
+          "title": "Detect",
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "margin": {
+          "default": 4,
+          "minimum": 0,
+          "title": "Margin",
+          "type": "integer"
+        },
+        "max_cut": {
+          "default": 0.15,
+          "exclusiveMaximum": 0.5,
+          "exclusiveMinimum": 0.0,
+          "title": "Max Cut",
+          "type": "number"
+        },
+        "min_conf": {
+          "default": 0.4,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Conf",
+          "type": "number"
+        },
+        "reject_overlay": {
+          "default": true,
+          "title": "Reject Overlay",
+          "type": "boolean"
+        },
+        "sidecars": {
+          "default": true,
+          "title": "Sidecars",
+          "type": "boolean"
+        }
+      },
+      "title": "CropConfig",
+      "type": "object"
+    },
     "EraxConfig": {
       "description": "Optional EraX-NSFW fill-in via a remote server (see erax.py).\n\nThe URL (ARGUS_CURATOR_ERAX_URL) is process configuration, like NudeNet.\nA finished scan records whether the check ran as True or False.",
       "properties": {
@@ -665,6 +752,11 @@
           "title": "Copied",
           "type": "integer"
         },
+        "cropped": {
+          "default": 0,
+          "title": "Cropped",
+          "type": "integer"
+        },
         "dest": {
           "title": "Dest",
           "type": "string"
@@ -696,7 +788,7 @@
           "title": "Manifest Path"
         },
         "manifest_version": {
-          "default": "2.1",
+          "default": "2.2",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -1438,6 +1530,33 @@
           "readOnly": true,
           "title": "Content Rating"
         },
+        "crop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CropBox"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "crop_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "manual",
+                "detected"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Crop Source"
+        },
         "duplicate_of": {
           "anyOf": [
             {
@@ -1739,6 +1858,21 @@
           "title": "Similar Group",
           "type": "integer"
         },
+        "watermarks": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/WatermarkDetection"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Watermarks"
+        },
         "width": {
           "default": 0,
           "title": "Width",
@@ -1760,6 +1894,17 @@
           "title": "Abs Path",
           "type": "string"
         },
+        "crop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CropBox"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "exported_abs_path": {
           "title": "Exported Abs Path",
           "type": "string"
@@ -1769,7 +1914,7 @@
           "type": "string"
         },
         "manifest_version": {
-          "default": "2.1",
+          "default": "2.2",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -2152,6 +2297,9 @@
         "config": {
           "$ref": "#/$defs/ScanConfig"
         },
+        "crops": {
+          "$ref": "#/$defs/CropConfig"
+        },
         "faces": {
           "$ref": "#/$defs/FaceConfig"
         },
@@ -2189,6 +2337,9 @@
       "properties": {
         "config": {
           "$ref": "#/$defs/ScanConfig"
+        },
+        "crop_config": {
+          "$ref": "#/$defs/CropConfig"
         },
         "duplicates": {
           "title": "Duplicates",
@@ -2972,6 +3123,33 @@
         }
       },
       "title": "TargetProfile",
+      "type": "object"
+    },
+    "WatermarkDetection": {
+      "description": "One watermark the detector found: ``[x, y, w, h]`` in displayed pixels of the uncropped frame.",
+      "properties": {
+        "bbox": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Bbox",
+          "type": "array"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "score",
+        "bbox"
+      ],
+      "title": "WatermarkDetection",
       "type": "object"
     }
   },
