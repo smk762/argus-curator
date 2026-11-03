@@ -22,6 +22,7 @@ import structlog
 from argus_cortex.moderation import rule_letter
 from argus_cortex.xmp import XmpData, XmpError, XmpRegion, XmpRegions, sidecar_path, write_xmp
 
+from argus_curator import crops
 from argus_curator.models import ExportRequest, ExportResult, FaceDetection, ImageResult, ManifestRow, ScanSummary
 from argus_curator.selection import decide_selection, hard_exclusion
 
@@ -196,6 +197,7 @@ def write_manifest(
                 primary_face_pose=r.primary_face_pose,
                 score=round(r.score, 4),
                 similar_group=r.similar_group,
+                crop=r.crop,
             )
             f.write(row.model_dump_json() + "\n")
 
@@ -468,6 +470,14 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         selected, keep_reason = decide_selection(results, req, summary.config.diversity_weight)
 
     selected_rel = {r.rel_path for r in selected}
+    # A cropped image is written cropped; a link or a move would hand on the
+    # source, watermark and all. Refused before anything is transferred.
+    cropped_sel = [r.rel_path for r in selected if r.crop is not None]
+    if cropped_sel and req.mode != "copy":
+        raise ValueError(
+            f'{len(cropped_sel)} selected image(s) were scanned cropped and export only by mode "copy" '
+            f"(e.g. {cropped_sel[0]})"
+        )
     dest_root = Path(req.dest)
     dest_paths = _plan_dest_paths(selected, req.preserve_structure, by_stem=req.carry_sidecars)
 
@@ -480,6 +490,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
     xmp_written = 0
     sidecars_carried = 0
     sidecars_failed = 0
+    cropped = 0
     transferred: list[ImageResult] = []
     for i, r in enumerate(selected):
         src = Path(r.abs_path)
@@ -489,7 +500,11 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         else:
             dst = dest_root / dest_paths[r.rel_path]
             try:
-                _transfer_one(src, dst, req.mode)
+                if r.crop is not None:
+                    crops.write_cropped(src, dst, r.crop)
+                    cropped += 1
+                else:
+                    _transfer_one(src, dst, req.mode)
                 copied += 1
                 transferred.append(r)
             except Exception as exc:
@@ -553,6 +568,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         selected=len(selected),
         sidecars_carried=sidecars_carried,
         sidecars_failed=sidecars_failed,
+        cropped=cropped,
     )
 
     return ExportResult(
@@ -568,5 +584,6 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         xmp_written=xmp_written,
         sidecars_carried=sidecars_carried,
         sidecars_failed=sidecars_failed,
+        cropped=cropped,
         run_stats_path=str(run_stats_path) if run_stats_path else None,
     )

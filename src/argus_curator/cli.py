@@ -229,6 +229,14 @@ def scan(
         "--drop-no-age",
         help="Reject images with no MiVOLO, body-only or set age before scenes, garments and SingGuard (needs --mivolo)",
     ),
+    crops: bool = Option(
+        False,
+        "--crops",
+        help=(
+            "Crop each image that has a <image>.crop.json sidecar ({left, top, right, bottom}, displayed pixels) "
+            "in memory before every check, and export it cropped (--copy-to only). Sources are never changed."
+        ),
+    ),
     xmp: bool = Option(
         False, "--xmp", help="Write an XMP sidecar beside each exported file (face regions, names, content rating)"
     ),
@@ -261,6 +269,7 @@ def scan(
 
     from argus_curator.export import export_selection
     from argus_curator.models import (
+        CropConfig,
         ExportRequest,
         FaceConfig,
         GarmentConfig,
@@ -353,6 +362,9 @@ def scan(
     # scan rather than after it: unknown labels, inverted ranges, missing models.
     dest = move_to or copy_to or symlink_to
     mode = "move" if move_to else ("symlink" if symlink_to else "copy")
+    if crops and dest is not None and mode != "copy":
+        typer.echo("Error: --crops writes cropped files; export with --copy-to", err=True)
+        raise typer.Exit(1)
     try:
         label_thresholds = _label_thresholds(nsfw_label_thresholds)
     except ValueError as exc:
@@ -493,6 +505,7 @@ def scan(
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
+        crop_cfg=CropConfig(enabled=crops),
     )
 
     typer.echo("=" * 56)

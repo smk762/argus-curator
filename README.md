@@ -634,6 +634,51 @@ with HTTP 400 (CLI exit 2). The summary records the rules as
 argus-curator scan /data/inbox --mivolo --drop-nsfw --drop-no-age --csv report.csv
 ```
 
+### Crops: watermarks and borders, without touching the source
+
+A watermark or a border band is something every check reads and a trainer
+learns. With crops on, a boxed image is cropped once, in memory, right after
+it is read, so scoring, faces, NudeNet, EraX, scenes, garments and SingGuard
+all judge the cropped frame, and export writes it cropped. The source file is
+only ever read.
+
+A box is `{"left", "top", "right", "bottom"}` in pixels of the image **as
+displayed** (after its EXIF orientation; `right`/`bottom` exclusive), which is
+what an editor or a browser shows when the crop is drawn. It comes from a
+sidecar beside the source, `photo.jpg.crop.json`, or inline on the request,
+keyed by `rel_path`; an inline box wins:
+
+```jsonc
+"crops": { "enabled": true, "sidecars": true,
+           "boxes": { "set1/IMG_0001.jpg": { "left": 0, "top": 0, "right": 3000, "bottom": 3800 } } }
+```
+
+An image with no box is scanned as it is. The cropped image is re-encoded in
+its own format (JPEG and lossy WebP at quality 95, keeping the colour profile
+and the EXIF less its orientation), upright. `ImageResult.crop` records the
+box; `width`, `height` and every face and person box are of the cropped frame.
+A box that leaves the frame, is empty, or a sidecar that cannot be read makes
+the image a reject (`crop:invalid`, `crop:unreadable`, `crop:failed`) that is
+never kept or exported, as with the prefilter: it would otherwise ship with
+the watermark. NudeNet and SingGuard still look at what is on disk for it.
+
+Export writes each cropped image cropped, so a scan that cropped anything
+exports only by `mode: "copy"` (HTTP 400 otherwise; a link or a move would
+hand on the source). `ExportResult.cropped` counts them and each manifest row
+carries its `crop` (manifest 2.2). The `.crop.json` sidecar is not carried.
+With `carry_sidecars` and without `write_xmp`, a carried `.xmp` keeps face
+regions drawn on the uncropped frame; with `write_xmp` they are replaced by
+the cropped frame's.
+
+The summary records the setting as `crop_config`, and `/health` reports
+`crops`. On the CLI, `--crops` reads the sidecars:
+
+```bash
+# Same folder with and without crops: two scans to compare verdicts
+argus-curator scan /data/inbox --crops --json cropped.json
+argus-curator scan /data/inbox --json uncropped.json
+```
+
 ### HTTP server (:8101, peer to argus-lens)
 
 ```bash
@@ -858,10 +903,10 @@ Export writes a JSONL manifest (one row per **exported** image — rows exist
 only for files whose transfer actually succeeded):
 
 ```jsonc
-{ "manifest_version": "2.1", "rel_path": "...", "abs_path": "...",
+{ "manifest_version": "2.2", "rel_path": "...", "abs_path": "...",
   "exported_path": "...", "exported_abs_path": "...", "target_profile": { ... },
   "primary_face_cluster": "face_2", "primary_face_pose": "three_quarter",
-  "score": 0.87, "similar_group": 3 }
+  "score": 0.87, "similar_group": 3, "crop": null }
 ```
 
 The row shape is published in the wire schema as `ManifestRow`.
@@ -889,6 +934,10 @@ and nothing in a row names that root.
 from: `mode: "move"` deletes the source during transfer, so for a moved export
 `abs_path` equals `exported_abs_path`. Use `rel_path` for the original location
 within the scan.
+
+`crop` (manifest 2.2) is the box baked into the exported file when the scan
+[cropped](#crops-watermarks-and-borders-without-touching-the-source) it, in
+the source's displayed pixels; `null` means the file is the source as it was.
 
 `GET /health` reports `manifest_version` alongside the package `version`, so a
 consumer can check the contract it is about to speak — and refuse an unknown

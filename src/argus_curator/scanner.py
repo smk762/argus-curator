@@ -37,6 +37,7 @@ from PIL import Image, ImageFilter
 
 from argus_curator.models import (
     SUPPORTED_EXTS,
+    CropConfig,
     EraxConfig,
     FaceConfig,
     FaceDetection,
@@ -481,6 +482,7 @@ def scan_items(
     nsfw_cfg: NsfwConfig | None = None,
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
+    crop_cfg: CropConfig | None = None,
     folder: str = "",
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
@@ -504,6 +506,9 @@ def scan_items(
     SingGuard never run on them; their chunk goes out under phase
     ``prefilter``. It raises ValueError when a rule needs a check the scan
     does not run (a face check *faces_cfg* leaves off, or NudeNet for ``drop_nsfw``).
+    *crop_cfg* (opt-in) crops the boxed images in memory before scoring, so
+    every phase sees the cropped frame (see :mod:`argus_curator.crops`); an
+    image whose box cannot be applied is rejected as ``crop:<why>``.
     *chunk* receives the images finished since the previous call, and *save*
     receives a partial summary so a scan can be reopened while it is still
     running. ``pending_checks`` names the checks (``faces``, ``nsfw``,
@@ -527,6 +532,8 @@ def scan_items(
     nsfw_cfg = nsfw_cfg or NsfwConfig()
     guard_cfg = guard_cfg or GuardConfig()
     prefilter_cfg = prefilter_cfg or PrefilterConfig()
+    crop_cfg = crop_cfg or CropConfig()
+    from argus_curator import crops as crops_mod
     from argus_curator import prefilter as prefilter_mod
 
     # A rule whose check will not run would drop nothing (nsfw) or everything (faces).
@@ -534,6 +541,8 @@ def scan_items(
         raise ValueError(why)
     requested = requested_checks(faces_cfg, nsfw_cfg, guard_cfg)
     completed: set[str] = set()
+    # Every phase reads these bytes, so cropping them here is all a check needs.
+    items, cropped, crop_errors = crops_mod.apply(items, crop_cfg)
 
     def pending() -> list[str]:
         return pending_checks(requested, completed)
@@ -583,6 +592,7 @@ def scan_items(
             erax_config=EraxConfig(enabled=erax_ran),
             guard_config=guard_cfg.model_copy(update={"enabled": guard_ran}),
             prefilter_config=prefilter_cfg,
+            crop_config=crop_cfg,
             total=total,
             passed=len(passed),
             rejected=len(rejected),
@@ -653,6 +663,12 @@ def scan_items(
         try:
             for fut in as_completed(futures):
                 row = fut.result()
+                if (box := cropped.get(row.rel_path)) is not None:
+                    row.crop = box
+                elif (why := crop_errors.get(row.rel_path)) is not None:
+                    # Never scanned (or exported) as if the watermark were gone.
+                    row.passed = False
+                    row.reject_reason = f"{crops_mod.PREFIX}{why}"
                 results_by_rel[row.rel_path] = row
                 done += 1
                 batch.append(row)
@@ -922,6 +938,7 @@ def scan_folder(
     nsfw_cfg: NsfwConfig | None = None,
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
+    crop_cfg: CropConfig | None = None,
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
     chunk: ChunkFn | None = None,
@@ -960,6 +977,7 @@ def scan_folder(
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
+        crop_cfg=crop_cfg,
         folder=str(root.resolve()),
         scan_id=scan_id,
         progress=progress,

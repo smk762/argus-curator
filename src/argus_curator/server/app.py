@@ -514,6 +514,9 @@ def create_app(
             # ScanRequest.prefilter: drop nsfw / faceless / ageless images before
             # scenes, garments and SingGuard (reject_reason "prefilter:*").
             "prefilter": True,
+            # ScanRequest.crops: crops applied to the bytes in memory, so every
+            # check sees the cropped frame; export writes it cropped (copy only).
+            "crops": True,
             # ExportRequest.carry_sidecars / run_stats, ExportResult.sidecars_carried
             # / run_stats_path, and a move export dropping the moved rows from the
             # cached scan (0.13 and later).
@@ -733,6 +736,7 @@ def create_app(
                 nsfw_cfg=req.nsfw,
                 guard_cfg=req.guard,
                 prefilter_cfg=req.prefilter,
+                crop_cfg=req.crops,
                 scan_id=scan_id,
                 progress=lambda payload: _note_progress(scan_id, requested, payload),
                 cancelled=lambda: gate.cancelled(scan_id),
@@ -790,6 +794,7 @@ def create_app(
                     nsfw_cfg=req.nsfw,
                     guard_cfg=req.guard,
                     prefilter_cfg=req.prefilter,
+                    crop_cfg=req.crops,
                     scan_id=scan_id,
                     progress=on_progress,
                     chunk=on_chunk,
@@ -1093,6 +1098,11 @@ def create_app(
         ):
             if problem is not None:
                 raise HTTPException(status_code=400, detail=problem)
+        if req.mode != "copy" and any(r.crop is not None for r in summary.results):
+            # Its cropped images must be written cropped; a link or a move would pass on the watermark.
+            raise HTTPException(
+                status_code=400, detail=f'this scan cropped images, so it exports only by mode "copy", not "{req.mode}"'
+            )
         # The scan's images are read straight from `abs_path`, so a scan rooted
         # outside the source root would export files the root should fence off.
         _scan_root_or_400(summary)

@@ -91,7 +91,7 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # manifest is written. Additive plus a bug fix, so the major stays 2: a consumer
 # that accepts 2.x keeps working, and one that already required exported_path
 # (argus-forge's MAJORS_REQUIRING_EXPORTED_PATH) is unaffected.
-MANIFEST_VERSION = "2.1"
+MANIFEST_VERSION = "2.2"
 
 # Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
 # written to disk verbatim, so a runaway payload must not fill the export root.
@@ -337,6 +337,37 @@ class PrefilterConfig(BaseModel):
     drop_no_age: bool = False
 
 
+class CropBox(BaseModel):
+    """A crop in pixels of the image as displayed: after its EXIF orientation, ``right``/``bottom`` exclusive.
+
+    Recorded beside a source as ``<image>.crop.json`` (``{"left": .., "top": ..,
+    "right": .., "bottom": ..}``) or passed inline in :class:`CropConfig`. A box
+    must lie inside the frame and be non-empty; one that does not makes the
+    image a ``crop:`` reject rather than letting it through uncropped.
+    """
+
+    left: int = Field(ge=0)
+    top: int = Field(ge=0)
+    right: int = Field(gt=0)
+    bottom: int = Field(gt=0)
+
+
+class CropConfig(BaseModel):
+    """Opt-in crops (watermarks, borders) applied to the bytes in memory, never to the source.
+
+    With ``enabled``, an image with a box is cropped once after it is read, and
+    every check (scoring, faces, NudeNet, SingGuard ...) sees the cropped frame;
+    face boxes and sizes are in its pixels. Export writes the cropped image, so
+    a cropped scan exports only by ``mode="copy"``. ``boxes`` (keyed by
+    rel_path) wins over a ``<image>.crop.json`` sidecar; ``sidecars`` False
+    reads no sidecars. An image with no box is scanned as it is.
+    """
+
+    enabled: bool = False
+    sidecars: bool = True
+    boxes: dict[str, CropBox] = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Per-image result
 # ---------------------------------------------------------------------------
@@ -555,6 +586,10 @@ class ImageResult(BaseModel):
     # official one included. A missing name means that check failed.
     guard_variants: dict[GuardPolicy, GuardResult] | None = None
 
+    # The crop every check saw (CropConfig), in the source's displayed pixels.
+    # width/height and every box are of the cropped frame. None = uncropped.
+    crop: CropBox | None = None
+
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
     score_breakdown: dict[str, float] = Field(default_factory=dict)
@@ -594,6 +629,7 @@ class ScanSummary(BaseModel):
     guard_config: GuardConfig = Field(default_factory=GuardConfig)
     # Defaulted so scans cached before the prefilter existed still load.
     prefilter_config: PrefilterConfig = Field(default_factory=PrefilterConfig)
+    crop_config: CropConfig = Field(default_factory=CropConfig)
 
     total: int
     passed: int
@@ -632,6 +668,7 @@ class ScanRequest(BaseModel):
     nsfw: NsfwConfig = Field(default_factory=NsfwConfig)
     guard: GuardConfig = Field(default_factory=GuardConfig)
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
+    crops: CropConfig = Field(default_factory=CropConfig)
 
 
 class ExportRequest(BaseModel):
@@ -644,7 +681,9 @@ class ExportRequest(BaseModel):
     # pass a filesystem path directly.
     dest: str
     # "move" is destructive; the server rejects it unless started with
-    # --allow-move / CURATOR_ALLOW_MOVE=1.
+    # --allow-move / CURATOR_ALLOW_MOVE=1. An image the scan cropped is written
+    # cropped, which neither a link nor a move can do: selecting one refuses
+    # any mode but "copy".
     mode: Literal["copy", "symlink", "move"] = "copy"
     preserve_structure: bool = True
 
@@ -836,6 +875,9 @@ class ManifestRow(BaseModel):
     primary_face_pose: FacePose | None = None
     score: float
     similar_group: int
+    # The crop baked into the exported file (manifest 2.2), in the source's
+    # displayed pixels. None = the file is the source as it was.
+    crop: CropBox | None = None
 
 
 class ExportResult(BaseModel):
@@ -874,6 +916,8 @@ class ExportResult(BaseModel):
     # sidecars_failed instead.
     sidecars_carried: int = 0
     sidecars_failed: int = 0
+    # Exported images written cropped (ImageResult.crop), counted in copied too.
+    cropped: int = 0
     # Where run_stats was written (<dest>/run_stats.json), or None when the
     # request carried none, nothing was exported, or the write failed.
     run_stats_path: str | None = None

@@ -1,5 +1,62 @@
 {
   "$defs": {
+    "CropBox": {
+      "description": "A crop in pixels of the image as displayed: after its EXIF orientation, ``right``/``bottom`` exclusive.\n\nRecorded beside a source as ``<image>.crop.json`` (``{\"left\": .., \"top\": ..,\n\"right\": .., \"bottom\": ..}``) or passed inline in :class:`CropConfig`. A box\nmust lie inside the frame and be non-empty; one that does not makes the\nimage a ``crop:`` reject rather than letting it through uncropped.",
+      "properties": {
+        "bottom": {
+          "exclusiveMinimum": 0,
+          "title": "Bottom",
+          "type": "integer"
+        },
+        "left": {
+          "minimum": 0,
+          "title": "Left",
+          "type": "integer"
+        },
+        "right": {
+          "exclusiveMinimum": 0,
+          "title": "Right",
+          "type": "integer"
+        },
+        "top": {
+          "minimum": 0,
+          "title": "Top",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "left",
+        "top",
+        "right",
+        "bottom"
+      ],
+      "title": "CropBox",
+      "type": "object"
+    },
+    "CropConfig": {
+      "description": "Opt-in crops (watermarks, borders) applied to the bytes in memory, never to the source.\n\nWith ``enabled``, an image with a box is cropped once after it is read, and\nevery check (scoring, faces, NudeNet, SingGuard ...) sees the cropped frame;\nface boxes and sizes are in its pixels. Export writes the cropped image, so\na cropped scan exports only by ``mode=\"copy\"``. ``boxes`` (keyed by\nrel_path) wins over a ``<image>.crop.json`` sidecar; ``sidecars`` False\nreads no sidecars. An image with no box is scanned as it is.",
+      "properties": {
+        "boxes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/CropBox"
+          },
+          "title": "Boxes",
+          "type": "object"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "sidecars": {
+          "default": true,
+          "title": "Sidecars",
+          "type": "boolean"
+        }
+      },
+      "title": "CropConfig",
+      "type": "object"
+    },
     "EraxConfig": {
       "description": "Optional EraX-NSFW fill-in via a remote server (see erax.py).\n\nThe URL (ARGUS_CURATOR_ERAX_URL) is process configuration, like NudeNet.\nA finished scan records whether the check ran as True or False.",
       "properties": {
@@ -665,6 +722,11 @@
           "title": "Copied",
           "type": "integer"
         },
+        "cropped": {
+          "default": 0,
+          "title": "Cropped",
+          "type": "integer"
+        },
         "dest": {
           "title": "Dest",
           "type": "string"
@@ -696,7 +758,7 @@
           "title": "Manifest Path"
         },
         "manifest_version": {
-          "default": "2.1",
+          "default": "2.2",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -1438,6 +1500,17 @@
           "readOnly": true,
           "title": "Content Rating"
         },
+        "crop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CropBox"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "duplicate_of": {
           "anyOf": [
             {
@@ -1760,6 +1833,17 @@
           "title": "Abs Path",
           "type": "string"
         },
+        "crop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CropBox"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "exported_abs_path": {
           "title": "Exported Abs Path",
           "type": "string"
@@ -1769,7 +1853,7 @@
           "type": "string"
         },
         "manifest_version": {
-          "default": "2.1",
+          "default": "2.2",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -2152,6 +2236,9 @@
         "config": {
           "$ref": "#/$defs/ScanConfig"
         },
+        "crops": {
+          "$ref": "#/$defs/CropConfig"
+        },
         "faces": {
           "$ref": "#/$defs/FaceConfig"
         },
@@ -2189,6 +2276,9 @@
       "properties": {
         "config": {
           "$ref": "#/$defs/ScanConfig"
+        },
+        "crop_config": {
+          "$ref": "#/$defs/CropConfig"
         },
         "duplicates": {
           "title": "Duplicates",
