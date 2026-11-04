@@ -11,6 +11,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from argus_curator import export  # noqa: E402
 from argus_curator.server import create_app  # noqa: E402
 
 
@@ -718,6 +719,53 @@ def test_move_export_drops_moved_rows_from_the_cached_scan(dataset: Path, tmp_pa
     # The survivors still render.
     other = after["results"][0]["rel_path"]
     assert client.get("/thumb", params={"path": other, "scan_id": scan_id}).status_code == 200
+
+
+@pytest.mark.parametrize("endpoint", ["/export", "/export/stream"])
+def test_failed_move_export_still_drops_the_moved_rows(
+    dataset: Path, tmp_path: Path, endpoint: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, exports = _move_client(dataset, tmp_path)
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    scan_id, before = scan["scan_id"], scan["total"]
+    moved = "personA/s1/img.png"
+
+    def disk_full(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(export, "write_report", disk_full)
+    # The stream reports the failure in-band, /export as a 500.
+    fail = TestClient(client.app, raise_server_exceptions=False)
+    resp = fail.post(endpoint, json={"scan_id": scan_id, "selection": [moved], "dest": "out", "mode": "move"})
+    if endpoint == "/export":
+        assert resp.status_code == 500
+    else:
+        assert "event: error" in resp.text and "disk full" in resp.text
+    assert "1 file(s) already left the source" in resp.text
+    assert (exports / "out" / moved).is_file() and not (dataset / moved).exists()
+
+    after = client.get(f"/scan/{scan_id}").json()
+    assert after["total"] == before - 1
+    assert moved not in {r["rel_path"] for r in after["results"]}
+
+
+def test_move_export_does_not_bring_back_a_scan_deleted_meanwhile(
+    dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _exports = _move_client(dataset, tmp_path)
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    real = export.write_report
+
+    def delete_then_report(*args: object, **kwargs: object) -> None:
+        assert client.delete(f"/scan/{scan_id}").status_code == 200
+        real(*args, **kwargs)
+
+    monkeypatch.setattr(export, "write_report", delete_then_report)
+    selection = ["personA/s1/img.png"]
+    resp = client.post("/export", json={"scan_id": scan_id, "selection": selection, "dest": "out", "mode": "move"})
+
+    assert resp.status_code == 200
+    assert client.get(f"/scan/{scan_id}").status_code == 404
 
 
 def test_copy_export_keeps_the_cached_scan(contained: tuple[TestClient, Path]) -> None:

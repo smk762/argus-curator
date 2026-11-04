@@ -9,9 +9,17 @@ import pytest
 from argus_cortex.xmp import XmpData, read_xmp, sidecar_path, write_xmp
 from pydantic import ValidationError
 
+from argus_curator import export as export_mod
 from argus_curator import scan_folder
-from argus_curator.export import RUN_STATS_NAME, _plan_dest_paths, export_selection
-from argus_curator.models import RUN_STATS_MAX_BYTES, ExportRequest, ImageResult, NsfwResult, ScanSummary
+from argus_curator.export import MANIFEST_NAME, RUN_STATS_NAME, _plan_dest_paths, export_selection
+from argus_curator.models import (
+    RUN_STATS_MAX_BYTES,
+    ExportRequest,
+    ExportResult,
+    ImageResult,
+    NsfwResult,
+    ScanSummary,
+)
 
 
 def _image(path: Path, rel: str | None = None, nsfw: NsfwResult | None = None) -> ImageResult:
@@ -265,3 +273,165 @@ def test_flattened_carry_decollides_on_stem(tmp_path: Path) -> None:
 def test_run_stats_rejects_nan() -> None:
     with pytest.raises(ValidationError):
         ExportRequest(dest="/tmp/x", run_stats={"ratio": float("nan")})
+
+
+def _shared_pair(tmp_path: Path) -> tuple[ImageResult, ImageResult, Path]:
+    """Two images in one folder that share photo.txt."""
+    first = _image(tmp_path / "src" / "photo.jpg")
+    second = _image(tmp_path / "src" / "photo.png")
+    side = tmp_path / "src" / "photo.txt"
+    side.write_text("shared caption")
+    return first, second, side
+
+
+def _move(tmp_path: Path, images: list[ImageResult], dest: Path) -> ExportResult:
+    return export_selection(
+        _summary(tmp_path, images),
+        ExportRequest(
+            scan_id="s",
+            dest=str(dest),
+            mode="move",
+            min_score=0.0,
+            keep_similar=True,
+            preserve_structure=False,
+            carry_sidecars=True,
+        ),
+    )
+
+
+def test_move_gives_a_shared_sidecar_to_every_image(tmp_path: Path) -> None:
+    first, second, side = _shared_pair(tmp_path)
+    dest = tmp_path / "out"
+
+    result = _move(tmp_path, [first, second], dest)
+
+    assert result.copied == 2 and result.sidecars_carried == 2 and result.sidecars_failed == 0
+    for exported in result.exported_paths.values():
+        assert (dest / exported).with_suffix(".txt").read_text() == "shared caption"
+    assert not side.exists()  # the last image took the original
+
+
+def test_move_counts_down_a_sidecar_three_images_share(tmp_path: Path) -> None:
+    first, second, side = _shared_pair(tmp_path)
+    third = _image(tmp_path / "src" / "photo.webp")
+    dest = tmp_path / "out"
+
+    result = _move(tmp_path, [first, second, third], dest)
+
+    assert result.sidecars_carried == 3 and not side.exists()
+    for exported in result.exported_paths.values():
+        assert (dest / exported).with_suffix(".txt").read_text() == "shared caption"
+
+
+def test_move_leaves_a_shared_sidecar_for_an_image_that_stayed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first, second, side = _shared_pair(tmp_path)
+    real = export_mod._transfer_one
+
+    def stuck(src: Path, dst: Path, mode: str) -> None:
+        if src.name == "photo.jpg":
+            raise OSError("stuck")
+        real(src, dst, mode)
+
+    monkeypatch.setattr(export_mod, "_transfer_one", stuck)
+    dest = tmp_path / "out"
+
+    result = _move(tmp_path, [first, second], dest)
+
+    assert result.copied == 1 and result.skipped == 1
+    assert Path(first.abs_path).exists() and side.read_text() == "shared caption"
+    assert (dest / result.exported_paths["photo.png"]).with_suffix(".txt").read_text() == "shared caption"
+
+
+def test_move_keeps_a_shared_sidecar_that_failed_to_reach_an_image(tmp_path: Path) -> None:
+    first, second, side = _shared_pair(tmp_path)
+    dest = tmp_path / "out"
+    names = _plan_dest_paths([first, second], preserve_structure=False, by_stem=True)
+    (dest / names["photo.jpg"]).with_suffix(".txt").mkdir(parents=True)
+
+    result = _move(tmp_path, [first, second], dest)
+
+    assert result.copied == 2 and result.sidecars_carried == 1 and result.sidecars_failed == 1
+    assert side.read_text() == "shared caption"
+
+
+@pytest.mark.parametrize("gone", ["photo.jpg", "photo.png"])
+def test_move_does_not_keep_a_shared_sidecar_for_an_image_already_gone(tmp_path: Path, gone: str) -> None:
+    first, second, side = _shared_pair(tmp_path)
+    (tmp_path / "src" / gone).unlink()
+    dest = tmp_path / "out"
+
+    result = _move(tmp_path, [first, second], dest)
+
+    assert result.copied == 1 and result.skipped == 1 and result.sidecars_carried == 1
+    assert not side.exists()
+    (exported,) = result.exported_paths.values()
+    assert (dest / exported).with_suffix(".txt").read_text() == "shared caption"
+
+
+@pytest.mark.parametrize("preserve", [False, True])
+def test_run_stats_does_not_overwrite_a_carried_sidecar(tmp_path: Path, preserve: bool) -> None:
+    img = _image(tmp_path / "src" / "run_stats.png")
+    Path(img.abs_path).with_suffix(".json").write_text('{"mine": 1}')
+    dest = tmp_path / "out"
+
+    result = export_selection(
+        _summary(tmp_path, [img]),
+        ExportRequest(
+            scan_id="s",
+            dest=str(dest),
+            min_score=0.0,
+            preserve_structure=preserve,
+            carry_sidecars=True,
+            run_stats={"client": True},
+        ),
+    )
+
+    exported = result.exported_paths["run_stats.png"]
+    assert exported != "run_stats.png" and (dest / exported).is_file()
+    assert json.loads((dest / exported).with_suffix(".json").read_text()) == {"mine": 1}
+    assert json.loads((dest / RUN_STATS_NAME).read_text()) == {"client": True}
+    assert [json.loads(line)["exported_path"] for line in (dest / MANIFEST_NAME).read_text().splitlines()] == [exported]
+
+
+@pytest.mark.parametrize("name", ["run_stats.png", "RUN_STATS.png", "manifest.png", "curation_report.png"])
+def test_reserved_stems_are_suffixed_only_when_sidecars_are_carried(tmp_path: Path, name: str) -> None:
+    sel = [ImageResult(rel_path=name, abs_path=str(tmp_path / name))]
+    assert _plan_dest_paths(sel, preserve_structure=False) == {name: name}
+    assert _plan_dest_paths(sel, preserve_structure=True) == {name: name}
+    assert _plan_dest_paths(sel, preserve_structure=False, by_stem=True)[name] != name
+    assert _plan_dest_paths(sel, preserve_structure=True, by_stem=True)[name] != name
+
+
+def test_a_reserved_stem_in_a_subfolder_keeps_its_path(tmp_path: Path) -> None:
+    sel = [ImageResult(rel_path="sub/run_stats.png", abs_path=str(tmp_path / "x"))]
+    assert _plan_dest_paths(sel, preserve_structure=True, by_stem=True) == {"sub/run_stats.png": "sub/run_stats.png"}
+
+
+def test_moved_names_what_left_even_when_the_export_then_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    img = _image(tmp_path / "src" / "a.png")
+    missing = ImageResult(rel_path="gone.png", abs_path=str(tmp_path / "src" / "gone.png"), score=1.0, passed=True)
+
+    def disk_full(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(export_mod, "write_report", disk_full)
+    moved: list[str] = []
+    with pytest.raises(OSError, match="disk full"):
+        export_selection(
+            _summary(tmp_path, [img, missing]),
+            ExportRequest(scan_id="s", dest=str(tmp_path / "out"), mode="move", min_score=0.0, keep_similar=True),
+            moved=moved,
+        )
+    assert moved == ["a.png"]
+
+
+def test_moved_stays_empty_for_a_copy(tmp_path: Path) -> None:
+    moved: list[str] = []
+    export_selection(
+        _summary(tmp_path, [_image(tmp_path / "src" / "a.png")]),
+        ExportRequest(scan_id="s", dest=str(tmp_path / "out"), min_score=0.0),
+        moved=moved,
+    )
+    assert moved == []
