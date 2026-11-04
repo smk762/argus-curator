@@ -15,12 +15,16 @@ opt-out: it runs only when a scan asks for ``crops.detect``.
 
 from __future__ import annotations
 
+import http.client
 import io
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+from urllib.parse import urlsplit, urlunsplit
 
 import structlog
-from argus_cortex.moderation._http import CheckFailed, post_json, service_url
+from argus_cortex.moderation._http import _OPENER, CheckFailed, _split_credentials, post_json, service_url
 from argus_cortex.moderation.nudenet import _is_number, _multipart
 from PIL import Image, ImageOps
 
@@ -34,6 +38,8 @@ TIMEOUT_ENV = "ARGUS_CURATOR_WATERMARK_TIMEOUT"
 WORKERS_ENV = "ARGUS_CURATOR_WATERMARK_WORKERS"
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_WORKERS = 2
+# A scan waits on this before it starts, so it is far shorter than an image's timeout.
+HEALTH_TIMEOUT = 5.0
 
 
 class WatermarkCheckFailed(CheckFailed):
@@ -80,6 +86,26 @@ class WatermarkClient:
         if len(prediction) != 1 or not isinstance(prediction[0], list):
             raise WatermarkCheckFailed(f"watermark detector returned {len(prediction)} results for one image")
         return to_detections(prediction[0])
+
+    def unreachable(self) -> str | None:
+        """Why this server cannot take a scan, or ``None`` when it answers.
+
+        ``/detectors`` only says the URL is set; this is what stops a scan
+        rejecting every frame as ``crop:unchecked``. Only ``POST /infer`` is the
+        contract, so a server with no ``/health`` still counts as up: any answer
+        below 500 does. The message leaves the URL out, as it can hold a credential.
+        """
+        parts = urlsplit(self.url)
+        health = parts._replace(path=parts.path.removesuffix("/infer") + "/health", query="")
+        url, headers = _split_credentials(urlunsplit(health))
+        try:
+            with _OPENER.open(urllib.request.Request(url, headers=headers), timeout=HEALTH_TIMEOUT):  # noqa: S310
+                return None
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            return f"returned HTTP {exc.code}" if exc.code >= 500 else None
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
+            return f"is not answering: {getattr(exc, 'reason', exc)}"
 
 
 SERVICE = RemoteService(URL_ENV, TIMEOUT_ENV, WORKERS_ENV, WatermarkClient, DEFAULT_TIMEOUT, DEFAULT_WORKERS)

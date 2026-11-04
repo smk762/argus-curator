@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A scan asking for watermark detection is refused while the detector is
+  down.** `/detectors` only says the URL is set, so a scan could start with the
+  detector stopped or still loading and reject its frames as `crop:unchecked`.
+  The scan routes now answer HTTP 503, and `--detect-watermarks` exits 2, when
+  the detector's `GET /health` fails or returns 5xx. Any answer below 500 counts
+  as up, as a deployer's server need not have `/health`.
+
 ## [0.14.0] - 2026-11-04
 
 ### Added
