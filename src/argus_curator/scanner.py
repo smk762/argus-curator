@@ -425,11 +425,12 @@ def _tally_reasons(rejected: list[ImageResult]) -> dict[str, int]:
 def recount_identities(clusters: list[FaceCluster], results: list[ImageResult]) -> list[FaceCluster]:
     """Bring identity sizes and representatives in line with *results*; return the ones still in use.
 
-    Only images that can still be kept count: a prefiltered row is never kept or
-    exported, so it adds nothing to an identity's size and is never its
-    representative. A representative that no longer counts gives way to the best
-    face left (highest det_score x area), and an identity with no face left goes.
-    Pooled attributes stay as they were: the raw readings are not kept.
+    A prefiltered row does not count: it is never kept or exported, so it adds
+    nothing to an identity's size and is never its representative. That is the
+    only row left out; a minor-exposed frame, also never kept, still counts. A
+    representative that no longer counts gives way to the best face left (highest
+    det_score x area), and an identity with no face left goes. Pooled attributes
+    stay as they were: the raw readings are not kept.
     """
     from argus_curator.prefilter import is_prefiltered
 
@@ -678,10 +679,9 @@ def scan_items(
                 "total": phase_total,
                 "pending_checks": pending(),
                 "results": [row.model_dump(mode="json") for row in batch],
+                # Even when empty: the prefilter can empty the list, and a client must hear that.
+                "face_clusters": [cluster.model_dump(mode="json") for cluster in face_clusters],
             }
-            # The prefilter can empty the list; a client must hear that, not keep the last one.
-            if face_clusters or phase == "prefilter":
-                payload["face_clusters"] = [cluster.model_dump(mode="json") for cluster in face_clusters]
             _emit_chunk(chunk, payload)
             maybe_save(snapshot(), force=force or phase_done)
 

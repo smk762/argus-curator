@@ -307,6 +307,7 @@ def test_singguard_totals_leave_out_dropped_images(
 ) -> None:
     _fake_checks(monkeypatch)
     guard_progress: list[tuple[int, int]] = []
+    chunks: list[dict] = []
 
     def on_progress(payload: dict) -> None:
         if payload["phase"] == "guard":
@@ -319,12 +320,16 @@ def test_singguard_totals_leave_out_dropped_images(
         guard_cfg=GuardConfig(variants=["adult"]),
         prefilter_cfg=PrefilterConfig(drop_nsfw=True, drop_no_face=True),
         progress=on_progress,
+        chunk=chunks.append,
     )
     by = {r.rel_path: r for r in summary.results}
     assert by[_EXPOSED].guard is None and by[_EXPOSED].guard_variants is None
     assert set(by[_KEPT].guard_variants) == {"default", "adult"}
     # The kept image and two hard rejects under two policies; the dropped ones never count.
     assert guard_progress[-1] == (6, 6) and len(singguard.seen) == 6
+    guard_chunks = [c for c in chunks if c["phase"] == "guard"]
+    assert {c["total"] for c in guard_chunks} == {6}
+    assert _EXPOSED not in {row["rel_path"] for c in guard_chunks for row in c["results"]}
 
 
 def test_a_dropped_image_stops_counting_toward_its_identity(dataset: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -351,7 +356,7 @@ def test_a_dropped_image_stops_counting_toward_its_identity(dataset: Path, monke
         prefilter_cfg=PrefilterConfig(drop_nsfw=True),
         chunk=chunks.append,
     )
-    (identities,) = [c for c in chunks if c["phase"] == "identities" and c["face_clusters"]][-1:]
+    identities = [c for c in chunks if c["phase"] == "identities"][-1]
     assert identities["face_clusters"][0]["representative_rel_path"] == _EXPOSED
 
     (cluster,) = summary.face_clusters

@@ -40,6 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fast screen. A fast pass is final, so exposed frames were passed without
   reasoning. Slower scans on nude sets; frames with no exposed reading keep
   the fast screen.
+- `guard.check_images` judges every row it is given; the scanner now leaves out
+  the images the prefilter dropped.
+- Every streamed `chunk` carries `face_clusters`, even when empty.
+
+### Fixed
+
+- An image the prefilter dropped no longer counts toward its identity:
+  `face_clusters[].size` and the representative leave it out, also after a
+  delete, and an identity with only dropped images is removed from
+  `face_clusters`. Its rows and `set_age.cluster_id` keep naming that identity;
+  pooled attributes and the set age still include dropped faces.
 
 ## [0.13.0] - 2026-11-03
 

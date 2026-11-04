@@ -433,6 +433,7 @@ class SetAge(BaseModel):
     """
 
     years: float
+    # Read before the prefilter: an identity it emptied is gone from face_clusters but still named here.
     cluster_id: str
     faces: int
     share: float
