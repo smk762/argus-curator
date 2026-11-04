@@ -513,7 +513,7 @@ def export_selection(
     if req.selection is not None:
         wanted = set(req.selection)
 
-        # A named list overrides neither the under-18 exposed rejection nor the prefilter.
+        # A named list overrides neither the under-18 exposed rejection nor any reject.
         keep_reason = {
             r.rel_path: hard_exclusion(r) or ("" if r.rel_path in wanted else "not-selected") for r in results
         }

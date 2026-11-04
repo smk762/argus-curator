@@ -237,7 +237,9 @@ def test_scan_runs_nudenet_when_configured(nudenet: type[_NudeNet]) -> None:
     assert summary.nsfw_config.enabled is True
     assert {r.rel_path: r.nsfw.exposed_score for r in summary.results} == {"a.png": 0.72, "b.png": 0.0}
 
-    opted_out = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), nsfw_cfg=NsfwConfig(enabled=False))
+    opted_out = scan_items(
+        items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), nsfw_cfg=NsfwConfig(enabled=False)
+    )
     assert opted_out.nsfw_config.enabled is False
     assert all(r.nsfw is None for r in opted_out.results)
 
@@ -250,7 +252,9 @@ def test_a_scan_of_only_rejects_finishes(nudenet: type[_NudeNet]) -> None:
 
 
 def test_scan_without_url_records_check_off() -> None:
-    summary = scan_items([("a.png", "/d/a", _png(30, (600, 600)))], TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig())
+    summary = scan_items(
+        [("a.png", "/d/a", _png(30, (600, 600)))], TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig()
+    )
     assert summary.nsfw_config.enabled is False
 
 
@@ -346,7 +350,7 @@ def test_filters_on_a_scan_without_nudenet_are_a_problem() -> None:
     req = ExportRequest(dest="/o", nsfw_threshold=0.5)
     base = {
         "scan_id": "s", "folder": "/d", "target_profile": TargetProfile().model_dump(),
-        "config": ScanConfig(blur_threshold=0.0).model_dump(), "faces_config": FaceConfig().model_dump(),
+        "config": ScanConfig().model_dump(), "faces_config": FaceConfig().model_dump(),
         "total": 0, "passed": 0, "rejected": 0, "duplicates": 0, "similar_clusters": 0,
     }  # fmt: skip
     legacy = ScanSummary.model_validate(base)  # cached before NudeNet existed

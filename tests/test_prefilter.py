@@ -282,7 +282,7 @@ def test_scan_drops_before_scenes_garments_and_singguard(
     assert by[_KEPT].scene is not None and by[_KEPT].garments == []
     for rel in (_EXPOSED, _FACELESS):
         assert by[rel].scene is None and by[rel].garments is None
-    # SingGuard judged the kept image and the two hard rejects, never the dropped ones.
+    # SingGuard judged the kept image alone, not the hard rejects or the dropped ones.
     assert by[_EXPOSED].guard is None and by[_FACELESS].guard is None
     assert by[_KEPT].guard is not None
     assert all(by[rel].guard is None for rel in ("personB/blurry.png", "personB/tiny.png"))  # rejects stop too
@@ -405,7 +405,7 @@ def test_deleting_images_does_not_count_dropped_ones_back_in() -> None:
         scan_id="s",
         folder="/d",
         target_profile=TargetProfile(),
-        config=ScanConfig(blur_threshold=0.0),
+        config=ScanConfig(),
         faces_config=FaceConfig(),
         total=3,
         passed=2,
@@ -449,7 +449,7 @@ def test_prefilter_config_round_trips_on_the_summary() -> None:
         scan_id="s",
         folder="/d",
         target_profile=TargetProfile(),
-        config=ScanConfig(blur_threshold=0.0),
+        config=ScanConfig(),
         faces_config=FaceConfig(),
         prefilter_config=PrefilterConfig(drop_nsfw=True, drop_no_age=True),
         total=0,

@@ -37,8 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SingGuard now skip it too, and no export keeps it, by selection or otherwise.
   `include_rejected` is ignored and `--include-rejected` is gone. Rejected rows
   stay in `results` with their `reject_reason`, so a scan still says what it
-  left out, with `nsfw` unset: viewers must keep them hidden or blurred.
-- `ScanConfig.min_short_side` cannot go below 512 (`MIN_SHORT_SIDE`).
+  left out, with `nsfw` unset (a prefilter drop keeps the score it was dropped
+  on): viewers must keep them hidden or blurred.
+- `ScanConfig.min_short_side` cannot go below 512 (`MIN_SHORT_SIDE`). A scan
+  cached with a lower value still loads, and reports 512.
 - A scan that cropped any image exports only by `mode: "copy"` (HTTP 400, CLI
   exit 1, `ValueError` from `export_selection`).
 - Under `ARGUS_CURATOR_SINGGUARD_THINKING=cascade`, every frame with an

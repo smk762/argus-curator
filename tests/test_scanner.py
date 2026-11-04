@@ -337,14 +337,14 @@ def test_drop_results_regroups_when_the_representative_is_gone() -> None:
         )
         for name, score in (("best.png", 0.9), ("b.png", 0.8), ("c.png", 0.7))
     ]
-    _mark_duplicates(rows, ScanConfig(blur_threshold=0.0))
+    _mark_duplicates(rows, ScanConfig())
     _assign_clusters(rows)
     assert rows[1].duplicate_of == "best.png"
     summary = ScanSummary(
         scan_id="s",
         folder="/x",
         target_profile=TargetProfile(),
-        config=ScanConfig(blur_threshold=0.0),
+        config=ScanConfig(),
         faces_config=FaceConfig(),
         total=3,
         passed=3,

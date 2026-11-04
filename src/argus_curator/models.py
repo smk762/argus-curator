@@ -130,6 +130,8 @@ class TargetProfile(BaseModel):
 # lower this.
 MIN_SHORT_SIDE = 512
 
+_INCLUDE_REJECTED_IGNORED = "Ignored: a rejected image is never kept. Accepted so older clients still validate."
+
 
 class ScanConfig(BaseModel):
     """Tunable parameters for a training-suitability scan."""
@@ -690,6 +692,16 @@ class ScanSummary(BaseModel):
     limit: int | None = None
     returned: int = 0
 
+    @field_validator("config", mode="before")
+    @classmethod
+    def _config_below_the_floor(cls, value: object) -> object:
+        # The floor governs new scans. One cached with a lower value must still load.
+        if isinstance(value, dict):
+            side = value.get("min_short_side")
+            if isinstance(side, int) and side < MIN_SHORT_SIDE:
+                return {**value, "min_short_side": MIN_SHORT_SIDE}
+        return value
+
 
 # ---------------------------------------------------------------------------
 # Request / response bodies for the FastAPI server
@@ -728,8 +740,7 @@ class ExportRequest(BaseModel):
     preserve_structure: bool = True
 
     min_score: float = 0.6
-    # Ignored: a rejected image is never kept. Accepted so older clients still validate.
-    include_rejected: bool = False
+    include_rejected: bool = Field(False, description=_INCLUDE_REJECTED_IGNORED)
     keep_similar: bool = False
     max_keep: int | None = None
 
@@ -988,8 +999,7 @@ class SelectRequest(BaseModel):
     """
 
     min_score: float = 0.6
-    # Ignored: a rejected image is never kept. Accepted so older clients still validate.
-    include_rejected: bool = False
+    include_rejected: bool = Field(False, description=_INCLUDE_REJECTED_IGNORED)
     keep_similar: bool = False
 
     face_clusters: list[str] | None = None

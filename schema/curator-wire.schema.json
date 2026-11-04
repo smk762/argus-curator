@@ -484,6 +484,7 @@
         },
         "include_rejected": {
           "default": false,
+          "description": "Ignored: a rejected image is never kept. Accepted so older clients still validate.",
           "title": "Include Rejected",
           "type": "boolean"
         },
@@ -2814,6 +2815,7 @@
         },
         "include_rejected": {
           "default": false,
+          "description": "Ignored: a rejected image is never kept. Accepted so older clients still validate.",
           "title": "Include Rejected",
           "type": "boolean"
         },
