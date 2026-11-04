@@ -511,7 +511,8 @@ server judges each image against a whole moderation policy and answers with a
 It gives **no scores**, so it complements NudeNet rather than replacing it. It
 runs a vision language model: about a second per image in `fast` mode, several
 in `fast-slow` (which also writes why a rule fired). The default is `cascade`
-(`fast` for every image, `slow` for what `fast` flags). `cascade` and `slow`
+(`fast` for every image, `slow` for what `fast` flags; a frame with an exposed
+NudeNet or EraX reading of 0.2 or more skips `fast` and is judged `slow`). `cascade` and `slow`
 are modes of argus-cull's and agent-composer's `singguard` services; a stock
 SingGuard server answers 400 to them. Curator then retries in `fast`, and once
 `fast` works it judges the rest of the run in `fast` and logs

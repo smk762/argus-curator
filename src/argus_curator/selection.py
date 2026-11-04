@@ -16,7 +16,7 @@ from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_curator.crops import is_crop_reject
 from argus_curator.garments import outfit, outfit_similarity
 from argus_curator.models import ExportRequest, FaceAttributes, GuardResult, ImageResult, ScanSummary
-from argus_curator.nsfw import exposed_reading, exposed_score
+from argus_curator.nsfw import exposed_score, is_exposed
 from argus_curator.prefilter import is_prefiltered
 
 # A MiVOLO age under this, together with any reported exposed detection, is never kept.
@@ -136,8 +136,7 @@ def minor_exposed(result: ImageResult) -> bool:
     with no person box, or a young age with no box to place it, flags any
     exposure.
     """
-    reading = exposed_reading(result)
-    if result.nsfw is None or reading is None or reading < MIN_REPORTED_SCORE:
+    if result.nsfw is None or not is_exposed(result):
         return False
     face_years = [_mivolo_years(face.attributes) for face in result.faces]
     years = [*face_years, _mivolo_years(result.primary_face_attributes)]
