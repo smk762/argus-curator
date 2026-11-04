@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from argus_curator import guard, guard_context
 from argus_curator.export import write_report
 from argus_curator.models import (
+    MIN_SHORT_SIDE,
     ExportRequest,
     FaceAttributes,
     FaceConfig,
@@ -40,6 +41,7 @@ from argus_curator.models import (
 from argus_curator.runtime import ModelUnavailable
 from argus_curator.scanner import scan_items
 from argus_curator.selection import decide_selection, guard_filter_problem
+from argus_curator.store import ScanStore
 
 _CRIME = "B. Real-World Crimes & Public Safety"
 _GORE = "C. Unethical Behavior"
@@ -551,15 +553,19 @@ def test_required_check_without_url_fails() -> None:
 
 def test_scan_runs_singguard_when_configured(singguard: type[_SingGuard]) -> None:
     items = [("a.png", "/d/a", _png(20, (600, 600))), ("b.png", "/d/b", _png(10, (600, 600)))]
-    summary = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig())
+    summary = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig())
     assert summary.guard_config.enabled is True
     assert {r.rel_path: r.guard.safe for r in summary.results} == {"a.png": False, "b.png": True}
 
-    adult = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), guard_cfg=GuardConfig(policy="adult"))
+    adult = scan_items(
+        items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), guard_cfg=GuardConfig(policy="adult")
+    )
     assert adult.guard_config.policy == "adult"  # the summary says which policy judged it
     assert {r.guard.policy for r in adult.results} == {"adult"}
 
-    opted_out = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), guard_cfg=GuardConfig(enabled=False))
+    opted_out = scan_items(
+        items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), guard_cfg=GuardConfig(enabled=False)
+    )
     assert opted_out.guard_config.enabled is False
     assert all(r.guard is None for r in opted_out.results)
 
@@ -759,3 +765,42 @@ def test_other_failures_and_plain_modes_never_fall_back() -> None:
     assert guard.FallbackClient("http://guard:9150", 5.0, "fast-slow", None).fallback is None
     verdict = GuardResult(safe=True, thinking="slow")  # a server that says which mode it used is believed
     assert _fallback([GuardCheckFailed("HTTP 400")], [verdict]).check(b"x").thinking == "slow"
+
+
+def test_a_rejected_frame_is_never_kept() -> None:
+    from argus_curator.selection import decide_selection, hard_exclusion
+
+    small = ImageResult(
+        rel_path="s.png", abs_path="/d/s", score=0.99, reject_reason="resolution too low (333px short side)"
+    )
+    assert hard_exclusion(small) == small.reject_reason
+    selected, reasons = decide_selection([small], ExportRequest(dest="/out", min_score=0.0, include_rejected=True), 0.0)
+    assert selected == [] and reasons["s.png"] == small.reject_reason
+
+
+def test_min_short_side_has_a_floor() -> None:
+    assert ScanConfig().min_short_side == MIN_SHORT_SIDE
+    assert ScanConfig(min_short_side=1024).min_short_side == 1024
+    with pytest.raises(ValidationError):
+        ScanConfig(min_short_side=MIN_SHORT_SIDE - 1)
+
+
+def test_a_scan_cached_below_the_floor_still_loads(tmp_path: Path) -> None:
+    store = ScanStore(tmp_path)
+    summary = ScanSummary(
+        scan_id="s",
+        folder="/d",
+        target_profile=TargetProfile(),
+        config=ScanConfig(),
+        faces_config=FaceConfig(),
+        total=0,
+        passed=0,
+        rejected=0,
+        duplicates=0,
+        similar_clusters=0,
+    )
+    path = store.save(summary)
+    cached = json.loads(path.read_text(encoding="utf-8"))
+    cached["config"]["min_short_side"] = 256
+    path.write_text(json.dumps(cached), encoding="utf-8")
+    assert store.load("s").config.min_short_side == MIN_SHORT_SIDE

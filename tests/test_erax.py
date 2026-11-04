@@ -190,7 +190,7 @@ def test_scan_fills_when_nudenet_returns_empty(erax_server: type[_EraX], monkeyp
     monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
     monkeypatch.setattr(nsfw, "client", lambda: _EmptyNudeNet())
     items = [("a.png", "/d/a", _png(20, (600, 600)))]
-    summary = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig())
+    summary = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig())
     assert summary.nsfw_config.enabled is True
     assert summary.erax_config == EraxConfig(enabled=True)
     row = summary.results[0]
@@ -207,7 +207,7 @@ def test_scan_without_erax_url_leaves_nudenet_alone(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
     monkeypatch.setattr(nsfw, "client", lambda: _EmptyNudeNet())
     items = [("a.png", "/d/a", _png(20, (600, 600)))]
-    summary = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig())
+    summary = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig())
     assert summary.erax_config.enabled is False
     assert summary.results[0].nsfw.exposed_score == 0.0
     assert summary.results[0].erax is None
@@ -226,7 +226,7 @@ def test_scan_fails_on_malformed_erax_url_before_nudenet(monkeypatch: pytest.Mon
     monkeypatch.setattr(nsfw, "client", lambda: _EmptyNudeNet())
     items = [("a.png", "/d/a", _png(20, (600, 600)))]
     with pytest.raises(ModelUnavailable):
-        scan_items(items, TargetProfile(), ScanConfig(), FaceConfig())
+        scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig())
     assert calls == []
 
 
@@ -248,7 +248,7 @@ def test_cancel_is_noticed_during_erax(erax_server: type[_EraX], monkeypatch: py
 
     monkeypatch.setattr(erax.EraxClient, "check", check_then_stop)
     with pytest.raises(ScanCancelled):
-        scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), cancelled=lambda: stop["now"])
+        scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), cancelled=lambda: stop["now"])
     # Stopped at the next progress step, not after every image went to EraX.
     assert len(erax_server.seen) < len(items)
 
@@ -350,7 +350,7 @@ def test_nudenet_exposed_rows_do_not_wait_for_erax(monkeypatch: pytest.MonkeyPat
 
     items = [("exposed.png", "/d/e", _png(30, (600, 600))), ("missed.png", "/d/m", _png(20, (600, 600)))]
     started = time.monotonic()
-    summary = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), chunk=on_chunk)
+    summary = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), chunk=on_chunk)
     assert time.monotonic() - started < 4, "the exposed row waited for EraX"
     first = [r["rel_path"] for r in chunks[0]["results"]]
     assert first == ["exposed.png"]
@@ -389,7 +389,7 @@ def test_fill_when_erax_answers_before_nudenet(monkeypatch: pytest.MonkeyPatch) 
     summary = scan_items(
         items,
         TargetProfile(),
-        ScanConfig(),
+        ScanConfig(blur_threshold=0.0),
         FaceConfig(),
         chunk=lambda p: chunks.append(p) if p["phase"] == "nsfw" else None,
     )

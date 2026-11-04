@@ -484,6 +484,7 @@
         },
         "include_rejected": {
           "default": false,
+          "description": "Ignored: a rejected image is never kept. Accepted so older clients still validate.",
           "title": "Include Rejected",
           "type": "boolean"
         },
@@ -2255,6 +2256,7 @@
         },
         "min_short_side": {
           "default": 512,
+          "minimum": 512,
           "title": "Min Short Side",
           "type": "integer"
         },
@@ -2813,6 +2815,7 @@
         },
         "include_rejected": {
           "default": false,
+          "description": "Ignored: a rejected image is never kept. Accepted so older clients still validate.",
           "title": "Include Rejected",
           "type": "boolean"
         },

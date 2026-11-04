@@ -5,7 +5,7 @@ that speaks NudeNet's ``/infer`` API with EraX class names, through the
 same HTTP helpers as :mod:`argus_curator.nsfw`. Running that server is
 the deployer's choice; curator stays MIT.
 
-Every image goes to EraX, beside NudeNet rather than after it, and its
+Every image NudeNet checks goes to EraX, beside NudeNet rather than after it, and its
 result is kept on ``erax``. When NudeNet returns no exposed score (empty
 detections, or the check failed), EraX hits are mapped onto NudeNet's
 exposed labels so filters, blur, pairing and cascade keep using ``nsfw``.

@@ -282,10 +282,11 @@ def test_scan_drops_before_scenes_garments_and_singguard(
     assert by[_KEPT].scene is not None and by[_KEPT].garments == []
     for rel in (_EXPOSED, _FACELESS):
         assert by[rel].scene is None and by[rel].garments is None
-    # SingGuard judged the kept image and the two hard rejects, never the dropped ones.
+    # SingGuard judged the kept image alone, not the hard rejects or the dropped ones.
     assert by[_EXPOSED].guard is None and by[_FACELESS].guard is None
-    assert all(by[rel].guard is not None for rel in (_KEPT, "personB/blurry.png", "personB/tiny.png"))
-    assert len(singguard.seen) == 3
+    assert by[_KEPT].guard is not None
+    assert all(by[rel].guard is None for rel in ("personB/blurry.png", "personB/tiny.png"))  # rejects stop too
+    assert len(singguard.seen) == 1
     # The near-duplicate pair no longer pairs: dup.png is out of the passing set.
     assert not by[_KEPT].is_duplicate and not by[_EXPOSED].is_duplicate and summary.duplicates == 0
 
@@ -325,10 +326,10 @@ def test_singguard_totals_leave_out_dropped_images(
     by = {r.rel_path: r for r in summary.results}
     assert by[_EXPOSED].guard is None and by[_EXPOSED].guard_variants is None
     assert set(by[_KEPT].guard_variants) == {"default", "adult"}
-    # The kept image and two hard rejects under two policies; the dropped ones never count.
-    assert guard_progress[-1] == (6, 6) and len(singguard.seen) == 6
+    # The kept image under two policies; rejects and drops never count.
+    assert guard_progress[-1] == (2, 2) and len(singguard.seen) == 2
     guard_chunks = [c for c in chunks if c["phase"] == "guard"]
-    assert {c["total"] for c in guard_chunks} == {6}
+    assert {c["total"] for c in guard_chunks} == {2}
     assert _EXPOSED not in {row["rel_path"] for c in guard_chunks for row in c["results"]}
 
 
@@ -474,5 +475,6 @@ def test_decide_selection_never_keeps_a_prefiltered_row() -> None:
     kept = ImageResult(rel_path="k.png", abs_path="/d/k", score=0.99, passed=True)
     req = ExportRequest(dest="/out", min_score=0.0, include_rejected=True, keep_similar=True)
     selected, reasons = decide_selection([dropped, blurry, kept], req, 0.0)
-    assert [r.rel_path for r in selected] == ["b.png", "k.png"]
+    assert [r.rel_path for r in selected] == ["k.png"]
+    assert reasons["b.png"] == "blurry"
     assert reasons["d.png"] == "prefilter:no-age"

@@ -26,7 +26,7 @@ import structlog
 from PIL import Image, ImageOps
 from pydantic import ValidationError
 
-from argus_curator.models import CropBox, CropConfig, ImageResult, WatermarkDetection
+from argus_curator.models import CropBox, CropConfig, WatermarkDetection
 
 logger = structlog.get_logger()
 
@@ -64,11 +64,6 @@ def read_sidecar(path: str | Path) -> CropBox | None:
         return CropBox.model_validate(json.loads(side.read_text(encoding="utf-8")))
     except (OSError, ValueError, ValidationError) as exc:
         raise CropError(f"unreadable ({side.name}: {exc})") from exc
-
-
-def is_crop_reject(result: ImageResult) -> bool:
-    """Whether the scan rejected *result* because its crop could not be applied."""
-    return not result.passed and (result.reject_reason or "").startswith(PREFIX)
 
 
 def crop_image(img: Image.Image, box: CropBox) -> Image.Image:

@@ -58,14 +58,15 @@ argus-curator scan /data/inbox --mivolo --scenes --garments --csv report.csv --j
 
 # 2. Review report.csv: one row per image with every tag and its confidence.
 
-# 3. Keep only images whose primary face reads as clearly adult. --min-score 0,
-#    --include-rejected and --keep-similar stop quality and duplicates from
-#    removing anything, so age is the only criterion. Images where no age could
-#    be estimated (no face found, or too blurry to pass the hard filters that
-#    face detection runs behind) are excluded as `face-attributes-missing`: the
-#    filter fails closed rather than letting unknowns through.
+# 3. Keep only images whose primary face reads as clearly adult. --min-score 0
+#    and --keep-similar stop score and duplicates from removing anything, so
+#    among the images that passed the hard filters age is the only criterion.
+#    An image that failed them is never kept, and shows its own reject reason.
+#    Images where no age could be estimated (no face found) are excluded as
+#    `face-attributes-missing`: the filter fails closed rather than letting
+#    unknowns through.
 argus-curator scan /data/inbox --mivolo --min-age 25 \
-    --min-score 0 --include-rejected --keep-similar \
+    --min-score 0 --keep-similar \
     --copy-to /data/approved --csv decisions.csv
 ```
 
@@ -454,7 +455,7 @@ mapped (a bare male chest is fine); one NudeNet did not box still counts.
 When NudeNet's check failed, the filled image also gets `nudenet_failed:
 true` and the NudeNet filters exclude it as `nsfw-unchecked` unless the EraX
 hits reach a threshold (EraX has no buttocks class). EraX runs beside
-NudeNet on every image, and each nsfw row is streamed as soon as it is
+NudeNet on every image that passed the hard filters, and each nsfw row is streamed as soon as it is
 decided: at once when NudeNet scored it exposed, otherwise when EraX has
 answered too. `--no-nsfw` turns both off. `GET /detectors` reports `erax`.
 
@@ -627,10 +628,13 @@ The rules run once, right after identities (so a set age counts), on the
 images that passed the hard filters. A dropped image stays in the results as
 a reject with `reject_reason` `prefilter:nsfw`, `prefilter:no-face` or
 `prefilter:no-age` (the first that applies, in that order); hard rejects keep
-their own reason and are still judged by SingGuard. Unlike a hard reject, a
-dropped image is never kept or exported: not with `include_rejected`
-(`--include-rejected`), whatever its score, and not when named in an export's
-`selection`. Its keep reason (`/scan/{id}/select`, the CSV report) is its
+their own reason. A hard reject gets no face or age reading, so the under-18
+rule could not speak for it, and it is not sent to NudeNet, EraX or SingGuard
+either; `min_short_side` cannot go below 512 for the same reason. A dropped
+image has been through faces, NudeNet and EraX, since the rules read them, but
+not SingGuard. No rejected image, dropped or hard, is kept or exported, whatever
+its score, and not when named in an export's `selection`; `include_rejected` is
+ignored. Its keep reason (`/scan/{id}/select`, the CSV report) is its
 `reject_reason`, e.g. `prefilter:nsfw`. A dropped image no longer counts
 toward its identity: `face_clusters[].size` and the representative leave it
 out, an identity with only dropped images is removed from `face_clusters`, and
