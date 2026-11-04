@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,7 @@ from argus_curator.models import (  # noqa: E402
     ScanSummary,
     SetAge,
     TargetProfile,
+    wire_schema,
 )
 from argus_curator.scanner import drop_results  # noqa: E402
 from argus_curator.server import create_app  # noqa: E402
@@ -188,6 +190,40 @@ def test_a_scan_that_did_not_ask_for_a_set_age_gets_none() -> None:
     assert summary.set_age is None and summary.set_age_skipped is None
 
 
+def test_readings_stay_out_of_every_api_dump() -> None:
+    summary = _summary([_row("a")], {"face_1": 1})
+    row = summary.results[0]
+    assert row.faces[0].readings is not None
+    assert "readings" not in summary.model_dump_json()
+    assert "readings" not in str(summary.model_dump(mode="json"))  # the SSE complete event
+    assert "readings" not in str(row.model_dump(mode="json"))  # scan chunks
+    assert "readings" not in json.dumps(wire_schema())
+
+
+def test_get_scan_does_not_serve_readings(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    ScanStore(cache).save(_summary([_row("a")], {"face_1": 1}))
+    client = TestClient(create_app(cache_dir=str(cache)))
+
+    resp = client.get("/scan/s")
+
+    assert resp.status_code == 200 and resp.json()["results"][0]["faces"]
+    assert "readings" not in resp.text and "readings" in (cache / "s.json").read_text()
+
+
+def test_a_saved_scan_can_still_be_pooled_again(tmp_path: Path) -> None:
+    store = ScanStore(tmp_path)
+    store.save(_summary([_row("a", raw=_raw(20.0)), _row("b", raw=_raw(60.0))], {"face_1": 2}))
+
+    summary = store.load("s")
+    drop_results(summary, ["a"])
+    store.save(summary)
+
+    saved = store.load("s")
+    assert saved.face_clusters[0].attributes.age_years == 60.0
+    assert saved.results[0].faces[0].readings.mivolo_age == 60.0
+
+
 def test_readings_leave_with_the_scan(tmp_path: Path) -> None:
     """They are in the scan's own file: purging a run leaves nothing to go stale."""
     cache = tmp_path / "cache"
@@ -208,4 +244,5 @@ def test_a_deleted_images_readings_leave_the_saved_scan(tmp_path: Path) -> None:
     drop_results(summary, ["a"])
     store.save(summary)
 
-    assert "21.5" not in (tmp_path / "s.json").read_text()
+    saved = (tmp_path / "s.json").read_text()
+    assert "21.5" not in saved and '"mivolo_age":60.0' in saved

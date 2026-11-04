@@ -14,7 +14,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from argus_curator.models import ScanSummary
+from argus_curator.models import STORE_CONTEXT, ScanSummary
 
 
 def default_cache_dir() -> Path:
@@ -40,7 +40,7 @@ class ScanStore:
         path = self._path(summary.scan_id)
         # Replace atomically so a reader never sees a half-written summary.
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(summary.model_dump_json(), encoding="utf-8")
+        tmp.write_text(summary.model_dump_json(context=STORE_CONTEXT), encoding="utf-8")
         tmp.replace(path)
         return path
 

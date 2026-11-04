@@ -21,7 +21,16 @@ from argus_cortex.moderation import (  # re-exported: part of curator's wire con
 )
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import PolicyName
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    computed_field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 TargetStyle = Literal["photo", "anime"]
 TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
@@ -439,12 +448,17 @@ class SetAge(BaseModel):
     share: float
 
 
+# Serialization context for the scan cache, the one place FaceDetection.readings is written.
+STORE_CONTEXT = "scan-store"
+
+
 class FaceReadings(BaseModel):
     """One face's raw model outputs, kept so its identity can be pooled again after a delete.
 
     They live on the face, so they go with its row and with the scan: nothing
     outlives a deleted image or a purged scan. ``None`` on a face from a scan
-    cached before readings were kept.
+    cached before readings were kept. Only the scan cache holds them: they are
+    not on the wire (see :data:`STORE_CONTEXT`).
     """
 
     fairface: list[float] | None = None
@@ -465,13 +479,21 @@ class FaceDetection(BaseModel):
     pitch: float | None = None
     pose: FacePose | None = None
     attributes: FaceAttributes | None = None
-    readings: FaceReadings | None = None
+    readings: FaceReadings | None = Field(default=None, exclude=True)
     # Index into ImageResult.people when FaceConfig.mivolo_body matched this face
     # to a person box; NudeNet detections assigned to that person live there.
     person_index: int | None = None
     # NudeNet classes assigned to this face's box when no person list was recorded.
     nsfw_labels: dict[NudeNetLabel, float] = Field(default_factory=dict)
     exposed_score: float = 0.0
+
+    # No return annotation: one would replace this model's properties in the wire schema.
+    @model_serializer(mode="wrap")
+    def _readings_for_the_store(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):
+        data = handler(self)
+        if info.context == STORE_CONTEXT and self.readings is not None:
+            data["readings"] = self.readings.model_dump(mode=info.mode)
+        return data
 
 
 PeopleCheck = Literal["ok", "detection_failed", "body_ages_failed"]
