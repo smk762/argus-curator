@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -43,6 +44,36 @@ def test_image_folders_become_cases(tmp_path: Path) -> None:
     (tmp_path / "adult" / "notes.txt").write_text("skip")
     cases = guard_eval.load_cases(None, tmp_path)
     assert [(c.id, c.expect) for c in cases] == [("img:adult/a.jpg", "adult")]
+
+
+def test_image_cases_are_found_in_subfolders(tmp_path: Path) -> None:
+    for rel in ("other/gore/a.jpg", "other/hate/a.jpg", "other/b.jpg"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(b"x")
+    cases = guard_eval.load_cases(None, tmp_path)
+    assert [c.id for c in cases] == ["img:other/b.jpg", "img:other/gore/a.jpg", "img:other/hate/a.jpg"]
+
+
+def test_a_folder_named_like_an_image_is_not_a_case(tmp_path: Path) -> None:
+    (tmp_path / "other" / "set.jpg").mkdir(parents=True)
+    (tmp_path / "other" / "set.jpg" / "a.jpg").write_bytes(b"x")
+    assert [c.id for c in guard_eval.load_cases(None, tmp_path)] == ["img:other/set.jpg/a.jpg"]
+
+
+def test_a_symlinked_subfolder_is_named_not_skipped_quietly(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "a.jpg").write_bytes(b"x")
+    (tmp_path / "cases" / "other").mkdir(parents=True)
+    (tmp_path / "cases" / "other" / "linked").symlink_to(tmp_path / "elsewhere")
+
+    assert guard_eval.load_cases(None, tmp_path / "cases") == []
+    assert "other/linked" in capsys.readouterr().err
+
+
+def test_a_dangling_link_stays_a_case_so_the_run_reports_it(tmp_path: Path) -> None:
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "a.jpg").symlink_to(tmp_path / "gone.jpg")
+    assert [c.id for c in guard_eval.load_cases(None, tmp_path)] == ["img:other/a.jpg"]
 
 
 def test_adult_content_is_correct_to_flag_only_under_default() -> None:
@@ -231,7 +262,7 @@ def test_a_crop_that_does_not_fit_is_an_error_row_not_a_crash(tmp_path: Path, fa
     rows = guard_eval.run("http://g", ["adult"], cases, "fast", 2, 1.0)
 
     assert [r["run"] for r in rows] == [0, 1]
-    assert all("leaves the 10x10 frame" in r["error"] for r in rows)
+    assert all(r["error"].startswith("crop ") and "leaves the 10x10 frame" in r["error"] for r in rows)
     assert fake_client.sent == []
 
 
@@ -264,6 +295,46 @@ def test_an_exposed_row_skips_the_fast_screen_as_a_scan_does(
     guard_eval.run("http://g", ["adult"], cases, thinking, 1, 1.0)
 
     assert fake_client.judged_in == modes
+
+
+def test_an_image_gone_mid_run_is_an_error_row(
+    tmp_path: Path, fake_client: type[_FakeClient], capsys: pytest.CaptureFixture[str]
+) -> None:
+    kept = tmp_path / "kept.png"
+    Image.new("RGB", (8, 8)).save(kept)
+    cases = [_case(tmp_path / "gone.png"), _case(kept)]
+
+    rows = guard_eval.run("http://g", ["adult"], cases, "fast", 2, 1.0)
+
+    assert ["error" in r for r in rows] == [True, True, False, False]
+    assert rows[0]["error"].startswith("read ")
+    assert "| 2 |" in guard_eval.summarise(rows, ["adult"])
+    assert "img:adult/gone.png: read " in capsys.readouterr().err
+
+
+def test_a_run_that_dies_keeps_the_verdicts_so_far(
+    tmp_path: Path, fake_client: type[_FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    images = tmp_path / "cases"
+    (images / "adult").mkdir(parents=True)
+    for stem in ("a", "b"):
+        Image.new("RGB", (8, 8)).save(images / "adult" / f"{stem}.png")
+    real = _FakeClient.check
+
+    def dies_on_the_second(self: _FakeClient, data: bytes, text: str = "") -> GuardResult:
+        if fake_client.sent:
+            raise KeyboardInterrupt
+        return real(self, data, text)
+
+    monkeypatch.setattr(_FakeClient, "check", dies_on_the_second)
+    out = tmp_path / "runs" / "guard.jsonl"
+
+    with pytest.raises(KeyboardInterrupt):
+        guard_eval.main(
+            ["--url", "http://g", "--no-probes", "--images", str(images), "--policies", "adult"] + ["--out", str(out)]
+        )
+
+    assert [json.loads(line)["case"] for line in out.read_text().splitlines()] == ["img:adult/a.png"]
 
 
 def _write_scan(path: Path, rows: list[ImageResult]) -> Path:
