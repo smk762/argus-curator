@@ -35,11 +35,6 @@ MANIFEST_NAME = "manifest.jsonl"
 REPORT_NAME = "curation_report.csv"
 RUN_STATS_NAME = "run_stats.json"
 
-# The export's own files sit at the root of the destination. With sidecars
-# carried, an image there may not take one of these stems: "run_stats.png"
-# would carry a "run_stats.json" that the run stats then overwrite.
-_RESERVED_STEMS = frozenset(PurePosixPath(n).stem.casefold() for n in (MANIFEST_NAME, REPORT_NAME, RUN_STATS_NAME))
-
 # The XMP namings, the one to merge into first (see _source_sidecar).
 _XMP_NAMES: tuple[Callable[[Path], Path], ...] = (
     sidecar_path,  # photo.jpg.xmp (lens, digiKam)
@@ -64,6 +59,12 @@ def _norm_name(name: str) -> str:
     count as one destination entry.
     """
     return unicodedata.normalize("NFC", name).casefold()
+
+
+# The export's own files sit at the root of the destination. With sidecars
+# carried, an image there may not take one of these stems: "run_stats.png"
+# would carry a "run_stats.json" that the run stats then overwrite.
+_RESERVED_STEMS = frozenset(_norm_name(PurePosixPath(n).stem) for n in (MANIFEST_NAME, REPORT_NAME, RUN_STATS_NAME))
 
 
 def _suffixed(rel_path: str, digest_len: int) -> str:
@@ -103,6 +104,8 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_s
     if preserve_structure:
         dests = {r.rel_path: r.rel_path for r in selected}
         digest_len = dict.fromkeys((rel for rel in dests if "/" not in rel and key(rel) in reserved), 8)
+        for rel in digest_len:
+            logger.warning("export_basename_collision", basename=rel, rel_paths=[rel])
     else:
         by_name: dict[str, list[str]] = {}
         for r in selected:
@@ -144,11 +147,16 @@ def _transfer_one(src: Path, dst: Path, mode: str) -> None:
 
 
 def _sidecar_users(selected: list[ImageResult]) -> Counter[Path]:
-    """How many of the *selected* images each sidecar path belongs to."""
+    """How many of the *selected* images each sidecar path belongs to.
+
+    An image already gone from the source is not counted: it will never take
+    its sidecar, and counting it would strand the original in the source folder.
+    """
     users: Counter[Path] = Counter()
     for r in selected:
         src = Path(r.abs_path)
-        users.update({name(src) for name in _SIDECAR_NAMES})
+        if src.exists():
+            users.update({name(src) for name in _SIDECAR_NAMES})
     return users
 
 
@@ -536,7 +544,7 @@ def export_selection(
     sidecars_failed = 0
     cropped = 0
     transferred: list[ImageResult] = []
-    waiting = _sidecar_users(selected) if req.carry_sidecars else Counter()
+    waiting = _sidecar_users(selected) if req.carry_sidecars and req.mode == "move" else Counter()
     for i, r in enumerate(selected):
         src = Path(r.abs_path)
         if not src.exists():

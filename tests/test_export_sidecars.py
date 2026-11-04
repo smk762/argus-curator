@@ -354,6 +354,20 @@ def test_move_keeps_a_shared_sidecar_that_failed_to_reach_an_image(tmp_path: Pat
     assert side.read_text() == "shared caption"
 
 
+@pytest.mark.parametrize("gone", ["photo.jpg", "photo.png"])
+def test_move_does_not_keep_a_shared_sidecar_for_an_image_already_gone(tmp_path: Path, gone: str) -> None:
+    first, second, side = _shared_pair(tmp_path)
+    (tmp_path / "src" / gone).unlink()
+    dest = tmp_path / "out"
+
+    result = _move(tmp_path, [first, second], dest)
+
+    assert result.copied == 1 and result.skipped == 1 and result.sidecars_carried == 1
+    assert not side.exists()
+    (exported,) = result.exported_paths.values()
+    assert (dest / exported).with_suffix(".txt").read_text() == "shared caption"
+
+
 @pytest.mark.parametrize("preserve", [False, True])
 def test_run_stats_does_not_overwrite_a_carried_sidecar(tmp_path: Path, preserve: bool) -> None:
     img = _image(tmp_path / "src" / "run_stats.png")

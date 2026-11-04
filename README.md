@@ -876,7 +876,8 @@ A server `mode: "move"` export also drops the moved images from the cached
 scan, as `POST /scan/{id}/delete` does: their sources are gone, so the rows
 would only point thumbnails at missing files. Only rows whose transfer
 succeeded are dropped, and near-duplicate groups and identities are
-recounted. A move export of the scan that is still running is refused with
+recounted. An export that fails after files moved still drops their rows, and
+its error says how many left the source. A move export of the scan that is still running is refused with
 409, since that scan's next save would put the rows back. `GET /health` says
 `export_sidecars: true` on a server with all of this.
 
@@ -947,7 +948,8 @@ The row shape is published in the wire schema as `ManifestRow`.
 `exported_path` is the path actually written under the export root — consumers
 must use it rather than re-deriving a location from `rel_path`. Flattened
 exports (`preserve_structure: false`) de-collide duplicate basenames with a
-short hash suffix, so the two can differ; collisions are detected
+short hash suffix, and with `carry_sidecars` a root image with a reserved stem
+gets one in any export, so the two can differ; collisions are detected
 case-insensitively (and Unicode-normalised) so the result is safe on
 case-insensitive destination filesystems, and the export fails loudly rather
 than overwrite if a unique name cannot be generated. The same

@@ -41,6 +41,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reasoning. Slower scans on nude sets; frames with no exposed reading keep
   the fast screen.
 
+### Fixed
+
+- **Shared sidecars under move.** Images that share a sidecar (`a.jpg`, `a.png`
+  and `a.txt`) now all get it: it is copied to each but the last, which takes
+  the original. If one of them fails to transfer, the original stays.
+- **`run_stats.json` can no longer overwrite a carried sidecar.** With
+  `carry_sidecars`, an image at the destination root with the stem `run_stats`,
+  `manifest` or `curation_report` gets a hash suffix, even with
+  `preserve_structure`; `exported_path` has the real name.
+- **Failed move exports.** A server move export that fails after files moved
+  drops their rows from the cached scan, and its error says how many left the
+  source. A scan deleted during a move export is no longer written back.
+
 ## [0.13.0] - 2026-11-03
 
 ### Added

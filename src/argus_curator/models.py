@@ -882,8 +882,9 @@ class ManifestRow(BaseModel):
 
     ``exported_path`` is the path actually written under the export root
     (posix, relative to it). Consumers must use it instead of re-deriving a
-    destination from ``rel_path`` — flattened exports de-collide basenames, so
-    the two can differ. Rows exist only for files whose transfer succeeded.
+    destination from ``rel_path`` — flattened exports de-collide basenames, and
+    with carried sidecars a root image cannot take the stem of an export file,
+    so the two can differ. Rows exist only for files whose transfer succeeded.
 
     ``exported_abs_path`` is that same file's absolute location, so a row is
     self-contained: the manifest is often read somewhere other than the export
@@ -933,7 +934,8 @@ class ExportResult(BaseModel):
     # The same mapping, absolute. Joining dest onto exported_paths means a
     # client re-implements the server's layout rule; with preserve_structure
     # false the curator de-collides basenames into stem-<hash>.ext, which no
-    # client can reproduce. The process that owns the rule publishes the answer.
+    # client can reproduce, and with carry_sidecars a root image with a reserved
+    # stem gets the same suffix. The process that owns the rule publishes the answer.
     exported_abs_paths: dict[str, str] = Field(default_factory=dict)
     captioned: bool = False
     # Sidecars written beside exported files (write_xmp). A file with nothing

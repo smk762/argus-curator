@@ -1146,7 +1146,9 @@ def create_app(
         try:
             # Re-read: the export can run for minutes, and saving the copy
             # loaded before it would put back rows a delete removed meanwhile.
-            current = store.load(summary.scan_id) or summary
+            current = store.load(summary.scan_id)
+            if current is None:  # Deleted meanwhile: saving would bring the scan back.
+                return
             scanner.drop_results(current, moved)
             store.save(current)
         except Exception as exc:
@@ -1158,6 +1160,11 @@ def create_app(
         moved: list[str] = []
         try:
             return export.export_selection(summary, req, progress=progress, moved=moved)
+        except Exception as exc:
+            if not moved:
+                raise
+            # A retry cannot bring these back, so the client has to hear about them.
+            raise RuntimeError(f"{exc}; {len(moved)} file(s) already left the source") from exc
         finally:
             _drop_moved(summary, moved)
 
