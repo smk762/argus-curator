@@ -13,8 +13,8 @@ apparent minors. Requests choose a policy by name, never by text.
 SingGuard gives no scores, so its filters are by verdict and by rule. It runs
 a vision language model: expect about a second per image in ``fast`` mode and
 several with ``fast-slow`` or ``slow``. The default is ``cascade`` (``fast``
-for every image, ``slow`` for what ``fast`` flags and for a MiVOLO age under
-18 with an exposed NudeNet score of at least 0.2).
+for every image, ``slow`` for what ``fast`` flags; a frame with an exposed
+NudeNet or EraX reading of at least 0.2 skips ``fast`` and is judged ``slow``).
 
 ``ARGUS_CURATOR_SINGGUARD_CONTEXT`` sends what the scan already knows about an
 image (its MiVOLO age, its folder, its caption sidecar, and optionally scene,
@@ -44,13 +44,12 @@ from argus_cortex.moderation import (
     rule_letter,  # noqa: F401 - re-exported for the CLI
     rule_matches,  # noqa: F401 - re-exported
 )
-from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import POLICIES
 from argus_cortex.moderation.policies import policy_text as cortex_policy_text
 
 from argus_curator.guard_context import CONTEXT_KINDS, image_context
 from argus_curator.models import GuardConfig, GuardPolicy, GuardResult, ImageResult
-from argus_curator.nsfw import exposed_reading
+from argus_curator.nsfw import is_exposed
 from argus_curator.prefilter import is_prefiltered
 from argus_curator.remote import check_all, env_set, env_value, float_env
 from argus_curator.runtime import ModelUnavailable
@@ -220,7 +219,7 @@ def client(name: GuardPolicy = "default", *, mode: str | None = None) -> Fallbac
     """A client for the configured server and policy *name*, or ``None`` when SingGuard is not configured.
 
     *mode* overrides :func:`thinking` for one client: cascade sends most frames
-    in ``cascade``, and the under-18 + exposure pairing in ``slow``.
+    in ``cascade``, and every exposed frame (:func:`force_slow`) in ``slow``.
     """
     url = endpoint()
     if url is None:
@@ -233,9 +232,10 @@ def force_slow(result: ImageResult, mode: str) -> bool:
     """Under cascade, skip the fast screen for every frame NudeNet (or EraX) reads as exposed.
 
     Fast is only there to save work, and a fast pass is final, so a frame it
-    passes is never reasoned about. On exposed frames that is where the misses
-    were: a Safe bullet for adult content leaned the fast screen towards pass
-    for gore and unclear ages too (eval 2026-11-03). Exposure of 0.2 or more,
+    passes is never reasoned about. A Safe bullet for adult content leaned the
+    fast screen towards pass, losing unclear-age cases (eval 2026-11-03); gore
+    and other non-nude misses mostly carry no exposed reading and are not
+    covered here. Exposure of 0.2 or more,
     the lowest score NudeNet reports, goes straight to slow. That includes the
     under-18 pairing (:func:`minor_exposed`) and a faceless frame with a young
     set age, which both need the same exposure. Frames with no exposed
@@ -243,8 +243,8 @@ def force_slow(result: ImageResult, mode: str) -> bool:
     """
     if mode != "cascade":
         return False
-    reading = exposed_reading(result)
-    return reading is not None and reading >= MIN_REPORTED_SCORE
+    return is_exposed(result)
+
 
 def check_images(
     results: list[ImageResult],
@@ -271,7 +271,7 @@ def check_images(
     if clients[cfg.policy] is None:
         raise ModelUnavailable(f"SingGuard check requested but {URL_ENV} is not set")
     mode = thinking()
-    # Cascade's fast pass is a screen. Under-18 + exposure skips it and is judged slow.
+    # Cascade's fast pass is a screen. An exposed frame skips it and is judged slow.
     slow_clients = {name: client(name, mode="slow") for name in names} if mode == "cascade" else {}
     by_rel = {r.rel_path: r for r in results}
     workers = int(float_env(WORKERS_ENV, DEFAULT_WORKERS))
