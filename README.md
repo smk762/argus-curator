@@ -624,8 +624,12 @@ their own reason and are still judged by SingGuard. Unlike a hard reject, a
 dropped image is never kept or exported: not with `include_rejected`
 (`--include-rejected`), whatever its score, and not when named in an export's
 `selection`. Its keep reason (`/scan/{id}/select`, the CSV report) is its
-`reject_reason`, e.g. `prefilter:nsfw`. A streaming scan sends the
-dropped images in a `prefilter` chunk. A rule without the check it needs
+`reject_reason`, e.g. `prefilter:nsfw`. A dropped image no longer counts
+toward its identity: `face_clusters[].size` and the representative leave it
+out, an identity with only dropped images is removed from `face_clusters`, and
+its rows keep their `cluster_id`. The pooled attributes and the set age were
+read before the drop and still include it. A streaming scan sends the
+dropped images in a `prefilter` chunk, with the recounted `face_clusters`. A rule without the check it needs
 (`drop_nsfw` with NudeNet off or no `ARGUS_CURATOR_NUDENET_URL`) is refused
 with HTTP 400 (CLI exit 2). The summary records the rules as
 `prefilter_config`, and `/health` reports `prefilter`.

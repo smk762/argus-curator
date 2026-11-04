@@ -13,6 +13,7 @@ from test_guard import _SingGuard as _FakeGuard
 from argus_curator import guard, prefilter
 from argus_curator.models import (
     FaceAttributes,
+    FaceCluster,
     FaceConfig,
     FaceDetection,
     GarmentConfig,
@@ -27,7 +28,7 @@ from argus_curator.models import (
     SetAge,
     TargetProfile,
 )
-from argus_curator.scanner import scan_folder
+from argus_curator.scanner import drop_results, scan_folder
 
 _ALL = PrefilterConfig(drop_nsfw=True, drop_no_face=True, drop_no_age=True)
 
@@ -170,31 +171,11 @@ def test_scan_refuses_a_face_rule_without_face_detection(dataset: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_check_images_skips_prefiltered_rows(singguard: type[_FakeGuard]) -> None:  # noqa: F811
-    items = [(f"{n}.png", f"/d/{n}", _png(10)) for n in ("kept", "dropped", "blurry")]
-    results = [
-        ImageResult(rel_path="kept.png", abs_path="/d/kept", passed=True),
-        ImageResult(rel_path="dropped.png", abs_path="/d/dropped", passed=False, reject_reason="prefilter:nsfw"),
-        ImageResult(rel_path="blurry.png", abs_path="/d/blurry", passed=False, reject_reason="blurry"),
-    ]
-    seen: list[tuple[int, int]] = []
-    done: list[tuple[str, int, int]] = []
-    cfg = GuardConfig(variants=["adult"])
-    assert guard.check_images(
-        results,
-        items,
-        cfg,
-        progress=lambda d, t: seen.append((d, t)),
-        on_done=lambda r, d, t: done.append((r.rel_path, d, t)),
-    )
-    by = {r.rel_path: r for r in results}
-    assert by["dropped.png"].guard is None and by["dropped.png"].guard_variants is None
-    assert by["kept.png"].guard is not None and set(by["kept.png"].guard_variants) == {"default", "adult"}
-    assert by["blurry.png"].guard is not None  # other rejects are still judged
-    # Two images under two policies: the totals never count the dropped one.
-    assert seen[-1] == (4, 4) and {t for _r, _d, t in done} == {4}
-    assert "dropped.png" not in {r for r, _d, _t in done}
-    assert len(singguard.seen) == 4
+def test_check_images_judges_every_row_it_is_given(singguard: type[_FakeGuard]) -> None:  # noqa: F811
+    """Skipping prefiltered rows is the scanner's call, not the shared guard module's."""
+    results = [ImageResult(rel_path="a.png", abs_path="/d/a", passed=False, reject_reason="prefilter:nsfw")]
+    assert guard.check_images(results, [("a.png", "/d/a", _png(10))], GuardConfig())
+    assert results[0].guard is not None and len(singguard.seen) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +298,121 @@ def test_scan_drops_before_scenes_garments_and_singguard(
         _EXPOSED: (False, "prefilter:nsfw"),
         _FACELESS: (False, "prefilter:no-face"),
     }
+
+
+def test_singguard_totals_leave_out_dropped_images(
+    dataset: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    singguard: type[_FakeGuard],  # noqa: F811
+) -> None:
+    _fake_checks(monkeypatch)
+    guard_progress: list[tuple[int, int]] = []
+
+    def on_progress(payload: dict) -> None:
+        if payload["phase"] == "guard":
+            guard_progress.append((payload["done"], payload["total"]))
+
+    summary = scan_folder(
+        dataset,
+        faces_cfg=FaceConfig(mivolo=True),
+        nsfw_cfg=NsfwConfig(),
+        guard_cfg=GuardConfig(variants=["adult"]),
+        prefilter_cfg=PrefilterConfig(drop_nsfw=True, drop_no_face=True),
+        progress=on_progress,
+    )
+    by = {r.rel_path: r for r in summary.results}
+    assert by[_EXPOSED].guard is None and by[_EXPOSED].guard_variants is None
+    assert set(by[_KEPT].guard_variants) == {"default", "adult"}
+    # The kept image and two hard rejects under two policies; the dropped ones never count.
+    assert guard_progress[-1] == (6, 6) and len(singguard.seen) == 6
+
+
+def test_a_dropped_image_stops_counting_toward_its_identity(dataset: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """dup.png is the better face of the pair, so it is the representative until the prefilter drops it."""
+    _fake_checks(monkeypatch)
+    from argus_curator import faces as faces_mod
+
+    detect = faces_mod.detect_faces
+
+    def best_face_in_the_exposed_frame(results, items, cfg, progress=None, on_done=None):
+        detected = detect(results, items, cfg, progress, on_done)
+        detected.meta = [
+            (rel, i, bbox, score, central, 900.0 if rel == _EXPOSED else area)
+            for rel, i, bbox, score, central, area in detected.meta
+        ]
+        return detected
+
+    monkeypatch.setattr(faces_mod, "detect_faces", best_face_in_the_exposed_frame)
+    chunks: list[dict] = []
+    summary = scan_folder(
+        dataset,
+        faces_cfg=FaceConfig(mivolo=True),
+        nsfw_cfg=NsfwConfig(),
+        prefilter_cfg=PrefilterConfig(drop_nsfw=True),
+        chunk=chunks.append,
+    )
+    (identities,) = [c for c in chunks if c["phase"] == "identities" and c["face_clusters"]][-1:]
+    assert identities["face_clusters"][0]["representative_rel_path"] == _EXPOSED
+
+    (cluster,) = summary.face_clusters
+    assert cluster.size == 1 and cluster.representative_rel_path == _KEPT
+    by = {r.rel_path: r for r in summary.results}
+    assert by[_EXPOSED].faces[0].cluster_id == cluster.cluster_id  # the row still says who it is
+    (drop_chunk,) = [c for c in chunks if c["phase"] == "prefilter"]
+    assert [c["size"] for c in drop_chunk["face_clusters"]] == [1]
+
+
+def test_an_identity_with_only_dropped_images_goes(dataset: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_checks(monkeypatch)
+    from argus_curator import nsfw as nsfw_mod
+
+    def everything_exposed(results, items, cfg, progress=None, on_done=None):
+        for i, r in enumerate(results):
+            r.nsfw = NsfwResult(labels={"FEMALE_GENITALIA_EXPOSED": 0.7}, exposed_score=0.7)
+            if on_done is not None:
+                on_done(r, i + 1, len(results))
+        return True
+
+    monkeypatch.setattr(nsfw_mod, "check_images", everything_exposed)
+    chunks: list[dict] = []
+    summary = scan_folder(
+        dataset,
+        faces_cfg=FaceConfig(mivolo=True),
+        nsfw_cfg=NsfwConfig(),
+        prefilter_cfg=PrefilterConfig(drop_nsfw=True),
+        chunk=chunks.append,
+    )
+    assert summary.face_clusters == []
+    # A streaming client replaces its list with the empty one rather than keeping the identity.
+    (drop_chunk,) = [c for c in chunks if c["phase"] == "prefilter"]
+    assert drop_chunk["face_clusters"] == []
+
+
+def test_deleting_images_does_not_count_dropped_ones_back_in() -> None:
+    faces = {name: FaceDetection(bbox=[0, 0, 10, 10], det_score=0.9, cluster_id="face_1") for name in "abc"}
+    rows = [
+        ImageResult(rel_path="a", abs_path="/d/a", passed=True, faces=[faces["a"]]),
+        ImageResult(rel_path="b", abs_path="/d/b", passed=True, faces=[faces["b"]]),
+        ImageResult(rel_path="c", abs_path="/d/c", passed=False, reject_reason=prefilter.NSFW, faces=[faces["c"]]),
+    ]
+    summary = ScanSummary(
+        scan_id="s",
+        folder="/d",
+        target_profile=TargetProfile(),
+        config=ScanConfig(),
+        faces_config=FaceConfig(),
+        total=3,
+        passed=2,
+        rejected=1,
+        duplicates=0,
+        similar_clusters=0,
+        face_clusters=[FaceCluster(cluster_id="face_1", size=2, representative_rel_path="b")],
+        results=rows,
+        returned=3,
+    )
+    drop_results(summary, ["b"])
+    (cluster,) = summary.face_clusters
+    assert (cluster.size, cluster.representative_rel_path) == (1, "a")
 
 
 def test_the_set_age_counts_as_an_age(dataset: Path, monkeypatch: pytest.MonkeyPatch) -> None:

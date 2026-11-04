@@ -39,6 +39,7 @@ from argus_curator.models import (
     SUPPORTED_EXTS,
     CropConfig,
     EraxConfig,
+    FaceCluster,
     FaceConfig,
     FaceDetection,
     GarmentConfig,
@@ -421,13 +422,45 @@ def _tally_reasons(rejected: list[ImageResult]) -> dict[str, int]:
     return tally
 
 
+def recount_identities(clusters: list[FaceCluster], results: list[ImageResult]) -> list[FaceCluster]:
+    """Bring identity sizes and representatives in line with *results*; return the ones still in use.
+
+    Only images that can still be kept count: a prefiltered row is never kept or
+    exported, so it adds nothing to an identity's size and is never its
+    representative. A representative that no longer counts gives way to the best
+    face left (highest det_score x area), and an identity with no face left goes.
+    Pooled attributes stay as they were: the raw readings are not kept.
+    """
+    from argus_curator.prefilter import is_prefiltered
+
+    members_of: dict[str, list[tuple[str, FaceDetection]]] = {}
+    for r in results:
+        if is_prefiltered(r):
+            continue
+        for f in r.faces:
+            if f.cluster_id is not None:
+                members_of.setdefault(f.cluster_id, []).append((r.rel_path, f))
+    kept = []
+    for cluster in clusters:
+        members = members_of.get(cluster.cluster_id, [])
+        if not members:
+            continue
+        cluster.size = len(members)
+        if cluster.representative_rel_path not in {rel for rel, _face in members}:
+            rel, face = max(members, key=lambda m: m[1].det_score * ((m[1].bbox[2] * m[1].bbox[3]) or 1.0))
+            cluster.representative_rel_path = rel
+            cluster.representative_bbox = face.bbox
+        kept.append(cluster)
+    kept.sort(key=lambda c: -c.size)
+    return kept
+
+
 def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     """Remove *gone* rows from a finished scan and bring everything derived from them up to date.
 
     Near-duplicate groups are rebuilt, so a deleted representative does not leave
-    its siblings marked ``similar-to`` a file that no longer exists. Identity
-    sizes and representatives are recounted from the remaining faces, and an
-    identity with no face left is dropped.
+    its siblings marked ``similar-to`` a file that no longer exists. Identities
+    are recounted from the remaining faces (see :func:`recount_identities`).
     """
     gone = set(gone)
     results = [r for r in summary.results if r.rel_path not in gone]
@@ -437,24 +470,7 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     _mark_duplicates(results, summary.config)
     summary.similar_clusters = _assign_clusters(results)
 
-    members_of: dict[str, list[tuple[str, FaceDetection]]] = {}
-    for r in results:
-        for f in r.faces:
-            if f.cluster_id is not None:
-                members_of.setdefault(f.cluster_id, []).append((r.rel_path, f))
-    clusters = []
-    for cluster in summary.face_clusters:
-        members = members_of.get(cluster.cluster_id, [])
-        if not members:
-            continue
-        cluster.size = len(members)
-        if cluster.representative_rel_path in gone:
-            rel, face = max(members, key=lambda m: m[1].det_score * ((m[1].bbox[2] * m[1].bbox[3]) or 1.0))
-            cluster.representative_rel_path = rel
-            cluster.representative_bbox = face.bbox
-        clusters.append(cluster)
-    clusters.sort(key=lambda c: -c.size)
-    summary.face_clusters = clusters
+    summary.face_clusters = recount_identities(summary.face_clusters, results)
 
     rejected = [r for r in results if not r.passed]
     summary.results = results
@@ -663,7 +679,8 @@ def scan_items(
                 "pending_checks": pending(),
                 "results": [row.model_dump(mode="json") for row in batch],
             }
-            if face_clusters:
+            # The prefilter can empty the list; a client must hear that, not keep the last one.
+            if face_clusters or phase == "prefilter":
                 payload["face_clusters"] = [cluster.model_dump(mode="json") for cluster in face_clusters]
             _emit_chunk(chunk, payload)
             maybe_save(snapshot(), force=force or phase_done)
@@ -877,10 +894,12 @@ def scan_items(
     # Prefilter (opt-in): drop what the caller has no use for before the
     # heavy phases, SingGuard above all. Read after identities, so a frame
     # with no face counts the set's age. A dropped image stays in the results
-    # as a reject; scenes, garments and SingGuard pass it by.
+    # as a reject; scenes, garments and SingGuard pass it by. It stops counting
+    # toward its identity, though the set age above was read with it.
     dropped = prefilter_mod.apply(results, prefilter_cfg)
     if dropped:
         logger.info("prefilter", dropped=len(dropped))
+        face_clusters = recount_identities(face_clusters, results)
         deliver("prefilter", total, total, dropped, force=True)
 
     # Places365 scene tags (optional): whole-image, independent of faces.
@@ -922,8 +941,9 @@ def scan_items(
             guard_batch.clear()
 
     try:
+        # A dropped image is not judged; other rejects are, since a blurry explicit image is still explicit.
         ran["guard"] = guard_mod.check_images(
-            results,
+            [r for r in results if not prefilter_mod.is_prefiltered(r)],
             items,
             guard_cfg,
             progress=(lambda phase_done, phase_total: emit("guard", phase_done, phase_total)) if progress else None,
