@@ -31,7 +31,7 @@ dependencies = [
     "Pillow>=10.0",
     "numpy>=1.24",
     "ImageHash>=4.3",
-    "pydantic>=2.6",
+    "pydantic>=2.7",
     "structlog>=24.0",
     # The NudeNet / SingGuard clients and their result types (argus_cortex.moderation),
     # shared across the suite. Its base install is pydantic-only. The <0.5 cap is

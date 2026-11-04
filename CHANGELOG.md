@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delete, and an identity with only dropped images is removed from
   `face_clusters`. Its rows and `set_age.cluster_id` keep naming that identity;
   pooled attributes and the set age still include dropped faces.
+- **Identities and the set age follow a delete.** Removing images (a delete, or
+  a move export) now pools `face_clusters[].attributes` again and re-reads
+  `set_age` and `set_age_skipped` from the faces left. Each face keeps its raw
+  readings in the scan's own cache file, so a deleted image or a purged scan
+  leaves nothing behind. They are not part of the API or the wire schema. A
+  scan cached before this keeps its pooled attributes; its set age is still
+  re-read.
 
 ### Fixed
 

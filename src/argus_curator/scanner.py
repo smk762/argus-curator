@@ -430,7 +430,7 @@ def recount_identities(clusters: list[FaceCluster], results: list[ImageResult]) 
     only row left out; a minor-exposed frame, also never kept, still counts. A
     representative that no longer counts gives way to the best face left (highest
     det_score x area), and an identity with no face left goes. Pooled attributes
-    stay as they were: the raw readings are not kept.
+    are not touched here: see :func:`faces.repool_identities`.
     """
     from argus_curator.prefilter import is_prefiltered
 
@@ -461,8 +461,12 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
 
     Near-duplicate groups are rebuilt, so a deleted representative does not leave
     its siblings marked ``similar-to`` a file that no longer exists. Identities
-    are recounted from the remaining faces (see :func:`recount_identities`).
+    are recounted from the remaining faces (see :func:`recount_identities`),
+    their attributes pooled again (:func:`faces.repool_identities`), and the set
+    age read again.
     """
+    from argus_curator import faces as faces_mod
+
     gone = set(gone)
     results = [r for r in summary.results if r.rel_path not in gone]
     for r in results:
@@ -472,6 +476,8 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     summary.similar_clusters = _assign_clusters(results)
 
     summary.face_clusters = recount_identities(summary.face_clusters, results)
+    faces_mod.repool_identities(summary.face_clusters, results)
+    faces_mod.reread_set_age(summary, results)
 
     rejected = [r for r in results if not r.passed]
     summary.results = results
@@ -886,7 +892,7 @@ def scan_items(
         emit("identities", 0, total)
         face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
         if faces_cfg.set_age:
-            set_age["age"], set_age["skipped"] = faces_mod.infer_set_age(results, face_clusters, faces_cfg)
+            set_age["age"], set_age["skipped"] = faces_mod.infer_set_age(results, faces_cfg)
             logger.info("set_age", years=set_age["age"].years if set_age["age"] else None, skipped=set_age["skipped"])
         emit("identities", total, total)
         deliver("identities", total, total, results, force=True)

@@ -290,6 +290,9 @@ the frame's SingGuard context says that no face is visible and what the rest
 of the set shows. It is an inference about the set, not a reading of the
 frame: a viewer shows it as such, and where a wrong age is the costlier
 mistake treats it as it treats a measured one. `/health` reports `set_age`.
+Deleting images re-reads the set age from the faces left, which can change it,
+remove it or give one to a frame that had none; a check that already ran is not
+run again.
 
 ### Scene tags (Places365)
 
