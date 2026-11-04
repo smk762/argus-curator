@@ -68,7 +68,10 @@ class RawAttributes:
 
 def _rounded(probs: np.ndarray | None) -> list[float] | None:
     # Enough for labels pooled to 4 places, without float32 noise in every saved scan.
-    return None if probs is None else [round(float(p), 5) for p in probs]
+    # A NaN would be saved as a null in the list, which then fails the whole scan's load.
+    if probs is None or not np.isfinite(probs).all():
+        return None
+    return [round(float(p), 5) for p in probs]
 
 
 def to_readings(raw: RawAttributes) -> FaceReadings:

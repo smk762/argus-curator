@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
@@ -85,6 +86,20 @@ def test_readings_round_trip_to_the_same_labels() -> None:
     )
     saved = FaceReadings.model_validate_json(to_readings(raw).model_dump_json())
     assert pool([from_readings(saved)]) == pool([raw])
+
+
+def test_a_nan_reading_does_not_stop_the_scan_loading(tmp_path: Path) -> None:
+    raw = RawAttributes(fairface=np.full(18, np.nan), mivolo_gender=np.array([np.nan, np.nan]), mivolo_age=float("nan"))
+    store = ScanStore(tmp_path)
+    store.save(_summary([_row("a", raw=raw), _row("b")], {"face_1": 2}))
+
+    assert store.load("s").results[0].faces[0].readings == FaceReadings()
+
+
+@pytest.mark.parametrize("field,values", [("fairface", [0.5] * 17), ("mivolo_gender", [1.0])])
+def test_a_reading_of_the_wrong_length_is_refused_on_load(field: str, values: list[float]) -> None:
+    with pytest.raises(ValidationError):
+        FaceReadings.model_validate({field: values})
 
 
 def test_deleting_faces_pools_the_identity_again() -> None:
@@ -177,6 +192,16 @@ def test_deleting_the_other_identity_can_give_a_set_age() -> None:
 
     assert summary.set_age.cluster_id == "face_1" and summary.set_age_skipped is None
     assert summary.results[-1].set_age == summary.set_age
+
+
+def test_a_tie_for_largest_identity_keeps_the_lowest_id_whatever_the_row_order() -> None:
+    rows = [_row("a", cluster="face_2"), _row("b", cluster="face_2"), _row("c"), _row("d")]
+    summary = _summary([*rows, _row("gone", cluster=None)], {"face_1": 2, "face_2": 2})
+    summary.faces_config = FaceConfig(set_age=True, set_age_min_faces=2, set_age_min_share=0.5)
+
+    drop_results(summary, ["gone"])
+
+    assert summary.set_age.cluster_id == "face_1"
 
 
 def test_a_scan_that_did_not_ask_for_a_set_age_gets_none() -> None:

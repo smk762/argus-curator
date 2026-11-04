@@ -461,8 +461,9 @@ class FaceReadings(BaseModel):
     not on the wire (see :data:`STORE_CONTEXT`).
     """
 
-    fairface: list[float] | None = None
-    mivolo_gender: list[float] | None = None
+    # Sized here so a bad cache fails on load, not while pooling after the files are gone.
+    fairface: list[float] | None = Field(None, min_length=18, max_length=18)
+    mivolo_gender: list[float] | None = Field(None, min_length=2, max_length=2)
     mivolo_age: float | None = None
 
 

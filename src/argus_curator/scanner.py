@@ -25,7 +25,6 @@ import io
 import threading
 import time
 import uuid
-from collections import Counter
 from collections.abc import Callable, Collection
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -431,7 +430,7 @@ def recount_identities(clusters: list[FaceCluster], results: list[ImageResult]) 
     only row left out; a minor-exposed frame, also never kept, still counts. A
     representative that no longer counts gives way to the best face left (highest
     det_score x area), and an identity with no face left goes. Pooled attributes
-    stay as they were: the raw readings are not kept.
+    are not touched here: see :func:`faces.repool_identities`.
     """
     from argus_curator.prefilter import is_prefiltered
 
@@ -457,28 +456,6 @@ def recount_identities(clusters: list[FaceCluster], results: list[ImageResult]) 
     return kept
 
 
-def _reread_set_age(summary: ScanSummary, results: list[ImageResult]) -> None:
-    """Read the set age again from *results*, for the rows that have one and any that now qualify.
-
-    Faces count as they did in the scan, which read the age before the prefilter
-    ran, so a dropped frame still counts and still follows the set's age. Checks
-    that already used the old age are not run again.
-    """
-    if not summary.faces_config.set_age:
-        return
-    from argus_curator import faces as faces_mod
-
-    aged = [r for r in results if r.set_age is not None]
-    for r in aged:
-        r.set_age = None
-    sizes = Counter(f.cluster_id for r in results for f in r.faces if f.cluster_id is not None)
-    summary.set_age, summary.set_age_skipped = faces_mod.infer_set_age(
-        results, dict(sizes.most_common()), summary.faces_config
-    )
-    for r in aged:
-        r.set_age = summary.set_age
-
-
 def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     """Remove *gone* rows from a finished scan and bring everything derived from them up to date.
 
@@ -500,7 +477,7 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
 
     summary.face_clusters = recount_identities(summary.face_clusters, results)
     faces_mod.repool_identities(summary.face_clusters, results)
-    _reread_set_age(summary, results)
+    faces_mod.reread_set_age(summary, results)
 
     rejected = [r for r in results if not r.passed]
     summary.results = results
@@ -915,8 +892,7 @@ def scan_items(
         emit("identities", 0, total)
         face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
         if faces_cfg.set_age:
-            sizes = {cluster.cluster_id: cluster.size for cluster in face_clusters}
-            set_age["age"], set_age["skipped"] = faces_mod.infer_set_age(results, sizes, faces_cfg)
+            set_age["age"], set_age["skipped"] = faces_mod.infer_set_age(results, faces_cfg)
             logger.info("set_age", years=set_age["age"].years if set_age["age"] else None, skipped=set_age["skipped"])
         emit("identities", total, total)
         deliver("identities", total, total, results, force=True)
