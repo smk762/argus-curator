@@ -848,7 +848,12 @@ destination sidecar is replaced, as an existing destination image is. A
 sidecar that fails to transfer does not undo its image: it is logged and
 counted in `ExportResult.sidecars_failed`; `sidecars_carried` counts the ones
 that landed. Two images that share a stem in one folder (`a.jpg`, `a.png`)
-share `a.txt`: under copy both get it, under move the first one takes it.
+share `a.txt`, and both get it in every mode. Under move it is copied to each
+image but the last, which takes the original; if any of them fails to transfer,
+the original stays in the source folder. The export's own files keep their
+names: with sidecars carried, an image at the destination root with the stem
+`run_stats`, `manifest` or `curation_report` gets a hash suffix, even with
+`preserve_structure`, so its `.json` cannot be overwritten by `run_stats.json`.
 
 With `write_xmp` as well, sidecars are carried first and curator's data is then
 merged onto the carried `photo.jpg.xmp` (or, when only a Lightroom `photo.xmp`

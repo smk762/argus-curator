@@ -1132,7 +1132,7 @@ def create_app(
         dest = _resolve_within(root, req.dest)
         return summary, req.model_copy(update={"dest": str(dest)})
 
-    def _drop_moved(summary: ScanSummary, result: ExportResult) -> None:
+    def _drop_moved(summary: ScanSummary, moved: list[str]) -> None:
         """After a move export, drop the moved images from the cached scan, as delete does.
 
         Their sources are gone, so a cached row would point thumbnails and a
@@ -1141,21 +1141,25 @@ def create_app(
         off the event loop. The files have moved either way, so a failure to
         update the cache is logged rather than failing the export.
         """
-        if result.mode != "move" or not result.exported_paths:
+        if not moved:
             return
         try:
             # Re-read: the export can run for minutes, and saving the copy
             # loaded before it would put back rows a delete removed meanwhile.
             current = store.load(summary.scan_id) or summary
-            scanner.drop_results(current, list(result.exported_paths))
+            scanner.drop_results(current, moved)
             store.save(current)
         except Exception as exc:
             logger.warning("export_cache_drop_failed", scan_id=summary.scan_id, error=str(exc))
 
     def _export_and_drop(summary: ScanSummary, req: ExportRequest, progress: Any = None) -> ExportResult:
-        result = export.export_selection(summary, req, progress=progress)
-        _drop_moved(summary, result)
-        return result
+        # A move that fails after some files left still has to drop their rows:
+        # those sources are gone whatever the client hears, as with a partial delete.
+        moved: list[str] = []
+        try:
+            return export.export_selection(summary, req, progress=progress, moved=moved)
+        finally:
+            _drop_moved(summary, moved)
 
     @app.post("/export", response_model=ExportResult)
     async def run_export(req: ExportRequest) -> ExportResult:
