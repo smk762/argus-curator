@@ -28,9 +28,11 @@ scan saw. ``--scan-json`` gives each image case the context, and the crop, of
 its row in a saved scan (a ``<scan_id>.json`` from the scan cache):
 
     python scripts/guard_eval.py --url http://guard:9150 --no-probes --images ~/guard-cases \\
-        --scan-json ~/.cache/argus_curator/scans/<scan_id>.json --context age,scene
+        --scan-json ~/.cache/argus_curator/scans/<scan_id>.json --context age,scene --thinking cascade
 
-An image matches its row by path, else by a file name only one row has. The
+An image matches its row by path, else by a file name only one row and one
+image have. Under ``--thinking cascade`` a row with an exposed reading skips the
+fast screen, as it does in a scan (``guard.force_slow``). The
 ``folder`` kind leaves out the ``<expect>`` folder, which would hand the model
 the label, when the scan was run over the sorted folder.
 
@@ -64,8 +66,9 @@ from argus_cortex.moderation import THINKING_MODES, GuardCheckFailed, SingGuardC
 from PIL import Image
 
 from argus_curator import crops, guard
-from argus_curator.guard_context import CONTEXT_KINDS, image_context
+from argus_curator.guard_context import CONTEXT_KINDS, image_context, parse_kinds
 from argus_curator.models import CropBox, ImageResult, ScanSummary
+from argus_curator.runtime import ModelUnavailable
 
 EXPECTS = ("hard", "ambiguous", "adult", "other", "safe", "cinematic")
 # Whether a correct verdict for that expectation is "unsafe", per policy kind.
@@ -95,6 +98,8 @@ class Case:
     text: str = ""
     image: Path | None = None
     crop: CropBox | None = None
+    # Under cascade, judged slow with no fast screen, as a scan judges this row.
+    slow: bool = False
 
 
 @dataclass(frozen=True)
@@ -117,9 +122,12 @@ def parse_candidate(raw: str) -> Candidate:
     if parent not in guard.POLICIES:
         raise ValueError(f"--candidate {name}: unknown parent {parent} (known: {', '.join(guard.POLICIES)})")
     try:
-        return Candidate(name, parent, Path(file).read_text(encoding="utf-8"))
+        text = Path(file).expanduser().read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"--candidate {name}: cannot read {file}: {exc}") from exc
+    if not text.strip():
+        raise ValueError(f"--candidate {name}: {file} is empty")
+    return Candidate(name, parent, text)
 
 
 def _grey_png() -> bytes:
@@ -158,23 +166,28 @@ def with_scan_context(
     """Give each image case the context and crop of its scan row; return the cases and the ids with no row.
 
     Text probes are left alone. A case with no row stays as it was, and is named
-    so a run that reproduces nothing cannot pass for one that did.
+    so a run that reproduces nothing cannot pass for one that did. A file name
+    two images share matches neither: at most one of them is that row's image.
     """
     by_path = {str(Path(r.abs_path).resolve()): r for r in rows}
     names = Counter(Path(r.abs_path).name for r in rows)
     by_name = {Path(r.abs_path).name: r for r in rows if names[Path(r.abs_path).name] == 1}
+    case_names = Counter(c.image.name for c in cases if c.image is not None)
     out: list[Case] = []
     unmatched: list[str] = []
     for case in cases:
         if case.image is None:
             out.append(case)
             continue
-        row = by_path.get(str(case.image.resolve())) or by_name.get(case.image.name)
+        row = by_path.get(str(case.image.resolve()))
+        if row is None and case_names[case.image.name] == 1:
+            row = by_name.get(case.image.name)
         if row is None:
             unmatched.append(case.id)
             out.append(case)
         else:
-            out.append(replace(case, text=image_context(_without_label(row), kinds), crop=row.crop))
+            text = image_context(_without_label(row), kinds)
+            out.append(replace(case, text=text, crop=row.crop, slow=guard.force_slow(row, "cascade")))
     return out, unmatched
 
 
@@ -184,11 +197,15 @@ def should_flag(policy: str, expect: str) -> bool:
     return (_FLAG_UNDER_DEFAULT if policy == "default" else _FLAG_UNDER_ADULT)[expect]
 
 
-def _case_bytes(case: Case, grey: bytes) -> bytes:
+def _case_bytes(case: Case, grey: bytes, cropped: dict[str, bytes]) -> bytes:
+    """What to send for *case*. A crop decodes and re-encodes, so *cropped* keeps it for the next policy."""
     if case.image is None:
         return grey
-    data = case.image.read_bytes()
-    return crops.crop_bytes(data, case.crop) if case.crop is not None else data
+    if case.crop is None:
+        return case.image.read_bytes()
+    if case.id not in cropped:
+        cropped[case.id] = crops.crop_bytes(case.image.read_bytes(), case.crop)
+    return cropped[case.id]
 
 
 def run(
@@ -201,6 +218,7 @@ def run(
     candidates: list[Candidate] | None = None,
 ) -> list[dict]:
     grey = _grey_png()
+    cropped: dict[str, bytes] = {}
     rows: list[dict] = []
     trials = {c.name: c for c in candidates or []}
     for name in [*policies, *trials]:
@@ -208,12 +226,21 @@ def run(
         text = trial.text if trial else guard.policy(name)[1]
         scored_as = trial.parent if trial else name
         client = SingGuardClient(url, timeout=timeout, thinking=thinking, policy=text)
+        slow = SingGuardClient(url, timeout=timeout, thinking="slow", policy=text) if thinking == "cascade" else client
         for case in cases:
-            data = _case_bytes(case, grey)
+            try:
+                data = _case_bytes(case, grey, cropped)
+            except crops.CropError as exc:
+                # A row matched by name can be a different copy, such as an export already cropped.
+                rows.extend(
+                    {"policy": name, "case": case.id, "expect": case.expect, "run": attempt, "error": f"crop {exc}"}
+                    for attempt in range(repeat)
+                )
+                continue
             for attempt in range(repeat):
                 started = time.monotonic()
                 try:
-                    result = client.check(data, text=case.text)
+                    result = (slow if case.slow else client).check(data, text=case.text)
                 except GuardCheckFailed as exc:
                     rows.append(
                         {"policy": name, "case": case.id, "expect": case.expect, "run": attempt, "error": str(exc)}
@@ -312,21 +339,23 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--scan-json needs --images: it gives image cases their context")
     if args.context is not None and args.scan_json is None:
         parser.error("--context needs --scan-json: the context comes from a scan's results")
+    unmatched: list[str] = []
     cases = load_cases(None if args.no_probes else args.probes, args.images)
     if not cases:
         parser.error("no cases: give --probes or --images")
     if args.scan_json is not None:
-        if args.context is None:
-            kinds = guard.context_kinds()
-        else:
-            kinds = frozenset(part.strip().lower() for part in args.context.split(",") if part.strip())
-        if unknown_kinds := sorted(kinds - CONTEXT_KINDS):
-            parser.error(
-                f"unknown context kinds: {', '.join(unknown_kinds)} (known: {', '.join(sorted(CONTEXT_KINDS))})"
-            )
+        try:
+            kinds = guard.context_kinds() if args.context is None else parse_kinds(args.context)
+        except ModelUnavailable as exc:
+            parser.error(str(exc))
+        except ValueError as exc:
+            parser.error(f"--context {exc}")
         if not kinds:
             parser.error(f"--scan-json needs context kinds: give --context or set {guard.CONTEXT_ENV}")
-        summary = ScanSummary.model_validate_json(args.scan_json.read_text(encoding="utf-8"))
+        try:
+            summary = ScanSummary.model_validate_json(args.scan_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            parser.error(f"--scan-json {args.scan_json}: {exc}")
         cases, unmatched = with_scan_context(cases, summary.results, kinds)
         if unmatched:
             print(f"no scan row, sent without context: {', '.join(unmatched)}", file=sys.stderr)
@@ -336,6 +365,9 @@ def main(argv: list[str] | None = None) -> int:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     print(summarise(rows, names))
+    if unmatched:
+        # Named again: the per-case progress has long since scrolled the first notice away.
+        print(f"{len(unmatched)} of {len(cases)} cases had no scan row", file=sys.stderr)
     return 0
 
 

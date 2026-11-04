@@ -17,6 +17,7 @@ from argus_curator.models import (
     FaceDetection,
     GuardResult,
     ImageResult,
+    NsfwResult,
     ScanConfig,
     ScanSummary,
     TargetProfile,
@@ -84,12 +85,15 @@ class _FakeClient:
 
     made: list[dict] = []
     sent: list[tuple[bytes, str]] = []
+    judged_in: list[str] = []
 
     def __init__(self, url: str, **kwargs: object) -> None:
         self.made.append(kwargs)
+        self.thinking = kwargs["thinking"]
 
     def check(self, data: bytes, text: str = "") -> GuardResult:
         self.sent.append((data, text))
+        self.judged_in.append(self.thinking)
         return GuardResult(safe=True, thinking="fast")
 
 
@@ -97,6 +101,7 @@ class _FakeClient:
 def fake_client(monkeypatch: pytest.MonkeyPatch) -> type[_FakeClient]:
     monkeypatch.setattr(_FakeClient, "made", [])
     monkeypatch.setattr(_FakeClient, "sent", [])
+    monkeypatch.setattr(_FakeClient, "judged_in", [])
     monkeypatch.setattr(guard_eval, "SingGuardClient", _FakeClient)
     return _FakeClient
 
@@ -130,6 +135,19 @@ def test_a_bad_candidate_says_why(raw: str, message: str) -> None:
         guard_eval.parse_candidate(raw)
 
 
+def test_an_empty_candidate_is_refused_before_anything_runs(tmp_path: Path) -> None:
+    wording = tmp_path / "wording.txt"
+    wording.write_text(" \n")
+    with pytest.raises(ValueError, match="is empty"):
+        guard_eval.parse_candidate(f"x=adult:{wording}")
+
+
+def test_a_candidate_file_can_be_under_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "wording.txt").write_text("candidate text")
+    assert guard_eval.parse_candidate("x=adult:~/wording.txt").text == "candidate text"
+
+
 def _aged_row(path: Path, rel: str, **extra: object) -> ImageResult:
     attrs = FaceAttributes(age_years=30.0, age_source="mivolo")
     face = FaceDetection(bbox=[0, 0, 10, 10], det_score=0.9, primary=True, attributes=attrs)
@@ -161,6 +179,22 @@ def test_scan_context_names_cases_with_no_row(tmp_path: Path) -> None:
     assert cases[0].text == ""
 
 
+def test_a_name_two_images_share_matches_neither(tmp_path: Path) -> None:
+    row = _aged_row(tmp_path / "library" / "a.jpg", "a.jpg")
+    pair = [_case(tmp_path / "adult" / "a.jpg", "adult"), _case(tmp_path / "safe" / "a.jpg", "safe")]
+    cases, unmatched = guard_eval.with_scan_context(pair, [row], frozenset({"age"}))
+    assert unmatched == ["img:adult/a.jpg", "img:safe/a.jpg"]
+    assert [c.text for c in cases] == ["", ""]
+
+
+def test_a_path_match_survives_a_shared_name(tmp_path: Path) -> None:
+    exact = tmp_path / "adult" / "a.jpg"
+    pair = [_case(exact, "adult"), _case(tmp_path / "safe" / "a.jpg", "safe")]
+    cases, unmatched = guard_eval.with_scan_context(pair, [_aged_row(exact, "adult/a.jpg")], frozenset({"age"}))
+    assert unmatched == ["img:safe/a.jpg"]
+    assert "Apparent age" in cases[0].text
+
+
 @pytest.mark.parametrize("rel", ["adult/a.jpg", "Adult/a.jpg"])
 def test_folder_context_does_not_give_the_label_away(tmp_path: Path, rel: str) -> None:
     path = tmp_path / "a.jpg"
@@ -186,6 +220,50 @@ def test_an_image_case_is_sent_as_the_scan_cropped_it(tmp_path: Path, fake_clien
     data, text = fake_client.sent[0]
     assert Image.open(io.BytesIO(data)).size == (20, 10)
     assert "Apparent age" in text
+
+
+def test_a_crop_that_does_not_fit_is_an_error_row_not_a_crash(tmp_path: Path, fake_client: type[_FakeClient]) -> None:
+    path = tmp_path / "a.png"
+    Image.new("RGB", (10, 10)).save(path)  # an export already cut to size, say
+    row = _aged_row(path, "a.png", crop=CropBox(left=0, top=0, right=20, bottom=10))
+    cases, _ = guard_eval.with_scan_context([_case(path)], [row], frozenset({"age"}))
+
+    rows = guard_eval.run("http://g", ["adult"], cases, "fast", 2, 1.0)
+
+    assert [r["run"] for r in rows] == [0, 1]
+    assert all("leaves the 10x10 frame" in r["error"] for r in rows)
+    assert fake_client.sent == []
+
+
+def test_a_crop_is_made_once_for_every_policy(
+    tmp_path: Path, fake_client: type[_FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "a.png"
+    Image.new("RGB", (40, 40)).save(path)
+    calls: list[CropBox] = []
+    real = guard_eval.crops.crop_bytes
+    monkeypatch.setattr(guard_eval.crops, "crop_bytes", lambda data, box: calls.append(box) or real(data, box))
+    case = guard_eval.Case(id="c", expect="adult", image=path, crop=CropBox(left=0, top=0, right=20, bottom=10))
+
+    guard_eval.run("http://g", ["adult", "default"], [case], "fast", 1, 1.0)
+
+    assert len(calls) == 1 and len(fake_client.sent) == 2
+
+
+@pytest.mark.parametrize(("thinking", "modes"), [("cascade", ["slow", "cascade"]), ("fast", ["fast", "fast"])])
+def test_an_exposed_row_skips_the_fast_screen_as_a_scan_does(
+    tmp_path: Path, fake_client: type[_FakeClient], thinking: str, modes: list[str]
+) -> None:
+    exposed, plain = tmp_path / "exposed.png", tmp_path / "plain.png"
+    for path in (exposed, plain):
+        Image.new("RGB", (8, 8)).save(path)
+    nsfw = NsfwResult(detections=[], labels={"BUTTOCKS_EXPOSED": 0.3}, exposed_score=0.3)
+    rows = [_aged_row(exposed, "exposed.png", nsfw=nsfw), _aged_row(plain, "plain.png")]
+    cases, _ = guard_eval.with_scan_context([_case(exposed), _case(plain)], rows, frozenset({"age"}))
+
+    guard_eval.run("http://g", ["adult"], cases, thinking, 1, 1.0)
+
+    assert fake_client.judged_in == modes
 
 
 def _write_scan(path: Path, rows: list[ImageResult]) -> Path:
@@ -223,6 +301,7 @@ def test_main_sends_scan_context_and_reports_unmatched(
     assert sorted(bool(text) for _data, text in fake_client.sent) == [False, True]
     captured = capsys.readouterr()
     assert "img:adult/stray.png" in captured.err and "| adult |" in captured.out
+    assert "1 of 2 cases had no scan row" in captured.err
 
 
 @pytest.mark.parametrize(
@@ -230,7 +309,8 @@ def test_main_sends_scan_context_and_reports_unmatched(
     [
         (["--context", "age"], "--context needs --scan-json"),
         (["--scan-json", "s.json"], "needs context kinds"),
-        (["--scan-json", "s.json", "--context", "age,nope"], "unknown context kinds"),
+        (["--scan-json", "s.json", "--context", "age,nope"], "--context must name only"),
+        (["--scan-json", "/does/not/exist.json", "--context", "age"], "--scan-json /does/not/exist.json"),
     ],
 )
 def test_main_refuses_a_context_it_cannot_send(
@@ -244,6 +324,23 @@ def test_main_refuses_a_context_it_cannot_send(
     with pytest.raises(SystemExit):
         guard_eval.main(["--url", "http://g", "--images", str(tmp_path), *extra])
     assert message in capsys.readouterr().err
+
+
+def test_main_refuses_a_scan_that_is_not_one(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    scan = tmp_path / "scan.json"
+    scan.write_text("{}")
+    with pytest.raises(SystemExit):
+        guard_eval.main(["--url", "http://g", "--images", str(tmp_path), "--scan-json", str(scan), "--context", "age"])
+    assert "--scan-json" in capsys.readouterr().err
+
+
+def test_main_refuses_a_bad_context_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(guard_eval.guard.CONTEXT_ENV, "age,bogus")
+    with pytest.raises(SystemExit):
+        guard_eval.main(["--url", "http://g", "--images", str(tmp_path), "--scan-json", "s.json"])
+    assert f"{guard_eval.guard.CONTEXT_ENV} must name only" in capsys.readouterr().err
 
 
 def test_main_refuses_a_scan_with_no_images(capsys: pytest.CaptureFixture[str]) -> None:

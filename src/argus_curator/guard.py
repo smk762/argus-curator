@@ -47,7 +47,7 @@ from argus_cortex.moderation import (
 from argus_cortex.moderation.policies import POLICIES
 from argus_cortex.moderation.policies import policy_text as cortex_policy_text
 
-from argus_curator.guard_context import CONTEXT_KINDS, image_context
+from argus_curator.guard_context import image_context, parse_kinds
 from argus_curator.models import GuardConfig, GuardPolicy, GuardResult, ImageResult
 from argus_curator.nsfw import is_exposed
 from argus_curator.prefilter import is_prefiltered
@@ -110,13 +110,10 @@ def context_kinds() -> frozenset[str]:
     raw = env_value(CONTEXT_ENV)
     if raw is None:
         return frozenset()
-    kinds = frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
-    unknown = kinds - CONTEXT_KINDS
-    if unknown:
-        raise ModelUnavailable(
-            f"{CONTEXT_ENV} must name only {', '.join(sorted(CONTEXT_KINDS))}, got {', '.join(sorted(unknown))}"
-        )
-    return kinds
+    try:
+        return parse_kinds(raw)
+    except ValueError as exc:
+        raise ModelUnavailable(f"{CONTEXT_ENV} {exc}") from exc
 
 
 def policy(name: GuardPolicy = "default") -> tuple[str, str | None]:
