@@ -17,7 +17,7 @@ Curator and lens share one `TargetProfile`, so a manifest written here is consum
 
 `src/argus_curator/`:
 
-- `models.py` — Pydantic v2 wire types (`TargetProfile`, `ScanConfig`/`FaceConfig`, `ScanSummary`/`ImageResult`, `ExportRequest`/`ExportResult`, `ManifestRow`). **This is the API contract**: `WIRE_MODELS` + `wire_schema()` back `argus-curator schema` and the committed `schema/curator-wire.schema.json`. `MANIFEST_VERSION` (currently `"2.1"`) versions the JSONL handoff and moves *independently* of the package version.
+- `models.py` — Pydantic v2 wire types (`TargetProfile`, `ScanConfig`/`FaceConfig`, `ScanSummary`/`ImageResult`, `ExportRequest`/`ExportResult`, `ManifestRow`). **This is the API contract**: `WIRE_MODELS` + `wire_schema()` back `argus-curator schema` and the committed `schema/curator-wire.schema.json`. `MANIFEST_VERSION` (currently `"2.2"`) versions the JSONL handoff and moves *independently* of the package version.
 - `scanner.py` — the training-suitability engine (ported from imogen). Phase-1 metrics (`_sharpness`, `_artifact_score`, pHash) + target-aware scoring (`_base_score`, `_target_bonus`, `_face_penalty`, `finalize_score`), near-duplicate clustering (`_mark_duplicates`/`_assign_clusters`), threaded orchestration in `scan_items`/`scan_folder`.
 - `prefilter.py` — opt-in `PrefilterConfig` rules (`prefilter:nsfw` / `no-face` / `no-age`) applied in `scan_items` right after identities; dropped rows become rejects that scenes, garments and SingGuard skip.
 - `selection.py` — score-threshold + optional diversity cap (`decide_selection`, `select_diverse`). Nothing is silently dropped: every excluded image gets a `keep_reason`.
