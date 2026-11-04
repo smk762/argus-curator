@@ -235,9 +235,10 @@ def force_slow(result: ImageResult, mode: str) -> bool:
     faceless frame with a young set age, which both need the same exposure.
 
     Frames with no exposed reading keep the fast screen. Measured in #107
-    (2026-11-04, ``adult-cinematic``, 3 runs each): of 31 unexposed harmful
-    images fast passed 5, and slow passed 4 of those too, so more routing would
-    not catch them, while slow costs about 10 times fast per frame.
+    (2026-11-04, ``adult-cinematic``, 3 runs each): of 31 unexposed ``other``
+    images fast passed 5 at least once. Slow passed 4 of those every time and
+    was noisy on the fifth, so more routing would catch little, while slow
+    costs about 10 times fast per frame. One policy, on calibration buckets.
     """
     if mode != "cascade":
         return False

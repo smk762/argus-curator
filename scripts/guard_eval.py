@@ -12,9 +12,9 @@ Every case carries what a correct verdict is:
 Cases come from a JSONL file of text descriptions (``eval/guard_probes.jsonl``,
 sent with a neutral grey image so servers that require an image accept them)
 and, optionally, a folder of images sorted into ``<dir>/<expect>/``, in
-subfolders or not. Never
-put illegal material in an image folder: text descriptions cover the hard
-cases.
+subfolders or not; a symlinked subfolder is named on stderr and not followed.
+Never put illegal material in an image folder: text descriptions cover the
+hard cases.
 
     python scripts/guard_eval.py --url http://guard:9150
     python scripts/guard_eval.py --url http://guard:9150 --images ~/guard-cases --repeat 3 --out runs/guard.jsonl
@@ -35,7 +35,9 @@ An image matches its row by path, else by a file name only one row and one
 image have. Under ``--thinking cascade`` a row with an exposed reading skips the
 fast screen, as it does in a scan (``guard.force_slow``). The
 ``folder`` kind leaves out the ``<expect>`` folder, which would hand the model
-the label, when the scan was run over the sorted folder.
+the label, when the scan was run over the sorted folder. Folders under it stay,
+so leave ``folder`` out of ``--context`` when they name the category
+(``other/gore/``): the model would read the label there too.
 
 To score a wording candidate, name it, the policy it derives from, and the file
 holding its text. It runs beside ``--policies`` and is scored as its parent:
@@ -60,15 +62,17 @@ import statistics
 import sys
 import time
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
+from typing import TextIO
 
 from argus_cortex.moderation import THINKING_MODES, GuardCheckFailed, SingGuardClient, rule_letter
 from PIL import Image
 
 from argus_curator import crops, guard
 from argus_curator.guard_context import CONTEXT_KINDS, image_context, parse_kinds
-from argus_curator.models import CropBox, ImageResult, ScanSummary
+from argus_curator.models import SUPPORTED_EXTS, CropBox, ImageResult, ScanSummary
 from argus_curator.runtime import ModelUnavailable
 
 EXPECTS = ("hard", "ambiguous", "adult", "other", "safe", "cinematic")
@@ -89,7 +93,6 @@ _FLAG_UNDER_ADULT = {
     "safe": False,
     "cinematic": True,
 }
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 @dataclass(frozen=True)
@@ -151,7 +154,10 @@ def load_cases(probes: Path | None, images: Path | None) -> list[Case]:
         for expect in EXPECTS:
             folder = images / expect
             for path in sorted(folder.rglob("*")):
-                if path.suffix.lower() in IMAGE_SUFFIXES:
+                if path.is_dir():
+                    if path.is_symlink():
+                        print(f"symlinked folder not followed: {path}", file=sys.stderr)
+                elif path.suffix.lower() in SUPPORTED_EXTS:
                     cases.append(
                         Case(id=f"img:{expect}/{path.relative_to(folder).as_posix()}", expect=expect, image=path)
                     )
@@ -220,10 +226,19 @@ def run(
     repeat: int,
     timeout: float,
     candidates: list[Candidate] | None = None,
+    out: TextIO | None = None,
 ) -> list[dict]:
+    """Every verdict as a row, each also written to *out* as it lands, so a run that dies keeps what it has."""
     grey = _grey_png()
     cropped: dict[str, bytes] = {}
     rows: list[dict] = []
+
+    def record(row: dict) -> None:
+        rows.append(row)
+        if out is not None:
+            out.write(json.dumps(row) + "\n")
+            out.flush()
+
     trials = {c.name: c for c in candidates or []}
     for name in [*policies, *trials]:
         trial = trials.get(name)
@@ -237,21 +252,19 @@ def run(
             except (crops.CropError, OSError) as exc:
                 # A row matched by name can be a different copy, such as an export already cropped;
                 # a labelled folder can change during a long run. Neither should lose the rows so far.
-                rows.extend(
-                    {"policy": name, "case": case.id, "expect": case.expect, "run": attempt, "error": f"read {exc}"}
-                    for attempt in range(repeat)
-                )
+                error = f"{'crop' if isinstance(exc, crops.CropError) else 'read'} {exc}"
+                print(f"  {name:15} {case.id}: {error}", file=sys.stderr)
+                for attempt in range(repeat):
+                    record({"policy": name, "case": case.id, "expect": case.expect, "run": attempt, "error": error})
                 continue
             for attempt in range(repeat):
                 started = time.monotonic()
                 try:
                     result = (slow if case.slow else client).check(data, text=case.text)
                 except GuardCheckFailed as exc:
-                    rows.append(
-                        {"policy": name, "case": case.id, "expect": case.expect, "run": attempt, "error": str(exc)}
-                    )
+                    record({"policy": name, "case": case.id, "expect": case.expect, "run": attempt, "error": str(exc)})
                     continue
-                rows.append(
+                record(
                     {
                         "policy": name,
                         "case": case.id,
@@ -365,10 +378,10 @@ def main(argv: list[str] | None = None) -> int:
         if unmatched:
             print(f"no scan row, sent without context: {', '.join(unmatched)}", file=sys.stderr)
 
-    rows = run(args.url, policies, cases, args.thinking, max(1, args.repeat), args.timeout, candidates)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    with args.out.open("w", encoding="utf-8") if args.out else nullcontext() as out:
+        rows = run(args.url, policies, cases, args.thinking, max(1, args.repeat), args.timeout, candidates, out)
     print(summarise(rows, names))
     if unmatched:
         # Named again: the per-case progress has long since scrolled the first notice away.
