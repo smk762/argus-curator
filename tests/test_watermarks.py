@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,7 @@ from PIL import Image
 
 from argus_curator import crops, scan_folder, watermarks
 from argus_curator.models import CropBox, CropConfig, FaceConfig, NsfwConfig, WatermarkDetection
+from argus_curator.remote import MAX_FAILURES_WITHOUT_SUCCESS
 from argus_curator.server.app import create_app
 
 NO_FACES = FaceConfig(enabled=False)
@@ -187,3 +189,23 @@ def test_to_detections_drops_malformed_rows() -> None:
     ]
     out = watermarks.to_detections(rows)
     assert [(d.label, d.score) for d in out] == [("logo", 0.7), ("watermark", 0.5)]
+
+
+def test_unopenable_files_do_not_take_the_detector_for_down(
+    detector: _FakeDetector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = watermarks.upright
+
+    def slow_on_corrupt(data: bytes) -> tuple[bytes, tuple[int, int]]:
+        if data == b"not an image":
+            time.sleep(0.05)  # so a wrong cancel lands while good.png is still queued
+        return real(data)
+
+    monkeypatch.setattr(watermarks, "upright", slow_on_corrupt)
+    monkeypatch.setenv(watermarks.WORKERS_ENV, "1")
+    corrupt = {f"bad{i}.png": b"not an image" for i in range(MAX_FAILURES_WITHOUT_SUCCESS + 2)}
+    buf = io.BytesIO()
+    _noise(100, 100).save(buf, "PNG")
+    out = watermarks.detect_all({**corrupt, "good.png": buf.getvalue()})
+    assert all("cannot open" in out[rel] for rel in corrupt)
+    assert out["good.png"] == ([], (100, 100))

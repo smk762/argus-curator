@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import shutil
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -58,9 +59,10 @@ def sidecar_for(path: str | Path) -> Path:
 def read_sidecar(path: str | Path) -> CropBox | None:
     """The box in *path*'s crop sidecar, ``None`` when it has none; :class:`CropError` when it cannot be read."""
     side = sidecar_for(path)
-    if not side.is_file():
-        return None
     try:
+        # Inside the try: before Python 3.13 this raises on a name too long to take the suffix.
+        if not side.is_file():
+            return None
         return CropBox.model_validate(json.loads(side.read_text(encoding="utf-8")))
     except (OSError, ValueError, ValidationError) as exc:
         raise CropError(f"unreadable ({side.name}: {exc})") from exc
@@ -77,9 +79,24 @@ def crop_image(img: Image.Image, box: CropBox) -> Image.Image:
     return upright.crop((box.left, box.top, box.right, box.bottom))
 
 
-def _encode(src: Image.Image, cropped: Image.Image) -> bytes:
-    """*cropped* in *src*'s format, keeping its colour profile and EXIF less the orientation."""
+def _webp_lossless(data: bytes) -> bool:
+    """Whether a WebP's image chunk is ``VP8L``. Pillow does not report it, so walk the RIFF chunks."""
+    pos = 12
+    while pos + 8 <= len(data):
+        tag = data[pos : pos + 4]
+        if tag in (b"VP8L", b"VP8 "):
+            return tag == b"VP8L"
+        size = int.from_bytes(data[pos + 4 : pos + 8], "little")
+        pos += 8 + size + (size & 1)
+    return False
+
+
+def _encode(src: Image.Image, cropped: Image.Image, data: bytes) -> bytes:
+    """*cropped* in the format of *src* (decoded from *data*), keeping its colour profile and EXIF less the orientation."""
     fmt = (src.format or "PNG").upper()
+    if fmt == "MPO":
+        # A JPEG with a second frame, as many phones write. Only the first is cropped, so it is a plain JPEG now.
+        fmt = "JPEG"
     params: dict[str, object] = {}
     if icc := src.info.get("icc_profile"):
         params["icc_profile"] = icc
@@ -100,7 +117,7 @@ def _encode(src: Image.Image, cropped: Image.Image) -> bytes:
         except Exception:  # pragma: no cover - older Pillow
             pass
     elif fmt == "WEBP":
-        params["lossless"] = bool(src.info.get("lossless"))
+        params["lossless"] = _webp_lossless(data)
         params["quality"] = 100 if params["lossless"] else QUALITY
     buf = io.BytesIO()
     cropped.save(buf, format=fmt, **params)
@@ -116,7 +133,7 @@ def crop_bytes(data: bytes, box: CropBox) -> bytes:
         raise CropError(f"failed (cannot open: {exc})") from exc
     cropped = crop_image(src, box)
     try:
-        return _encode(src, cropped)
+        return _encode(src, cropped, data)
     except Exception as exc:
         raise CropError(f"failed (cannot encode: {exc})") from exc
 
@@ -193,9 +210,8 @@ def apply(
 
     An item whose crop cannot be applied, that the detector could not check,
     or (with ``cfg.reject_overlay``) whose watermark no edge cut removes keeps
-    its original bytes, so NudeNet still scores what is on disk, and is
-    named in ``errors`` for the scan to reject. With *cfg* off the items come
-    back unchanged. *progress* and *cancelled* follow the detector pass;
+    its original bytes and is named in ``errors`` for the scan to reject, so
+    no later check judges it. With *cfg* off the items come back unchanged. *progress* and *cancelled* follow the detector pass;
     *workers* images are cropped at a time.
     """
     if not cfg.enabled:
@@ -251,7 +267,9 @@ def apply(
 
 
 def write_cropped(src: Path, dst: Path, box: CropBox) -> None:
-    """Write *src* cut to *box* at *dst*. The source is only read."""
+    """Write *src* cut to *box* at *dst*. The source is only read: *dst* being *src* raises, as a copy would."""
+    if dst.exists() and not dst.is_symlink() and dst.samefile(src):
+        raise shutil.SameFileError(f"{src} and {dst} are the same file")
     data = crop_bytes(src.read_bytes(), box)
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.is_symlink():

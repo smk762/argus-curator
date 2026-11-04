@@ -435,3 +435,21 @@ def test_moved_stays_empty_for_a_copy(tmp_path: Path) -> None:
         moved=moved,
     )
     assert moved == []
+
+
+def test_move_leaves_a_shared_sidecar_for_an_image_not_selected(tmp_path: Path) -> None:
+    first, second, side = _shared_pair(tmp_path)
+    dest = tmp_path / "out"
+    export_selection(
+        _summary(tmp_path, [first, second]),
+        ExportRequest(
+            scan_id="s",
+            dest=str(dest),
+            mode="move",
+            selection=[first.rel_path],
+            preserve_structure=False,
+            carry_sidecars=True,
+        ),
+    )
+    assert (dest / Path(first.rel_path).with_suffix(".txt").name).read_text() == "shared caption"
+    assert Path(second.abs_path).exists() and side.read_text() == "shared caption"

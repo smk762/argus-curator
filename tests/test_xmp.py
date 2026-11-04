@@ -11,6 +11,7 @@ from argus_cortex.xmp import XmpData, read_xmp, sidecar_path, write_xmp
 from argus_curator import scan_folder
 from argus_curator.export import export_selection, write_source_sidecars, xmp_data
 from argus_curator.models import (
+    CropBox,
     ExportRequest,
     FaceAttributes,
     FaceDetection,
@@ -220,6 +221,18 @@ def test_write_source_sidecars_covers_rejected_images(tmp_path: Path) -> None:
     rejected = _image(tmp_path / "blur.png", nsfw=_nsfw()).model_copy(update={"passed": False, "reject_reason": "blur"})
     assert write_source_sidecars([rejected]) == 1
     assert read_xmp(rejected.abs_path).content_rating == "safe"
+
+
+def test_write_source_sidecars_keeps_cropped_regions_off_the_original(tmp_path: Path) -> None:
+    """Regions are of the cropped frame; the sidecar beside the source describes the whole one."""
+    plain = _image(tmp_path / "plain.png", nsfw=_nsfw(), faces=[_face("face_1")])
+    cropped = _image(tmp_path / "cropped.png", nsfw=_nsfw(), faces=[_face("face_1")]).model_copy(
+        update={"crop": CropBox(left=10, top=10, right=50, bottom=50)}
+    )
+    assert write_source_sidecars([plain, cropped], {"face_1": "Ada"}) == 2
+    assert read_xmp(plain.abs_path).regions is not None
+    merged = read_xmp(cropped.abs_path)
+    assert merged.regions is None and merged.persons == ["Ada"]
 
 
 def test_face_names_are_validated() -> None:

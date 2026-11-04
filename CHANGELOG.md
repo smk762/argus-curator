@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that cannot be applied makes the image a `crop:invalid` / `crop:unreadable`
   / `crop:failed` reject that no export keeps. `ImageResult.crop`,
   `ScanSummary.crop_config`, `ExportResult.cropped`; `GET /health` reports
-  `crops: true`.
+  `crops: true`, and `GET /thumb?scan_id=` shows the cropped frame.
 - **Watermark detection.** `CropConfig.detect` (CLI `--detect-watermarks`,
   `--watermark-url`, `--max-cut`, `--keep-overlays`) sends each frame without
   a box by hand, upright, to a NudeNet-shaped detector at
