@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-04
+
 ### Added
 
 - **Crops.** `ScanRequest.crops` (`CropConfig`; CLI `--crops`) crops a boxed
@@ -29,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/detectors` reports `watermark`, `/health` `watermark_detect`.
 - **Manifest 2.2.** Each row carries `crop`, the box baked into the exported
   file, or `null`.
+- **`guard_eval.py` measures what a scan does.** `--candidate NAME=PARENT:FILE`
+  tries a policy wording from a file, scored as its parent policy. `--scan-json`
+  with `--context` sends each image case with the context and crop of its row
+  in a saved scan, and a `--thinking cascade` run routes it as a scan would.
+  Rows and the table record the pass that decided each verdict.
 
 ### Changed
 
@@ -49,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fast screen. A fast pass is final, so exposed frames were passed without
   reasoning. Slower scans on nude sets; frames with no exposed reading keep
   the fast screen.
+- Needs `pydantic>=2.7`, for the scan cache's `model_dump_json(context=...)`.
 - `guard.check_images` judges every row it is given; the scanner now leaves out
   the images the prefilter dropped.
 - Every streamed `chunk` carries `face_clusters`, even when empty.
@@ -73,9 +81,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaves nothing behind. They are not part of the API or the wire schema. A
   scan cached before this keeps its pooled attributes; its set age is still
   re-read.
-
-### Fixed
-
 - **Shared sidecars under move.** Images that share a sidecar (`a.jpg`, `a.png`
   and `a.txt`) now all get it: it is copied to each but the last, which takes
   the original. If one of them fails to transfer, the original stays.
@@ -804,7 +809,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/smk762/argus-curator/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/smk762/argus-curator/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/smk762/argus-curator/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/smk762/argus-curator/compare/v0.11.0...v0.11.1

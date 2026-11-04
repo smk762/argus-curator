@@ -823,7 +823,7 @@ has it.
   "dest": "training-set-v1",        // relative to the server's --export-root
   "mode": "copy",                   // "copy" | "symlink" | "move" (move needs --allow-move)
   "preserve_structure": true,
-  "min_score": 0.6, "include_rejected": false, "keep_similar": false,
+  "min_score": 0.6, "keep_similar": false,
   "face_clusters": ["face_2"],      // optional: export only these identities
   "face_poses": ["frontal", "three_quarter"],  // optional: export only these head poses
   "face_genders": null,             // optional: gender filter on the primary face
