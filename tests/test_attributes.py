@@ -22,7 +22,6 @@ from argus_curator.models import (
     FACE_RACES,
     ExportRequest,
     FaceAttributes,
-    FaceCluster,
     FaceConfig,
     FaceDetection,
     ImageResult,
@@ -287,6 +286,19 @@ def _sweep(monkeypatch: pytest.MonkeyPatch, cfg: FaceConfig, ff_rows=None, mv_ro
     return {r.rel_path: r for r in results}, clusters, ff_session, mv_session
 
 
+def test_a_sweep_keeps_the_readings_its_pool_is_rebuilt_from(monkeypatch: pytest.MonkeyPatch) -> None:
+    ff_rows = [_logits(0, 0, 3), _logits(0, 0, 3), _logits(1, 1, 5), _logits(5, 0, 3, peak=2.0)]
+    mv_rows = [_mv_row(False, 27.0), _mv_row(False, 29.0), _mv_row(True, 52.0), _mv_row(False, 60.0)]
+    by_rel, clusters, _ff, _mv = _sweep(monkeypatch, FaceConfig(fairface=True, mivolo=True), ff_rows, mv_rows)
+    scanned = {c.cluster_id: c.attributes.model_copy() for c in clusters}
+
+    for cluster in clusters:
+        cluster.attributes = None
+    faces.repool_identities(clusters, list(by_rel.values()))
+
+    assert {c.cluster_id: c.attributes for c in clusters} == scanned
+
+
 def test_sweep_records_face_primary_and_pooled_cluster_attributes(monkeypatch: pytest.MonkeyPatch) -> None:
     # Identity face_1 is "white" in two frames and "indian" in one; pooling the
     # probabilities must keep the majority label for the cluster.
@@ -469,8 +481,8 @@ def _faceless(rel: str, *, passed: bool = True) -> ImageResult:
     return ImageResult(rel_path=rel, abs_path=f"/d/{rel}", passed=passed)
 
 
-def _clusters(*sizes: tuple[str, int]) -> list[FaceCluster]:
-    return [FaceCluster(cluster_id=cid, size=n, representative_rel_path="x.jpg") for cid, n in sizes]
+def _clusters(*sizes: tuple[str, int]) -> dict[str, int]:
+    return dict(sizes)
 
 
 def test_set_age_is_the_dominant_identitys_median_and_lands_on_faceless_frames() -> None:

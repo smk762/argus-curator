@@ -1280,6 +1280,17 @@
           "title": "Primary",
           "type": "boolean"
         },
+        "readings": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceReadings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "yaw": {
           "anyOf": [
             {
@@ -1298,6 +1309,55 @@
         "det_score"
       ],
       "title": "FaceDetection",
+      "type": "object"
+    },
+    "FaceReadings": {
+      "description": "One face's raw model outputs, kept so its identity can be pooled again after a delete.\n\nThey live on the face, so they go with its row and with the scan: nothing\noutlives a deleted image or a purged scan. ``None`` on a face from a scan\ncached before readings were kept.",
+      "properties": {
+        "fairface": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fairface"
+        },
+        "mivolo_age": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mivolo Age"
+        },
+        "mivolo_gender": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mivolo Gender"
+        }
+      },
+      "title": "FaceReadings",
       "type": "object"
     },
     "GarmentConfig": {

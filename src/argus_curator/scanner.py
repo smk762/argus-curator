@@ -25,6 +25,7 @@ import io
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable, Collection
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -456,13 +457,39 @@ def recount_identities(clusters: list[FaceCluster], results: list[ImageResult]) 
     return kept
 
 
+def _reread_set_age(summary: ScanSummary, results: list[ImageResult]) -> None:
+    """Read the set age again from *results*, for the rows that have one and any that now qualify.
+
+    Faces count as they did in the scan, which read the age before the prefilter
+    ran, so a dropped frame still counts and still follows the set's age. Checks
+    that already used the old age are not run again.
+    """
+    if not summary.faces_config.set_age:
+        return
+    from argus_curator import faces as faces_mod
+
+    aged = [r for r in results if r.set_age is not None]
+    for r in aged:
+        r.set_age = None
+    sizes = Counter(f.cluster_id for r in results for f in r.faces if f.cluster_id is not None)
+    summary.set_age, summary.set_age_skipped = faces_mod.infer_set_age(
+        results, dict(sizes.most_common()), summary.faces_config
+    )
+    for r in aged:
+        r.set_age = summary.set_age
+
+
 def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     """Remove *gone* rows from a finished scan and bring everything derived from them up to date.
 
     Near-duplicate groups are rebuilt, so a deleted representative does not leave
     its siblings marked ``similar-to`` a file that no longer exists. Identities
-    are recounted from the remaining faces (see :func:`recount_identities`).
+    are recounted from the remaining faces (see :func:`recount_identities`),
+    their attributes pooled again (:func:`faces.repool_identities`), and the set
+    age read again.
     """
+    from argus_curator import faces as faces_mod
+
     gone = set(gone)
     results = [r for r in summary.results if r.rel_path not in gone]
     for r in results:
@@ -472,6 +499,8 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     summary.similar_clusters = _assign_clusters(results)
 
     summary.face_clusters = recount_identities(summary.face_clusters, results)
+    faces_mod.repool_identities(summary.face_clusters, results)
+    _reread_set_age(summary, results)
 
     rejected = [r for r in results if not r.passed]
     summary.results = results
@@ -886,7 +915,8 @@ def scan_items(
         emit("identities", 0, total)
         face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
         if faces_cfg.set_age:
-            set_age["age"], set_age["skipped"] = faces_mod.infer_set_age(results, face_clusters, faces_cfg)
+            sizes = {cluster.cluster_id: cluster.size for cluster in face_clusters}
+            set_age["age"], set_age["skipped"] = faces_mod.infer_set_age(results, sizes, faces_cfg)
             logger.info("set_age", years=set_age["age"].years if set_age["age"] else None, skipped=set_age["skipped"])
         emit("identities", total, total)
         deliver("identities", total, total, results, force=True)

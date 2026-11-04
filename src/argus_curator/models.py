@@ -439,6 +439,19 @@ class SetAge(BaseModel):
     share: float
 
 
+class FaceReadings(BaseModel):
+    """One face's raw model outputs, kept so its identity can be pooled again after a delete.
+
+    They live on the face, so they go with its row and with the scan: nothing
+    outlives a deleted image or a purged scan. ``None`` on a face from a scan
+    cached before readings were kept.
+    """
+
+    fairface: list[float] | None = None
+    mivolo_gender: list[float] | None = None
+    mivolo_age: float | None = None
+
+
 class FaceDetection(BaseModel):
     """One detected face within an image."""
 
@@ -452,6 +465,7 @@ class FaceDetection(BaseModel):
     pitch: float | None = None
     pose: FacePose | None = None
     attributes: FaceAttributes | None = None
+    readings: FaceReadings | None = None
     # Index into ImageResult.people when FaceConfig.mivolo_body matched this face
     # to a person box; NudeNet detections assigned to that person live there.
     person_index: int | None = None

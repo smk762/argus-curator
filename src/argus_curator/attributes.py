@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from argus_curator.models import FACE_AGES, FACE_GENDERS, FACE_RACES, FaceAge, FaceAttributes
+from argus_curator.models import FACE_AGES, FACE_GENDERS, FACE_RACES, FaceAge, FaceAttributes, FaceReadings
 from argus_curator.runtime import ModelUnavailable, onnxruntime_available
 
 # Lower bound (years) of each FairFace bracket, in FACE_AGES order.
@@ -64,6 +64,26 @@ class RawAttributes:
 
     def empty(self) -> bool:
         return self.fairface is None and self.mivolo_gender is None
+
+
+def _rounded(probs: np.ndarray | None) -> list[float] | None:
+    # Enough for labels pooled to 4 places, without float32 noise in every saved scan.
+    return None if probs is None else [round(float(p), 5) for p in probs]
+
+
+def to_readings(raw: RawAttributes) -> FaceReadings:
+    """What a scan keeps of *raw*: all that :func:`pool` reads."""
+    return FaceReadings(
+        fairface=_rounded(raw.fairface), mivolo_gender=_rounded(raw.mivolo_gender), mivolo_age=raw.mivolo_age
+    )
+
+
+def from_readings(readings: FaceReadings) -> RawAttributes:
+    return RawAttributes(
+        fairface=None if readings.fairface is None else np.array(readings.fairface),
+        mivolo_gender=None if readings.mivolo_gender is None else np.array(readings.mivolo_gender),
+        mivolo_age=readings.mivolo_age,
+    )
 
 
 def to_attributes(raw: RawAttributes) -> FaceAttributes | None:
