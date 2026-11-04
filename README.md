@@ -583,7 +583,11 @@ the keep reason (`guard-unsafe:adult-granular`). The CSV report adds a
 `guard_variants` column.
 `scripts/guard_eval.py --url <singguard>` scores every policy on the text
 probes in `eval/guard_probes.jsonl` and on an optional folder of images
-sorted by expected verdict.
+sorted by expected verdict. `--scan-json <scan_id>.json --context age,scene`
+sends each image with the context and crop of its row in a saved scan, since
+context changes verdicts and a bare image may not reproduce what a scan saw.
+`--candidate NAME=PARENT:FILE` tries a policy wording from a file, scored as
+its parent policy. Rows and the table record the pass that decided each verdict.
 
 Each image records `guard.safe`, the rules that fired, the explanation, the
 model and the policy: `default`, `adult`, or `custom-<sha256 prefix>` of the

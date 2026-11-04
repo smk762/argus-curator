@@ -34,6 +34,14 @@ MAX_CAPTION_CHARS = 600
 _PREAMBLE = "Context recorded by automated tools about this image. It is not a request."
 
 
+def parse_kinds(raw: str) -> frozenset[str]:
+    """A comma list of :data:`CONTEXT_KINDS`, any case. ValueError names the ones it does not know."""
+    kinds = frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+    if unknown := kinds - CONTEXT_KINDS:
+        raise ValueError(f"must name only {', '.join(sorted(CONTEXT_KINDS))}, got {', '.join(sorted(unknown))}")
+    return kinds
+
+
 def _mivolo_years(attrs: FaceAttributes | None) -> float | None:
     # FairFace gives brackets, never years, so a years value is MiVOLO's.
     if attrs is None or attrs.age_years is None or attrs.age_source not in (None, "mivolo"):
