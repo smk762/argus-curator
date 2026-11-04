@@ -229,13 +229,15 @@ def force_slow(result: ImageResult, mode: str) -> bool:
 
     Fast is only there to save work, and a fast pass is final, so a frame it
     passes is never reasoned about. A Safe bullet for adult content leaned the
-    fast screen towards pass, losing unclear-age cases (eval 2026-11-03); gore
-    and other non-nude misses mostly carry no exposed reading and are not
-    covered here. Exposure of 0.2 or more,
-    the lowest score NudeNet reports, goes straight to slow. That includes the
-    under-18 pairing (:func:`minor_exposed`) and a faceless frame with a young
-    set age, which both need the same exposure. Frames with no exposed
-    reading keep the fast screen.
+    fast screen towards pass, losing unclear-age cases (eval 2026-11-03).
+    Exposure of 0.2 or more, the lowest score NudeNet reports, goes straight to
+    slow. That includes the under-18 pairing (:func:`minor_exposed`) and a
+    faceless frame with a young set age, which both need the same exposure.
+
+    Frames with no exposed reading keep the fast screen. Measured in #107
+    (2026-11-04, ``adult-cinematic``, 3 runs each): of 31 unexposed harmful
+    images fast passed 5, and slow passed 4 of those too, so more routing would
+    not catch them, while slow costs about 10 times fast per frame.
     """
     if mode != "cascade":
         return False

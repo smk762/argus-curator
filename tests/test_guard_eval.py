@@ -45,6 +45,14 @@ def test_image_folders_become_cases(tmp_path: Path) -> None:
     assert [(c.id, c.expect) for c in cases] == [("img:adult/a.jpg", "adult")]
 
 
+def test_image_cases_are_found_in_subfolders(tmp_path: Path) -> None:
+    for rel in ("other/gore/a.jpg", "other/hate/a.jpg", "other/b.jpg"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(b"x")
+    cases = guard_eval.load_cases(None, tmp_path)
+    assert [c.id for c in cases] == ["img:other/b.jpg", "img:other/gore/a.jpg", "img:other/hate/a.jpg"]
+
+
 def test_adult_content_is_correct_to_flag_only_under_default() -> None:
     assert guard_eval.should_flag("default", "adult") is True
     assert guard_eval.should_flag("adult-granular", "adult") is False
@@ -264,6 +272,17 @@ def test_an_exposed_row_skips_the_fast_screen_as_a_scan_does(
     guard_eval.run("http://g", ["adult"], cases, thinking, 1, 1.0)
 
     assert fake_client.judged_in == modes
+
+
+def test_an_image_gone_mid_run_is_an_error_row(tmp_path: Path, fake_client: type[_FakeClient]) -> None:
+    kept = tmp_path / "kept.png"
+    Image.new("RGB", (8, 8)).save(kept)
+    cases = [_case(tmp_path / "gone.png"), _case(kept)]
+
+    rows = guard_eval.run("http://g", ["adult"], cases, "fast", 2, 1.0)
+
+    assert ["error" in r for r in rows] == [True, True, False, False]
+    assert "| 2 |" in guard_eval.summarise(rows, ["adult"])
 
 
 def _write_scan(path: Path, rows: list[ImageResult]) -> Path:

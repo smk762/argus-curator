@@ -46,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`guard_eval.py --images` reads subfolders.** Images sorted into
+  `<dir>/<expect>/<category>/` were skipped with no warning; case ids now carry
+  the path under the expect folder. An image that disappears during a run is an
+  error row instead of a crash that loses every result so far.
 - An image the prefilter dropped no longer counts toward its identity:
   `face_clusters[].size` and the representative leave it out, also after a
   delete, and an identity with only dropped images is removed from

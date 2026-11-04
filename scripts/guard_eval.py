@@ -11,7 +11,8 @@ Every case carries what a correct verdict is:
 
 Cases come from a JSONL file of text descriptions (``eval/guard_probes.jsonl``,
 sent with a neutral grey image so servers that require an image accept them)
-and, optionally, a folder of images sorted into ``<dir>/<expect>/*``. Never
+and, optionally, a folder of images sorted into ``<dir>/<expect>/``, in
+subfolders or not. Never
 put illegal material in an image folder: text descriptions cover the hard
 cases.
 
@@ -148,9 +149,12 @@ def load_cases(probes: Path | None, images: Path | None) -> list[Case]:
             cases.append(Case(id=row["id"], expect=row["expect"], text=row["text"]))
     if images is not None:
         for expect in EXPECTS:
-            for path in sorted((images / expect).glob("*")):
+            folder = images / expect
+            for path in sorted(folder.rglob("*")):
                 if path.suffix.lower() in IMAGE_SUFFIXES:
-                    cases.append(Case(id=f"img:{expect}/{path.name}", expect=expect, image=path))
+                    cases.append(
+                        Case(id=f"img:{expect}/{path.relative_to(folder).as_posix()}", expect=expect, image=path)
+                    )
     return cases
 
 
@@ -230,10 +234,11 @@ def run(
         for case in cases:
             try:
                 data = _case_bytes(case, grey, cropped)
-            except crops.CropError as exc:
-                # A row matched by name can be a different copy, such as an export already cropped.
+            except (crops.CropError, OSError) as exc:
+                # A row matched by name can be a different copy, such as an export already cropped;
+                # a labelled folder can change during a long run. Neither should lose the rows so far.
                 rows.extend(
-                    {"policy": name, "case": case.id, "expect": case.expect, "run": attempt, "error": f"crop {exc}"}
+                    {"policy": name, "case": case.id, "expect": case.expect, "run": attempt, "error": f"read {exc}"}
                     for attempt in range(repeat)
                 )
                 continue
