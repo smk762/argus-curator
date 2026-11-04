@@ -124,11 +124,18 @@ class TargetProfile(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# The smallest short side a scan accepts, and a floor on ScanConfig.min_short_side.
+# A frame below it is rejected, and a rejected frame gets no face, age, scene, or
+# garment reading, so the under-18 rule could not fire on it. A request cannot
+# lower this.
+MIN_SHORT_SIDE = 512
+
+
 class ScanConfig(BaseModel):
     """Tunable parameters for a training-suitability scan."""
 
     # Hard filters
-    min_short_side: int = 512
+    min_short_side: int = Field(MIN_SHORT_SIDE, ge=MIN_SHORT_SIDE)
     max_aspect_ratio: float = 3.0
     blur_threshold: float = 100.0
 
@@ -721,6 +728,7 @@ class ExportRequest(BaseModel):
     preserve_structure: bool = True
 
     min_score: float = 0.6
+    # Ignored: a rejected image is never kept. Accepted so older clients still validate.
     include_rejected: bool = False
     keep_similar: bool = False
     max_keep: int | None = None
@@ -980,6 +988,7 @@ class SelectRequest(BaseModel):
     """
 
     min_score: float = 0.6
+    # Ignored: a rejected image is never kept. Accepted so older clients still validate.
     include_rejected: bool = False
     keep_similar: bool = False
 

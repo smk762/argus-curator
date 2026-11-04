@@ -764,7 +764,9 @@ def scan_items(
         # the first chunk carrying a row already has the score a viewer
         # unblurs on.
         with_data = {rel for rel, _abs, data in items if data is not None}
-        sendable = {r.rel_path for r in results if r.rel_path in with_data}
+        # A rejected frame has no age, so it stops here: see selection.hard_exclusion.
+        checkable = [r for r in results if r.passed]
+        sendable = {r.rel_path for r in checkable if r.rel_path in with_data}
         nudenet_done: set[str] = set()
         erax_done: set[str] = set()
         sent: set[str] = set()
@@ -820,7 +822,7 @@ def scan_items(
 
         def run_erax() -> bool:
             return erax_mod.check_images(
-                results,
+                checkable,
                 items,
                 progress=erax_progress,
                 on_done=on_erax,
@@ -834,7 +836,7 @@ def scan_items(
                 erax_future = side.submit(run_erax) if fill_in else None
                 try:
                     ran_nudenet = nsfw_mod.check_images(
-                        results,
+                        checkable,
                         items,
                         nsfw_cfg,
                         progress=(lambda phase_done, phase_total: emit("nsfw", phase_done, phase_total))
@@ -941,9 +943,9 @@ def scan_items(
             guard_batch.clear()
 
     try:
-        # A dropped image is not judged; other rejects are, since a blurry explicit image is still explicit.
+        # A rejected image is not judged, a prefilter drop included.
         ran["guard"] = guard_mod.check_images(
-            [r for r in results if not prefilter_mod.is_prefiltered(r)],
+            [r for r in results if r.passed],
             items,
             guard_cfg,
             progress=(lambda phase_done, phase_total: emit("guard", phase_done, phase_total)) if progress else None,

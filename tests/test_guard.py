@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from argus_curator import guard, guard_context
 from argus_curator.export import write_report
 from argus_curator.models import (
+    MIN_SHORT_SIDE,
     ExportRequest,
     FaceAttributes,
     FaceConfig,
@@ -551,15 +552,15 @@ def test_required_check_without_url_fails() -> None:
 
 def test_scan_runs_singguard_when_configured(singguard: type[_SingGuard]) -> None:
     items = [("a.png", "/d/a", _png(20, (600, 600))), ("b.png", "/d/b", _png(10, (600, 600)))]
-    summary = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig())
+    summary = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig())
     assert summary.guard_config.enabled is True
     assert {r.rel_path: r.guard.safe for r in summary.results} == {"a.png": False, "b.png": True}
 
-    adult = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), guard_cfg=GuardConfig(policy="adult"))
+    adult = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), guard_cfg=GuardConfig(policy="adult"))
     assert adult.guard_config.policy == "adult"  # the summary says which policy judged it
     assert {r.guard.policy for r in adult.results} == {"adult"}
 
-    opted_out = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), guard_cfg=GuardConfig(enabled=False))
+    opted_out = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), guard_cfg=GuardConfig(enabled=False))
     assert opted_out.guard_config.enabled is False
     assert all(r.guard is None for r in opted_out.results)
 
@@ -663,7 +664,7 @@ def test_guard_policies_on_a_scan_without_variants_read_the_official_verdict() -
 def test_guard_policies_the_scan_did_not_run_are_a_problem() -> None:
     base = {
         "scan_id": "s", "folder": "/d", "target_profile": TargetProfile().model_dump(),
-        "config": ScanConfig().model_dump(), "faces_config": FaceConfig().model_dump(),
+        "config": ScanConfig(blur_threshold=0.0).model_dump(), "faces_config": FaceConfig().model_dump(),
         "total": 0, "passed": 0, "rejected": 0, "duplicates": 0, "similar_clusters": 0,
     }  # fmt: skip
     ran = ScanSummary.model_validate(
@@ -678,7 +679,7 @@ def test_guard_policies_the_scan_did_not_run_are_a_problem() -> None:
 def test_filters_on_a_scan_without_singguard_are_a_problem() -> None:
     base = {
         "scan_id": "s", "folder": "/d", "target_profile": TargetProfile().model_dump(),
-        "config": ScanConfig().model_dump(), "faces_config": FaceConfig().model_dump(),
+        "config": ScanConfig(blur_threshold=0.0).model_dump(), "faces_config": FaceConfig().model_dump(),
         "total": 0, "passed": 0, "rejected": 0, "duplicates": 0, "similar_clusters": 0,
     }  # fmt: skip
     legacy = ScanSummary.model_validate(base)  # cached before SingGuard existed
@@ -759,3 +760,19 @@ def test_other_failures_and_plain_modes_never_fall_back() -> None:
     assert guard.FallbackClient("http://guard:9150", 5.0, "fast-slow", None).fallback is None
     verdict = GuardResult(safe=True, thinking="slow")  # a server that says which mode it used is believed
     assert _fallback([GuardCheckFailed("HTTP 400")], [verdict]).check(b"x").thinking == "slow"
+
+
+def test_a_rejected_frame_is_not_judged_or_kept() -> None:
+    from argus_curator.selection import decide_selection, hard_exclusion
+
+    small = ImageResult(rel_path="s.png", abs_path="/d/s", score=0.99, reject_reason="resolution too low (333px short side)")
+    assert hard_exclusion(small) == small.reject_reason
+    selected, reasons = decide_selection([small], ExportRequest(dest="/out", min_score=0.0, include_rejected=True), 0.0)
+    assert selected == [] and reasons["s.png"] == small.reject_reason
+
+
+def test_min_short_side_has_a_floor() -> None:
+    assert ScanConfig().min_short_side == MIN_SHORT_SIDE
+    assert ScanConfig(min_short_side=1024).min_short_side == 1024
+    with pytest.raises(ValidationError):
+        ScanConfig(min_short_side=MIN_SHORT_SIDE - 1)

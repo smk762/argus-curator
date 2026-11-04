@@ -103,9 +103,8 @@ def check_all(
     *store* replaces the ``setattr`` when the result goes somewhere else;
     ``field`` still names the check in logs.
 
-    Every image is checked, including ones that failed the quality filters: a
-    blurry explicit image is still explicit, and ``include_rejected`` exports
-    them. An image whose check fails keeps ``None``, which the filters treat as
+    Every image in *results* is checked; the scanner leaves rejected frames
+    out. An image whose check fails keeps ``None``, which the filters treat as
     a reason to exclude it. After ``MAX_FAILURES_WITHOUT_SUCCESS`` failures with
     no success the server is taken to be down and the images not yet sent stay
     unchecked, rather than each waiting out its timeout.

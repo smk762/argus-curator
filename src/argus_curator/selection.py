@@ -13,11 +13,9 @@ import imagehash
 from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS, rule_matches
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
-from argus_curator.crops import is_crop_reject
 from argus_curator.garments import outfit, outfit_similarity
 from argus_curator.models import ExportRequest, FaceAttributes, GuardResult, ImageResult, ScanSummary
 from argus_curator.nsfw import exposed_score, is_exposed
-from argus_curator.prefilter import is_prefiltered
 
 # A MiVOLO age under this, together with any reported exposed detection, is never kept.
 MINOR_AGE_YEARS = 18.0
@@ -362,14 +360,15 @@ def garment_floor_problem(req: ExportRequest, recorded_from: float) -> str | Non
 def hard_exclusion(result: ImageResult) -> str | None:
     """Why no request can keep *result* (a named selection included), or ``None``.
 
-    An under-18 face with a reported exposed score first, then an image the scan
-    prefilter dropped, then one whose crop could not be applied (both by their
-    own ``reject_reason``): exporting that one would ship the watermark.
+    An under-18 face with a reported exposed score first, then any rejected
+    image, by its own ``reject_reason``. A rejected frame gets no age reading,
+    so the under-18 rule cannot speak for it; that covers a prefilter drop and
+    a crop that could not be applied too.
     """
     if minor_exposed(result):
         return "minor-exposed"
-    if is_prefiltered(result) or is_crop_reject(result):
-        return result.reject_reason
+    if not result.passed:
+        return result.reject_reason or "rejected"
     return None
 
 
@@ -385,9 +384,8 @@ def decide_selection(
     SingGuard filters, then an optional diversity cap.
 
     An under-18 face with a reported exposed score is rejected first, whatever
-    the request asked to keep. An image the scan prefilter dropped comes next:
-    it is never kept, ``include_rejected`` notwithstanding, and its keep reason
-    is its own ``reject_reason`` (``prefilter:nsfw`` and so on).
+    the request asked to keep. Any rejected image comes next: it is never kept,
+    and its keep reason is its own ``reject_reason`` (``prefilter:nsfw`` and so on).
     """
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
@@ -399,8 +397,6 @@ def decide_selection(
             keep_reason[r.rel_path] = hard
         elif r.score < req.min_score:
             keep_reason[r.rel_path] = "below-score"
-        elif not r.passed and not req.include_rejected:
-            keep_reason[r.rel_path] = r.reject_reason or "rejected"
         elif r.is_duplicate and not req.keep_similar:
             keep_reason[r.rel_path] = f"similar-to:{r.duplicate_of}"
         elif face_filter is not None and r.primary_face_cluster not in face_filter:

@@ -2255,6 +2255,7 @@
         },
         "min_short_side": {
           "default": 512,
+          "minimum": 512,
           "title": "Min Short Side",
           "type": "integer"
         },

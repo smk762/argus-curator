@@ -284,8 +284,9 @@ def test_scan_drops_before_scenes_garments_and_singguard(
         assert by[rel].scene is None and by[rel].garments is None
     # SingGuard judged the kept image and the two hard rejects, never the dropped ones.
     assert by[_EXPOSED].guard is None and by[_FACELESS].guard is None
-    assert all(by[rel].guard is not None for rel in (_KEPT, "personB/blurry.png", "personB/tiny.png"))
-    assert len(singguard.seen) == 3
+    assert by[_KEPT].guard is not None
+    assert all(by[rel].guard is None for rel in ("personB/blurry.png", "personB/tiny.png"))  # rejects stop too
+    assert len(singguard.seen) == 1
     # The near-duplicate pair no longer pairs: dup.png is out of the passing set.
     assert not by[_KEPT].is_duplicate and not by[_EXPOSED].is_duplicate and summary.duplicates == 0
 
@@ -325,10 +326,10 @@ def test_singguard_totals_leave_out_dropped_images(
     by = {r.rel_path: r for r in summary.results}
     assert by[_EXPOSED].guard is None and by[_EXPOSED].guard_variants is None
     assert set(by[_KEPT].guard_variants) == {"default", "adult"}
-    # The kept image and two hard rejects under two policies; the dropped ones never count.
-    assert guard_progress[-1] == (6, 6) and len(singguard.seen) == 6
+    # The kept image under two policies; rejects and drops never count.
+    assert guard_progress[-1] == (2, 2) and len(singguard.seen) == 2
     guard_chunks = [c for c in chunks if c["phase"] == "guard"]
-    assert {c["total"] for c in guard_chunks} == {6}
+    assert {c["total"] for c in guard_chunks} == {2}
     assert _EXPOSED not in {row["rel_path"] for c in guard_chunks for row in c["results"]}
 
 
@@ -404,7 +405,7 @@ def test_deleting_images_does_not_count_dropped_ones_back_in() -> None:
         scan_id="s",
         folder="/d",
         target_profile=TargetProfile(),
-        config=ScanConfig(),
+        config=ScanConfig(blur_threshold=0.0),
         faces_config=FaceConfig(),
         total=3,
         passed=2,
@@ -448,7 +449,7 @@ def test_prefilter_config_round_trips_on_the_summary() -> None:
         scan_id="s",
         folder="/d",
         target_profile=TargetProfile(),
-        config=ScanConfig(),
+        config=ScanConfig(blur_threshold=0.0),
         faces_config=FaceConfig(),
         prefilter_config=PrefilterConfig(drop_nsfw=True, drop_no_age=True),
         total=0,
@@ -474,5 +475,6 @@ def test_decide_selection_never_keeps_a_prefiltered_row() -> None:
     kept = ImageResult(rel_path="k.png", abs_path="/d/k", score=0.99, passed=True)
     req = ExportRequest(dest="/out", min_score=0.0, include_rejected=True, keep_similar=True)
     selected, reasons = decide_selection([dropped, blurry, kept], req, 0.0)
-    assert [r.rel_path for r in selected] == ["b.png", "k.png"]
+    assert [r.rel_path for r in selected] == ["k.png"]
+    assert reasons["b.png"] == "blurry"
     assert reasons["d.png"] == "prefilter:no-age"

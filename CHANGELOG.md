@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A rejected frame stops at rejection.** It gets no face, age, scene or
+  garment reading, so the under-18 rule could not fire on it; NudeNet, EraX and
+  SingGuard now skip it too, and no export keeps it, by selection or otherwise.
+  `include_rejected` is ignored and `--include-rejected` is gone. Rejected rows
+  stay in `results` with their `reject_reason`, so a scan still says what it
+  left out, with `nsfw` unset: viewers must keep them hidden or blurred.
+- `ScanConfig.min_short_side` cannot go below 512 (`MIN_SHORT_SIDE`).
 - A scan that cropped any image exports only by `mode: "copy"` (HTTP 400, CLI
   exit 1, `ValueError` from `export_selection`).
 - Under `ARGUS_CURATOR_SINGGUARD_THINKING=cascade`, every frame with an

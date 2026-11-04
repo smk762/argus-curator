@@ -624,10 +624,11 @@ The rules run once, right after identities (so a set age counts), on the
 images that passed the hard filters. A dropped image stays in the results as
 a reject with `reject_reason` `prefilter:nsfw`, `prefilter:no-face` or
 `prefilter:no-age` (the first that applies, in that order); hard rejects keep
-their own reason and are still judged by SingGuard. Unlike a hard reject, a
-dropped image is never kept or exported: not with `include_rejected`
-(`--include-rejected`), whatever its score, and not when named in an export's
-`selection`. Its keep reason (`/scan/{id}/select`, the CSV report) is its
+their own reason. No rejected image, dropped or hard, is sent to NudeNet, EraX
+or SingGuard, or kept or exported, whatever its score, and not when named in an
+export's `selection`; `include_rejected` is ignored. A rejected frame gets no
+face or age reading, so the under-18 rule could not speak for it.
+`min_short_side` cannot go below 512 for the same reason. Its keep reason (`/scan/{id}/select`, the CSV report) is its
 `reject_reason`, e.g. `prefilter:nsfw`. A dropped image no longer counts
 toward its identity: `face_clusters[].size` and the representative leave it
 out, an identity with only dropped images is removed from `face_clusters`, and

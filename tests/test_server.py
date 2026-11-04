@@ -222,18 +222,18 @@ def test_prefiltered_images_are_never_kept_or_exported(contained: tuple[TestClie
     loose = {"min_score": 0.0, "include_rejected": True, "keep_similar": True}
     rows = {r["rel_path"]: r["keep_reason"] for r in client.post(f"/scan/{scan_id}/select", json=loose).json()["rows"]}
     assert rows["personA/s2/img.png"] == "prefilter:nsfw"
-    assert rows["personB/blurry.png"] == ""  # an ordinary hard reject is still kept under include_rejected
+    assert rows["personB/blurry.png"].startswith("blur")  # include_rejected keeps no reject
 
     exp = client.post("/export", json={"scan_id": scan_id, "dest": "out", "mode": "copy", **loose}).json()
     assert "personA/s2/img.png" not in exp["selected_rel_paths"]
     assert "personA/s2/img.png" not in exp["exported_paths"]
-    assert "personB/blurry.png" in exp["exported_paths"]
+    assert "personB/blurry.png" not in exp["exported_paths"]
 
     named = client.post(
         "/export",
         json={"scan_id": scan_id, "dest": "named", "selection": ["personA/s2/img.png", "personB/blurry.png"]},
     ).json()
-    assert list(named["exported_paths"]) == ["personB/blurry.png"]
+    assert list(named["exported_paths"]) == []
     assert not (exports / "named" / "personA").exists()
 
 
@@ -1144,8 +1144,9 @@ def test_select_filters_without_writing_the_export_root(contained: tuple[TestCli
     assert loose.status_code == 200
     loose_body = loose.json()
     assert loose_body["total"] == scan["total"]
-    assert loose_body["kept"] == loose_body["total"]
-    assert all(row["keep_reason"] == "" for row in loose_body["rows"])
+    rejected = {r["rel_path"] for r in scan["results"] if not r["passed"]}
+    assert loose_body["kept"] == loose_body["total"] - len(rejected)
+    assert {row["rel_path"] for row in loose_body["rows"] if row["keep_reason"]} == rejected
     assert {row["rel_path"] for row in loose_body["rows"]} == {r["rel_path"] for r in scan["results"]}
 
     tight = client.post(f"/scan/{scan_id}/select", json={"min_score": 0.99})
