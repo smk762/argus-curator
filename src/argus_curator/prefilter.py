@@ -3,8 +3,9 @@
 Applied once, right after the identities phase (so a set age counts), to the
 images that still pass. A dropped image becomes a reject with a
 ``prefilter:<rule>`` reason and stays in the results; scenes and garments
-skip it like any reject, and SingGuard skips it too (other rejects it still
-judges), which is where the time goes. Unlike other rejects, a dropped image
+skip it like any reject, the scanner keeps it from SingGuard too (other
+rejects are still judged), which is where the time goes, and it stops counting
+toward its identity. Unlike other rejects, a dropped image
 is never kept or exported, ``include_rejected`` or a named selection
 notwithstanding (see :func:`selection.decide_selection`).
 """

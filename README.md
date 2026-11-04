@@ -624,8 +624,13 @@ their own reason and are still judged by SingGuard. Unlike a hard reject, a
 dropped image is never kept or exported: not with `include_rejected`
 (`--include-rejected`), whatever its score, and not when named in an export's
 `selection`. Its keep reason (`/scan/{id}/select`, the CSV report) is its
-`reject_reason`, e.g. `prefilter:nsfw`. A streaming scan sends the
-dropped images in a `prefilter` chunk. A rule without the check it needs
+`reject_reason`, e.g. `prefilter:nsfw`. A dropped image no longer counts
+toward its identity: `face_clusters[].size` and the representative leave it
+out, an identity with only dropped images is removed from `face_clusters`, and
+its rows and `set_age.cluster_id` keep naming it. The pooled attributes and the
+set age were read before the drop and still include it. A streaming scan sends
+the dropped images in a `prefilter` chunk, with the recounted `face_clusters`.
+A rule without the check it needs
 (`drop_nsfw` with NudeNet off or no `ARGUS_CURATOR_NUDENET_URL`) is refused
 with HTTP 400 (CLI exit 2). The summary records the rules as
 `prefilter_config`, and `/health` reports `prefilter`.
@@ -765,12 +770,13 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 The `*/stream` variants emit `event: progress` frames (`{phase, done, total}`)
 while the work runs, then a single `event: complete` frame carrying the same
 payload the non-streaming endpoint returns (or `event: error`). A scan runs
-`scoring` → `faces` and `nsfw` together → `identities` → `scenes` →
-`garments` → `guard` → `clustering`: ages and the exposed score come first, so
+`scoring` → `faces` and `nsfw` together → `identities` → `prefilter` →
+`scenes` → `garments` → `guard` → `clustering`: ages and the exposed score come first, so
 a viewer can lift a blur as soon as both are known, and their progress events
 interleave while both run; identities follow at once, so a set age is known
-before the guard pass reads it as context. Scan progress and `event: chunk` frames carry
-`pending_checks`, the checks among `faces`, `nsfw` and `guard` whose results
+before the guard pass reads it as context. Every `event: chunk` frame carries
+the current `face_clusters`, empty until the identities are read. Scan progress
+and `event: chunk` frames carry `pending_checks`, the checks among `faces`, `nsfw` and `guard` whose results
 have not all landed yet; a check that could not run is not listed.
 
 A scan stops cooperatively: `POST /scan/{id}/cancel` raises a flag the

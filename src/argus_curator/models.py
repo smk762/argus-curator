@@ -433,6 +433,7 @@ class SetAge(BaseModel):
     """
 
     years: float
+    # Read before the prefilter: an identity it emptied is gone from face_clusters but still named here.
     cluster_id: str
     faces: int
     share: float
@@ -636,10 +637,11 @@ class FaceCluster(BaseModel):
     """A clustered identity across the scanned dataset."""
 
     cluster_id: str
+    # Size and representative leave out images the prefilter dropped, which can never be kept.
     size: int
     representative_rel_path: str
     representative_bbox: list[float] | None = None
-    # Pooled over every member face: per-head probabilities are averaged before
+    # Pooled over every member face, dropped images included: per-head probabilities are averaged before
     # taking the top label, so one odd frame cannot flip an identity's label.
     attributes: FaceAttributes | None = None
 
