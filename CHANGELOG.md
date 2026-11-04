@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A scan that cropped any image exports only by `mode: "copy"` (HTTP 400, CLI
   exit 1, `ValueError` from `export_selection`).
+- Under `ARGUS_CURATOR_SINGGUARD_THINKING=cascade`, every frame with an
+  exposed reading of 0.2 or more (NudeNet, or EraX) is judged in `slow`,
+  whatever its age; before, only the under-18 + exposure pairing skipped the
+  fast screen. A fast pass is final, so exposed frames were passed without
+  reasoning. Slower scans on nude sets; frames with no exposed reading keep
+  the fast screen.
 
 ## [0.13.0] - 2026-11-03
 

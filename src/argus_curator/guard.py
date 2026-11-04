@@ -48,13 +48,12 @@ from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import POLICIES
 from argus_cortex.moderation.policies import policy_text as cortex_policy_text
 
-from argus_curator.guard_context import CONTEXT_KINDS, body_only_ages, image_context, mivolo_ages
+from argus_curator.guard_context import CONTEXT_KINDS, image_context
 from argus_curator.models import GuardConfig, GuardPolicy, GuardResult, ImageResult
-from argus_curator.nsfw import exposed_score
+from argus_curator.nsfw import exposed_reading
 from argus_curator.prefilter import is_prefiltered
 from argus_curator.remote import check_all, env_set, env_value, float_env
 from argus_curator.runtime import ModelUnavailable
-from argus_curator.selection import minor_exposed
 
 URL_ENV = "ARGUS_CURATOR_SINGGUARD_URL"
 TIMEOUT_ENV = "ARGUS_CURATOR_SINGGUARD_TIMEOUT"
@@ -231,26 +230,21 @@ def client(name: GuardPolicy = "default", *, mode: str | None = None) -> Fallbac
 
 
 def force_slow(result: ImageResult, mode: str) -> bool:
-    """Under cascade, skip the fast screen when a young age shares the frame with exposure.
+    """Under cascade, skip the fast screen for every frame NudeNet (or EraX) reads as exposed.
 
-    Fast is only there to save work. A MiVOLO age under 18 with an exposed
-    NudeNet score of at least 0.2 already holds and deletes the frame, so it
-    is cheap to send it to slow. Measured faces and body-only ages go through
-    :func:`minor_exposed`. A faceless frame that took the set's age uses the
-    same pairing.
+    Fast is only there to save work, and a fast pass is final, so a frame it
+    passes is never reasoned about. On exposed frames that is where the misses
+    were: a Safe bullet for adult content leaned the fast screen towards pass
+    for gore and unclear ages too (eval 2026-11-03). Exposure of 0.2 or more,
+    the lowest score NudeNet reports, goes straight to slow. That includes the
+    under-18 pairing (:func:`minor_exposed`) and a faceless frame with a young
+    set age, which both need the same exposure. Frames with no exposed
+    reading keep the fast screen.
     """
     if mode != "cascade":
         return False
-    if minor_exposed(result):
-        return True
-    if mivolo_ages(result) or body_only_ages(result):
-        return False
-    if result.set_age is None or result.set_age.years >= 18:
-        return False
-    if result.nsfw is None:
-        return False
-    return exposed_score(result.nsfw.labels) >= MIN_REPORTED_SCORE
-
+    reading = exposed_reading(result)
+    return reading is not None and reading >= MIN_REPORTED_SCORE
 
 def check_images(
     results: list[ImageResult],
