@@ -677,7 +677,7 @@ box; `width`, `height` and every face and person box are of the cropped frame.
 A box that leaves the frame, is empty, or a sidecar that cannot be read makes
 the image a reject (`crop:invalid`, `crop:unreadable`, `crop:failed`) that is
 never kept or exported, as with the prefilter: it would otherwise ship with
-the watermark. NudeNet and SingGuard still look at what is on disk for it.
+the watermark. Like any reject, it skips NudeNet, EraX and SingGuard.
 
 Export writes each cropped image cropped, so a scan that cropped anything
 exports only by `mode: "copy"` (HTTP 400 otherwise; a link or a move would
@@ -685,7 +685,11 @@ hand on the source). `ExportResult.cropped` counts them and each manifest row
 carries its `crop` (manifest 2.2). The `.crop.json` sidecar is not carried.
 With `carry_sidecars` and without `write_xmp`, a carried `.xmp` keeps face
 regions drawn on the uncropped frame; with `write_xmp` they are replaced by
-the cropped frame's.
+the cropped frame's. `--xmp-sources` writes no regions for a cropped image, as
+its sidecar describes the uncropped original.
+
+`/thumb?scan_id=` shows the cropped frame, which the row's boxes fit. `/image`
+stays the original file: offset boxes by `crop.left` and `crop.top` to draw on it.
 
 #### Finding watermarks
 
@@ -766,7 +770,7 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
-| `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount |
+| `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount, of the cropped frame when that scan cropped it |
 | `GET  /image?path=<rel>&scan_id=<id>` | Original image bytes, same containment as `/thumb` |
 | `POST /scan/{scan_id}/select` | Dry-run of the export filter → `{total, kept, rows: [{rel_path, abs_path, keep_reason}]}`. Writes nothing |
 | `POST /scan/{scan_id}/delete` | Delete source files in the scan (`rel_path` or `rel_paths`, all or nothing: a path not in the scan is a 404, a running scan a 409) and drop their rows → `{rel_paths, total}`. Any image needs `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1` (else 403 unless under-18 exposed); `/health` reports `delete_any` |

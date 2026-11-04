@@ -44,7 +44,7 @@ from argus_cortex.gpu import GpuLeaseTimeout
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from argus_curator import __version__, export, scanner
+from argus_curator import __version__, crops, export, scanner
 from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
@@ -1013,10 +1013,17 @@ def create_app(
         path: str = Query(..., description="image path relative to the scan/mount root"),
         scan_id: str | None = Query(None, description="resolve relative to this scan's folder"),
     ) -> Response:
-        target = _image_file(path, scan_id)
+        summary = store.load(scan_id) if scan_id else None
+        if scan_id and summary is None:
+            raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
+        target = _image_file(path, scan_id, _scan_root_or_400(summary) if summary else None)
+        # A row's face boxes are of the frame the scan saw, so a viewer's thumbnail has to be that frame too.
+        box = next((r.crop for r in summary.results if r.rel_path == path), None) if summary else None
 
         def _render() -> bytes:
             with Image.open(target) as img:
+                if box is not None:
+                    img = crops.crop_image(img, box)
                 img = img.convert("RGB")
                 img.thumbnail((THUMB_MAX, THUMB_MAX))
                 buf = io.BytesIO()

@@ -116,7 +116,8 @@ def detect_all(
     """``(hits, displayed size)`` for each of *items* (rel_path → source bytes), or why its check failed.
 
     Each image is made upright in the worker that sends it, so a scan never
-    holds a second copy of every image.
+    holds a second copy of every image. A file that will not open is reported
+    like a failed check, but says nothing about the server.
 
     *cancelled* is called after each image and may raise to stop the pass.
     After ``MAX_FAILURES_WITHOUT_SUCCESS`` failures with no success the server
@@ -126,11 +127,11 @@ def detect_all(
     if det is None:
         raise WatermarkCheckFailed(f"{URL_ENV} is not set")
 
-    def one(data: bytes) -> Checked:
+    def one(data: bytes) -> Checked | str:
         try:
             sent, size = upright(data)
         except Exception as exc:
-            raise WatermarkCheckFailed(f"cannot open: {exc}") from exc
+            return f"cannot open: {exc}"
         return det.check(sent), size
 
     out: dict[str, Checked | str] = {}
@@ -143,8 +144,10 @@ def detect_all(
             for fut in as_completed(futures):
                 rel = futures[fut]
                 try:
-                    out[rel] = fut.result()
-                    succeeded += 1
+                    checked = fut.result()
+                    out[rel] = checked
+                    if not isinstance(checked, str):
+                        succeeded += 1
                 except CancelledError:
                     out[rel] = "the watermark detector is unreachable"
                 except Exception as exc:

@@ -178,3 +178,69 @@ def test_server_scans_with_crops_and_refuses_a_symlink_export(folder: Path, tmp_
         resp = client.post(endpoint, json={"scan_id": body["scan_id"], "dest": "out", "mode": "symlink"})
         assert resp.status_code == 400, endpoint
         assert 'mode "copy"' in resp.json()["detail"]
+
+
+def test_export_onto_the_source_is_refused_not_cropped_in_place(folder: Path) -> None:
+    before = _sha(folder / "marked.png")
+    summary = _scan(folder, CropConfig(enabled=True))
+    result = export_selection(
+        summary, ExportRequest(scan_id="s", dest=str(folder), min_score=0.0, write_manifest=False)
+    )
+    assert "marked.png" not in result.exported_paths
+    assert _sha(folder / "marked.png") == before
+
+
+def test_lossless_webp_stays_lossless_with_or_without_extended_chunks() -> None:
+    img = _noise(64, 64)
+    for extra in ({}, {"icc_profile": b"\0" * 128}):
+        buf = io.BytesIO()
+        img.save(buf, "WEBP", lossless=True, **extra)
+        out = crops.crop_bytes(buf.getvalue(), CropBox(left=0, top=0, right=32, bottom=32))
+        assert np.array_equal(np.array(Image.open(io.BytesIO(out)).convert("RGB")), np.array(img.crop((0, 0, 32, 32))))
+
+
+def test_lossy_webp_stays_lossy() -> None:
+    buf = io.BytesIO()
+    _noise(64, 64).save(buf, "WEBP", quality=80)
+    out = crops.crop_bytes(buf.getvalue(), CropBox(left=0, top=0, right=32, bottom=32))
+    assert b"VP8L" not in out
+
+
+def test_an_mpo_is_written_as_a_jpeg_at_crop_quality() -> None:
+    img = _noise(256, 256)
+    mpo, ref = io.BytesIO(), io.BytesIO()
+    img.save(mpo, "MPO", save_all=True, append_images=[img], quality=98, subsampling=0)
+    img.crop((0, 0, 200, 200)).save(ref, "JPEG", quality=crops.QUALITY, subsampling=0)
+    out = crops.crop_bytes(mpo.getvalue(), CropBox(left=0, top=0, right=200, bottom=200))
+    assert Image.open(io.BytesIO(out)).format == "JPEG"
+    assert len(out) == pytest.approx(len(ref.getvalue()), rel=0.02)
+
+
+def test_a_sidecar_that_cannot_be_looked_up_is_an_error_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def too_long(_self: Path) -> bool:
+        raise OSError(36, "File name too long")
+
+    monkeypatch.setattr(Path, "is_file", too_long)
+    with pytest.raises(crops.CropError, match="unreadable"):
+        crops.read_sidecar(tmp_path / "long.jpg")
+
+
+def test_thumb_shows_the_frame_the_scan_saw(folder: Path, tmp_path: Path) -> None:
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache"), source_root=str(folder)))
+    body = client.post(
+        "/scan/folder",
+        json={"folder": "", "faces": {"enabled": False}, "nsfw": {"enabled": False}, "crops": {"enabled": True}},
+    ).json()
+
+    def size(**params: str) -> tuple[int, int]:
+        resp = client.get("/thumb", params={"path": "marked.png", **params})
+        assert resp.status_code == 200
+        return Image.open(io.BytesIO(resp.content)).size
+
+    cropped, plain = size(scan_id=body["scan_id"]), size()
+    marked = next(r for r in body["results"] if r["rel_path"] == "marked.png")
+    assert cropped[0] / cropped[1] == pytest.approx(marked["width"] / marked["height"], rel=0.01)
+    assert cropped != plain
+    assert client.get("/thumb", params={"path": "marked.png", "scan_id": "nope"}).status_code == 404

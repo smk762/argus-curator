@@ -146,14 +146,16 @@ def _transfer_one(src: Path, dst: Path, mode: str) -> None:
         shutil.copy2(src, dst)
 
 
-def _sidecar_users(selected: list[ImageResult]) -> Counter[Path]:
-    """How many of the *selected* images each sidecar path belongs to.
+def _sidecar_users(results: list[ImageResult]) -> Counter[Path]:
+    """How many of the scan's images each sidecar path belongs to.
 
-    An image already gone from the source is not counted: it will never take
-    its sidecar, and counting it would strand the original in the source folder.
+    An image the export leaves behind counts, so a move does not take the
+    sidecar it shares with a keeper. An image already gone from the source does
+    not: it will never take its sidecar, and counting it would strand the
+    original in the source folder.
     """
     users: Counter[Path] = Counter()
-    for r in selected:
+    for r in results:
         src = Path(r.abs_path)
         if src.exists():
             users.update({name(src) for name in _SIDECAR_NAMES})
@@ -171,10 +173,11 @@ def _carry_sidecars(src: Path, dst: Path, mode: str, rel_path: str, waiting: Cou
     land in the source library. Called only after the image landed; a sidecar that fails is
     logged and counted, never undoing the image.
 
-    *waiting* counts the images still to receive each sidecar (see
+    *waiting* counts the images that still need each sidecar where it is (see
     :func:`_sidecar_users`). Under ``mode="move"`` a sidecar two images share
     (``photo.jpg`` and ``photo.png`` both use ``photo.txt``) is copied until
-    only this image is waiting, so every image gets it, as under copy. A failed
+    only this image is waiting, so every image gets it, as under copy, and an
+    image that is not exported keeps it. A failed
     transfer never counts down: an image that could not leave, or a sidecar that
     did not reach it, keeps the source sidecar where it is.
     """
@@ -392,23 +395,26 @@ def _region(face: FaceDetection, width: int, height: int, names: dict[str, str])
     )
 
 
-def xmp_data(r: ImageResult, face_names: dict[str, str] | None = None) -> XmpData | None:
+def xmp_data(r: ImageResult, face_names: dict[str, str] | None = None, *, regions: bool = True) -> XmpData | None:
     """What curator records about *r* in a sidecar, or ``None`` when it knows nothing worth writing.
+
+    Face regions are fractions of the frame curator scanned; *regions* False
+    leaves them out for a file that is not that frame.
 
     A field curator has nothing for stays ``None``, so merging leaves whatever
     the sidecar already holds there. Age estimates are never written: a MiVOLO
     guess in a photo library would read as a fact.
     """
     names = face_names or {}
-    regions = None
-    if r.faces and r.width > 0 and r.height > 0:
-        regions = XmpRegions(
+    face_regions = None
+    if regions and r.faces and r.width > 0 and r.height > 0:
+        face_regions = XmpRegions(
             width=r.width, height=r.height, regions=[_region(face, r.width, r.height, names) for face in r.faces]
         )
     persons = sorted({names[f.cluster_id] for f in r.faces if f.cluster_id in names})
-    if regions is None and not persons and r.content_rating is None:
+    if face_regions is None and not persons and r.content_rating is None:
         return None
-    return XmpData(regions=regions, persons=persons or None, content_rating=r.content_rating)
+    return XmpData(regions=face_regions, persons=persons or None, content_rating=r.content_rating)
 
 
 def _source_sidecar(src: Path) -> Path | None:
@@ -455,11 +461,12 @@ def write_source_sidecars(results: list[ImageResult], face_names: dict[str, str]
     (``--xmp-sources``); the server's write paths stay under the export root.
     Merging keeps every property curator does not set. Regions are replaced as
     a whole, so face regions drawn by hand in a photo app are lost on an image
-    with detected faces.
+    with detected faces. A cropped image gets no regions: curator's are of the
+    cropped frame, and this sidecar describes the uncropped original.
     """
     written = 0
     for r in results:
-        data = xmp_data(r, face_names)
+        data = xmp_data(r, face_names, regions=r.crop is None)
         if data is None:
             continue
         try:
@@ -544,7 +551,7 @@ def export_selection(
     sidecars_failed = 0
     cropped = 0
     transferred: list[ImageResult] = []
-    waiting = _sidecar_users(selected) if req.carry_sidecars and req.mode == "move" else Counter()
+    waiting = _sidecar_users(results) if req.carry_sidecars and req.mode == "move" else Counter()
     for i, r in enumerate(selected):
         src = Path(r.abs_path)
         if not src.exists():
