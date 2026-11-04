@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-04
+
+### Added
+
+- **Crops.** `ScanRequest.crops` (`CropConfig`; CLI `--crops`) crops a boxed
+  image in memory right after it is read, so every check judges the cropped
+  frame, and export writes it cropped; the source is never changed. A box
+  (`CropBox`, displayed pixels after EXIF orientation) comes from a
+  `<image>.crop.json` sidecar or inline by `rel_path` (inline wins). A box
+  that cannot be applied makes the image a `crop:invalid` / `crop:unreadable`
+  / `crop:failed` reject that no export keeps. `ImageResult.crop`,
+  `ScanSummary.crop_config`, `ExportResult.cropped`; `GET /health` reports
+  `crops: true`, and `GET /thumb?scan_id=` shows the cropped frame.
+- **Watermark detection.** `CropConfig.detect` (CLI `--detect-watermarks`,
+  `--watermark-url`, `--max-cut`, `--keep-overlays`) sends each frame without
+  a box by hand, upright, to a NudeNet-shaped detector at
+  `ARGUS_CURATOR_WATERMARK_URL`, and cuts its hits (`min_conf` 0.4) away along
+  the frame's edges, at most `max_cut` (0.15) of a side per edge. A hit no
+  edge cut removes is a `crop:overlay` reject (`reject_overlay`, default on);
+  an image the detector could not check is `crop:unchecked`.
+  `ImageResult.watermarks` and `crop_source`; scan phase `watermarks`;
+  `/detectors` reports `watermark`, `/health` `watermark_detect`.
+- **Manifest 2.2.** Each row carries `crop`, the box baked into the exported
+  file, or `null`.
+- **`guard_eval.py` measures what a scan does.** `--candidate NAME=PARENT:FILE`
+  tries a policy wording from a file, scored as its parent policy. `--scan-json`
+  with `--context` sends each image case with the context and crop of its row
+  in a saved scan, and a `--thinking cascade` run routes it as a scan would.
+  Rows and the table record the pass that decided each verdict.
+
+### Changed
+
+- **A rejected frame stops at rejection.** It gets no face, age, scene or
+  garment reading, so the under-18 rule could not fire on it; NudeNet, EraX and
+  SingGuard now skip it too, and no export keeps it, by selection or otherwise.
+  `include_rejected` is ignored and `--include-rejected` is gone. Rejected rows
+  stay in `results` with their `reject_reason`, so a scan still says what it
+  left out, with `nsfw` unset (a prefilter drop keeps the score it was dropped
+  on): viewers must keep them hidden or blurred.
+- `ScanConfig.min_short_side` cannot go below 512 (`MIN_SHORT_SIDE`). A scan
+  cached with a lower value still loads, and reports 512.
+- A scan that cropped any image exports only by `mode: "copy"` (HTTP 400, CLI
+  exit 1, `ValueError` from `export_selection`).
+- Under `ARGUS_CURATOR_SINGGUARD_THINKING=cascade`, every frame with an
+  exposed reading of 0.2 or more (NudeNet, or EraX) is judged in `slow`,
+  whatever its age; before, only the under-18 + exposure pairing skipped the
+  fast screen. A fast pass is final, so exposed frames were passed without
+  reasoning. Slower scans on nude sets; frames with no exposed reading keep
+  the fast screen.
+- Needs `pydantic>=2.7`, for the scan cache's `model_dump_json(context=...)`.
+- `guard.check_images` judges every row it is given; the scanner now leaves out
+  the images the prefilter dropped.
+- Every streamed `chunk` carries `face_clusters`, even when empty.
+
+### Fixed
+
+- **`guard_eval.py --images` reads subfolders.** Images sorted into
+  `<dir>/<expect>/<category>/` were skipped with no warning; case ids now carry
+  the path under the expect folder, and a symlinked subfolder, which is not
+  followed, is named on stderr. An image that disappears during a run is an
+  error row, also named on stderr, instead of a crash. `--out` is written as
+  verdicts land, so a run that dies keeps its results.
+- An image the prefilter dropped no longer counts toward its identity:
+  `face_clusters[].size` and the representative leave it out, also after a
+  delete, and an identity with only dropped images is removed from
+  `face_clusters`. Its rows and `set_age.cluster_id` keep naming that identity;
+  pooled attributes and the set age still include dropped faces.
+- **Identities and the set age follow a delete.** Removing images (a delete, or
+  a move export) now pools `face_clusters[].attributes` again and re-reads
+  `set_age` and `set_age_skipped` from the faces left. Each face keeps its raw
+  readings in the scan's own cache file, so a deleted image or a purged scan
+  leaves nothing behind. They are not part of the API or the wire schema. A
+  scan cached before this keeps its pooled attributes; its set age is still
+  re-read.
+- **Shared sidecars under move.** Images that share a sidecar (`a.jpg`, `a.png`
+  and `a.txt`) now all get it: it is copied to each but the last, which takes
+  the original. If one of them fails to transfer, the original stays.
+- **`run_stats.json` can no longer overwrite a carried sidecar.** With
+  `carry_sidecars`, an image at the destination root with the stem `run_stats`,
+  `manifest` or `curation_report` gets a hash suffix, even with
+  `preserve_structure`; `exported_path` has the real name.
+- **Failed move exports.** A server move export that fails after files moved
+  drops their rows from the cached scan, and its error says how many left the
+  source. A scan deleted during a move export is no longer written back.
+
 ## [0.13.0] - 2026-11-03
 
 ### Added
@@ -724,7 +809,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/smk762/argus-curator/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/smk762/argus-curator/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/smk762/argus-curator/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/smk762/argus-curator/compare/v0.11.0...v0.11.1

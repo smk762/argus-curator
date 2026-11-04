@@ -21,7 +21,16 @@ from argus_cortex.moderation import (  # re-exported: part of curator's wire con
 )
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import PolicyName
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    computed_field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 TargetStyle = Literal["photo", "anime"]
 TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
@@ -91,7 +100,9 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # manifest is written. Additive plus a bug fix, so the major stays 2: a consumer
 # that accepts 2.x keeps working, and one that already required exported_path
 # (argus-forge's MAJORS_REQUIRING_EXPORTED_PATH) is unaffected.
-MANIFEST_VERSION = "2.1"
+# 2.2: rows carry crop, the box baked into the exported file (in the source's
+# displayed pixels), or null when the file is the source as it was. Additive.
+MANIFEST_VERSION = "2.2"
 
 # Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
 # written to disk verbatim, so a runaway payload must not fill the export root.
@@ -122,11 +133,20 @@ class TargetProfile(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# The smallest short side a scan accepts, and a floor on ScanConfig.min_short_side.
+# A frame below it is rejected, and a rejected frame gets no face, age, scene, or
+# garment reading, so the under-18 rule could not fire on it. A request cannot
+# lower this.
+MIN_SHORT_SIDE = 512
+
+_INCLUDE_REJECTED_IGNORED = "Ignored: a rejected image is never kept. Accepted so older clients still validate."
+
+
 class ScanConfig(BaseModel):
     """Tunable parameters for a training-suitability scan."""
 
     # Hard filters
-    min_short_side: int = 512
+    min_short_side: int = Field(MIN_SHORT_SIDE, ge=MIN_SHORT_SIDE)
     max_aspect_ratio: float = 3.0
     blur_threshold: float = 100.0
 
@@ -337,6 +357,59 @@ class PrefilterConfig(BaseModel):
     drop_no_age: bool = False
 
 
+class CropBox(BaseModel):
+    """A crop in pixels of the image as displayed: after its EXIF orientation, ``right``/``bottom`` exclusive.
+
+    Recorded beside a source as ``<image>.crop.json`` (``{"left": .., "top": ..,
+    "right": .., "bottom": ..}``) or passed inline in :class:`CropConfig`. A box
+    must lie inside the frame and be non-empty; one that does not makes the
+    image a ``crop:`` reject rather than letting it through uncropped.
+    """
+
+    left: int = Field(ge=0)
+    top: int = Field(ge=0)
+    right: int = Field(gt=0)
+    bottom: int = Field(gt=0)
+
+
+class WatermarkDetection(BaseModel):
+    """One watermark the detector found: ``[x, y, w, h]`` in displayed pixels of the uncropped frame."""
+
+    label: str
+    score: float
+    bbox: list[float]
+
+
+class CropConfig(BaseModel):
+    """Opt-in crops (watermarks, borders) applied to the bytes in memory, never to the source.
+
+    With ``enabled``, an image with a box is cropped once after it is read, and
+    every check (scoring, faces, NudeNet, SingGuard ...) sees the cropped frame;
+    face boxes and sizes are in its pixels. Export writes the cropped image, so
+    a cropped scan exports only by ``mode="copy"``.
+
+    A box is given by hand (``boxes``, keyed by rel_path, wins over a
+    ``<image>.crop.json`` sidecar; ``sidecars`` False reads none) or, with
+    ``detect``, found: every image without a box by hand goes to the watermark
+    detector (``ARGUS_CURATOR_WATERMARK_URL``), and the hits of at least
+    ``min_conf`` are cut away along the frame's edges. Each edge may lose at
+    most ``max_cut`` of the frame's side; ``margin`` (pixels) is cut beyond a
+    hit's edge. A hit that no such cut removes is an overlay: with
+    ``reject_overlay`` the image is a ``crop:overlay`` reject, else it is kept
+    uncropped with its hits recorded. An image the detector could not check is
+    a ``crop:unchecked`` reject. An image with no box is scanned as it is.
+    """
+
+    enabled: bool = False
+    sidecars: bool = True
+    boxes: dict[str, CropBox] = Field(default_factory=dict)
+    detect: bool = False
+    min_conf: float = Field(default=0.4, ge=0.0, le=1.0)
+    max_cut: float = Field(default=0.15, gt=0.0, lt=0.5)
+    margin: int = Field(default=4, ge=0)
+    reject_overlay: bool = True
+
+
 # ---------------------------------------------------------------------------
 # Per-image result
 # ---------------------------------------------------------------------------
@@ -378,9 +451,29 @@ class SetAge(BaseModel):
     """
 
     years: float
+    # Read before the prefilter: an identity it emptied is gone from face_clusters but still named here.
     cluster_id: str
     faces: int
     share: float
+
+
+# Serialization context for the scan cache, the one place FaceDetection.readings is written.
+STORE_CONTEXT = "scan-store"
+
+
+class FaceReadings(BaseModel):
+    """One face's raw model outputs, kept so its identity can be pooled again after a delete.
+
+    They live on the face, so they go with its row and with the scan: nothing
+    outlives a deleted image or a purged scan. ``None`` on a face from a scan
+    cached before readings were kept. Only the scan cache holds them: they are
+    not on the wire (see :data:`STORE_CONTEXT`).
+    """
+
+    # Sized here so a bad cache fails on load, not while pooling after the files are gone.
+    fairface: list[float] | None = Field(None, min_length=18, max_length=18)
+    mivolo_gender: list[float] | None = Field(None, min_length=2, max_length=2)
+    mivolo_age: float | None = None
 
 
 class FaceDetection(BaseModel):
@@ -396,12 +489,21 @@ class FaceDetection(BaseModel):
     pitch: float | None = None
     pose: FacePose | None = None
     attributes: FaceAttributes | None = None
+    readings: FaceReadings | None = Field(default=None, exclude=True)
     # Index into ImageResult.people when FaceConfig.mivolo_body matched this face
     # to a person box; NudeNet detections assigned to that person live there.
     person_index: int | None = None
     # NudeNet classes assigned to this face's box when no person list was recorded.
     nsfw_labels: dict[NudeNetLabel, float] = Field(default_factory=dict)
     exposed_score: float = 0.0
+
+    # No return annotation: one would replace this model's properties in the wire schema.
+    @model_serializer(mode="wrap")
+    def _readings_for_the_store(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):
+        data = handler(self)
+        if info.context == STORE_CONTEXT and self.readings is not None:
+            data["readings"] = self.readings.model_dump(mode=info.mode)
+        return data
 
 
 PeopleCheck = Literal["ok", "detection_failed", "body_ages_failed"]
@@ -555,6 +657,17 @@ class ImageResult(BaseModel):
     # official one included. A missing name means that check failed.
     guard_variants: dict[GuardPolicy, GuardResult] | None = None
 
+    # The crop every check saw (CropConfig), in the source's displayed pixels.
+    # width/height and every box are of the cropped frame. None = uncropped.
+    crop: CropBox | None = None
+    # Where the crop came from: "manual" (a request box or a .crop.json
+    # sidecar) or "detected" (CropConfig.detect). None when uncropped.
+    crop_source: Literal["manual", "detected"] | None = None
+    # Watermarks the detector found (CropConfig.detect), on the uncropped
+    # frame; empty = none found. None = not checked (detection off, a box by
+    # hand, or the check failed).
+    watermarks: list[WatermarkDetection] | None = None
+
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
     score_breakdown: dict[str, float] = Field(default_factory=dict)
@@ -570,10 +683,11 @@ class FaceCluster(BaseModel):
     """A clustered identity across the scanned dataset."""
 
     cluster_id: str
+    # Size and representative leave out images the prefilter dropped, which can never be kept.
     size: int
     representative_rel_path: str
     representative_bbox: list[float] | None = None
-    # Pooled over every member face: per-head probabilities are averaged before
+    # Pooled over every member face, dropped images included: per-head probabilities are averaged before
     # taking the top label, so one odd frame cannot flip an identity's label.
     attributes: FaceAttributes | None = None
 
@@ -594,6 +708,7 @@ class ScanSummary(BaseModel):
     guard_config: GuardConfig = Field(default_factory=GuardConfig)
     # Defaulted so scans cached before the prefilter existed still load.
     prefilter_config: PrefilterConfig = Field(default_factory=PrefilterConfig)
+    crop_config: CropConfig = Field(default_factory=CropConfig)
 
     total: int
     passed: int
@@ -614,6 +729,16 @@ class ScanSummary(BaseModel):
     limit: int | None = None
     returned: int = 0
 
+    @field_validator("config", mode="before")
+    @classmethod
+    def _config_below_the_floor(cls, value: object) -> object:
+        # The floor governs new scans. One cached with a lower value must still load.
+        if isinstance(value, dict):
+            side = value.get("min_short_side")
+            if isinstance(side, int) and side < MIN_SHORT_SIDE:
+                return {**value, "min_short_side": MIN_SHORT_SIDE}
+        return value
+
 
 # ---------------------------------------------------------------------------
 # Request / response bodies for the FastAPI server
@@ -632,6 +757,7 @@ class ScanRequest(BaseModel):
     nsfw: NsfwConfig = Field(default_factory=NsfwConfig)
     guard: GuardConfig = Field(default_factory=GuardConfig)
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
+    crops: CropConfig = Field(default_factory=CropConfig)
 
 
 class ExportRequest(BaseModel):
@@ -644,12 +770,14 @@ class ExportRequest(BaseModel):
     # pass a filesystem path directly.
     dest: str
     # "move" is destructive; the server rejects it unless started with
-    # --allow-move / CURATOR_ALLOW_MOVE=1.
+    # --allow-move / CURATOR_ALLOW_MOVE=1. An image the scan cropped is written
+    # cropped, which neither a link nor a move can do: selecting one refuses
+    # any mode but "copy".
     mode: Literal["copy", "symlink", "move"] = "copy"
     preserve_structure: bool = True
 
     min_score: float = 0.6
-    include_rejected: bool = False
+    include_rejected: bool = Field(False, description=_INCLUDE_REJECTED_IGNORED)
     keep_similar: bool = False
     max_keep: int | None = None
 
@@ -812,8 +940,9 @@ class ManifestRow(BaseModel):
 
     ``exported_path`` is the path actually written under the export root
     (posix, relative to it). Consumers must use it instead of re-deriving a
-    destination from ``rel_path`` — flattened exports de-collide basenames, so
-    the two can differ. Rows exist only for files whose transfer succeeded.
+    destination from ``rel_path`` — flattened exports de-collide basenames, and
+    with carried sidecars a root image cannot take the stem of an export file,
+    so the two can differ. Rows exist only for files whose transfer succeeded.
 
     ``exported_abs_path`` is that same file's absolute location, so a row is
     self-contained: the manifest is often read somewhere other than the export
@@ -836,6 +965,9 @@ class ManifestRow(BaseModel):
     primary_face_pose: FacePose | None = None
     score: float
     similar_group: int
+    # The crop baked into the exported file (manifest 2.2), in the source's
+    # displayed pixels. None = the file is the source as it was.
+    crop: CropBox | None = None
 
 
 class ExportResult(BaseModel):
@@ -860,7 +992,8 @@ class ExportResult(BaseModel):
     # The same mapping, absolute. Joining dest onto exported_paths means a
     # client re-implements the server's layout rule; with preserve_structure
     # false the curator de-collides basenames into stem-<hash>.ext, which no
-    # client can reproduce. The process that owns the rule publishes the answer.
+    # client can reproduce, and with carry_sidecars a root image with a reserved
+    # stem gets the same suffix. The process that owns the rule publishes the answer.
     exported_abs_paths: dict[str, str] = Field(default_factory=dict)
     captioned: bool = False
     # Sidecars written beside exported files (write_xmp). A file with nothing
@@ -874,6 +1007,8 @@ class ExportResult(BaseModel):
     # sidecars_failed instead.
     sidecars_carried: int = 0
     sidecars_failed: int = 0
+    # Exported images written cropped (ImageResult.crop), counted in copied too.
+    cropped: int = 0
     # Where run_stats was written (<dest>/run_stats.json), or None when the
     # request carried none, nothing was exported, or the write failed.
     run_stats_path: str | None = None
@@ -901,7 +1036,7 @@ class SelectRequest(BaseModel):
     """
 
     min_score: float = 0.6
-    include_rejected: bool = False
+    include_rejected: bool = Field(False, description=_INCLUDE_REJECTED_IGNORED)
     keep_similar: bool = False
 
     face_clusters: list[str] | None = None

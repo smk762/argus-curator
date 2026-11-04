@@ -22,7 +22,6 @@ from argus_curator.models import (
     FACE_RACES,
     ExportRequest,
     FaceAttributes,
-    FaceCluster,
     FaceConfig,
     FaceDetection,
     ImageResult,
@@ -287,6 +286,19 @@ def _sweep(monkeypatch: pytest.MonkeyPatch, cfg: FaceConfig, ff_rows=None, mv_ro
     return {r.rel_path: r for r in results}, clusters, ff_session, mv_session
 
 
+def test_a_sweep_keeps_the_readings_its_pool_is_rebuilt_from(monkeypatch: pytest.MonkeyPatch) -> None:
+    ff_rows = [_logits(0, 0, 3), _logits(0, 0, 3), _logits(1, 1, 5), _logits(5, 0, 3, peak=2.0)]
+    mv_rows = [_mv_row(False, 27.0), _mv_row(False, 29.0), _mv_row(True, 52.0), _mv_row(False, 60.0)]
+    by_rel, clusters, _ff, _mv = _sweep(monkeypatch, FaceConfig(fairface=True, mivolo=True), ff_rows, mv_rows)
+    scanned = {c.cluster_id: c.attributes.model_copy() for c in clusters}
+
+    for cluster in clusters:
+        cluster.attributes = None
+    faces.repool_identities(clusters, list(by_rel.values()))
+
+    assert {c.cluster_id: c.attributes for c in clusters} == scanned
+
+
 def test_sweep_records_face_primary_and_pooled_cluster_attributes(monkeypatch: pytest.MonkeyPatch) -> None:
     # Identity face_1 is "white" in two frames and "indian" in one; pooling the
     # probabilities must keep the majority label for the cluster.
@@ -469,10 +481,6 @@ def _faceless(rel: str, *, passed: bool = True) -> ImageResult:
     return ImageResult(rel_path=rel, abs_path=f"/d/{rel}", passed=passed)
 
 
-def _clusters(*sizes: tuple[str, int]) -> list[FaceCluster]:
-    return [FaceCluster(cluster_id=cid, size=n, representative_rel_path="x.jpg") for cid, n in sizes]
-
-
 def test_set_age_is_the_dominant_identitys_median_and_lands_on_faceless_frames() -> None:
     cfg = FaceConfig(set_age=True)
     assert cfg.mivolo and cfg.enabled  # a set age is read off MiVOLO ages
@@ -486,7 +494,7 @@ def test_set_age_is_the_dominant_identitys_median_and_lands_on_faceless_frames()
         _faceless("body2.jpg"),
         _faceless("blurry.jpg", passed=False),  # rejected: detection never looked
     ]
-    age, why = faces.infer_set_age(results, _clusters(("face_1", 10), ("face_2", 1)), cfg)
+    age, why = faces.infer_set_age(results, cfg)
     assert why is None and age is not None
     assert age.years == 19.0 and age.cluster_id == "face_1" and age.faces == 10 and age.share == round(10 / 11, 3)
     by = {r.rel_path: r for r in results}
@@ -499,7 +507,7 @@ def test_set_age_is_withheld_when_the_scan_is_not_one_subject() -> None:
     cfg = FaceConfig(set_age=True)
     faceless = [_faceless("body.jpg")]
 
-    age, why = faces.infer_set_age(faceless, [], cfg)
+    age, why = faces.infer_set_age(faceless, cfg)
     assert age is None and why == "no faces were found in this scan"
 
     mixed = [
@@ -507,21 +515,21 @@ def test_set_age_is_withheld_when_the_scan_is_not_one_subject() -> None:
         *(_faced(f"b{i}.jpg", "face_2", 30.0) for i in range(4)),
         *faceless,
     ]
-    age, why = faces.infer_set_age(mixed, _clusters(("face_1", 6), ("face_2", 4)), cfg)
+    age, why = faces.infer_set_age(mixed, cfg)
     assert age is None and why == "the largest identity (face_1) has 60% of the faces, 90% needed"
     assert faceless[0].set_age is None
 
     few = [*(_faced(f"a{i}.jpg", "face_1", 20.0) for i in range(3)), *faceless]
-    age, why = faces.infer_set_age(few, _clusters(("face_1", 3)), cfg)
+    age, why = faces.infer_set_age(few, cfg)
     assert age is None and why == "face_1 has 3 MiVOLO ages, 5 needed"
 
     # FairFace brackets are not years and do not count.
     bracketed = [*(_faced(f"a{i}.jpg", "face_1", 20.0, source="fairface") for i in range(6)), *faceless]
-    age, why = faces.infer_set_age(bracketed, _clusters(("face_1", 6)), cfg)
+    age, why = faces.infer_set_age(bracketed, cfg)
     assert age is None and why == "face_1 has 0 MiVOLO ages, 5 needed"
 
     # The thresholds are the caller's to set.
-    age, why = faces.infer_set_age(few, _clusters(("face_1", 3)), FaceConfig(set_age=True, set_age_min_faces=3))
+    age, why = faces.infer_set_age(few, FaceConfig(set_age=True, set_age_min_faces=3))
     assert why is None and age is not None and age.faces == 3
 
 

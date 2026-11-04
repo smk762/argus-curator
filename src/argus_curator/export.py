@@ -22,6 +22,7 @@ import structlog
 from argus_cortex.moderation import rule_letter
 from argus_cortex.xmp import XmpData, XmpError, XmpRegion, XmpRegions, sidecar_path, write_xmp
 
+from argus_curator import crops
 from argus_curator.models import ExportRequest, ExportResult, FaceDetection, ImageResult, ManifestRow, ScanSummary
 from argus_curator.selection import decide_selection, hard_exclusion
 
@@ -34,13 +35,18 @@ MANIFEST_NAME = "manifest.jsonl"
 REPORT_NAME = "curation_report.csv"
 RUN_STATS_NAME = "run_stats.json"
 
+# The XMP namings, the one to merge into first (see _source_sidecar).
+_XMP_NAMES: tuple[Callable[[Path], Path], ...] = (
+    sidecar_path,  # photo.jpg.xmp (lens, digiKam)
+    lambda p: p.with_suffix(".xmp"),  # photo.xmp (Lightroom)
+)
+
 # Where each sidecar ExportRequest.carry_sidecars carries lives, as a function
 # of its image's path. Applied to the source to find it and to the destination
 # to name it, so a de-collided "IMG-1a2b3c4d.jpg" gets "IMG-1a2b3c4d.txt".
 _SIDECAR_NAMES: tuple[Callable[[Path], Path], ...] = (
     lambda p: p.with_suffix(".txt"),  # argus-lens captions
-    sidecar_path,  # photo.jpg.xmp (lens, digiKam)
-    lambda p: p.with_suffix(".xmp"),  # photo.xmp (Lightroom)
+    *_XMP_NAMES,
     lambda p: p.with_suffix(".json"),
 )
 
@@ -53,6 +59,12 @@ def _norm_name(name: str) -> str:
     count as one destination entry.
     """
     return unicodedata.normalize("NFC", name).casefold()
+
+
+# The export's own files sit at the root of the destination. With sidecars
+# carried, an image there may not take one of these stems: "run_stats.png"
+# would carry a "run_stats.json" that the run stats then overwrite.
+_RESERVED_STEMS = frozenset(_norm_name(PurePosixPath(n).stem) for n in (MANIFEST_NAME, REPORT_NAME, RUN_STATS_NAME))
 
 
 def _suffixed(rel_path: str, digest_len: int) -> str:
@@ -78,26 +90,32 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_s
 
     With *by_stem* (carried sidecars) names collide on their stem instead:
     ``a/IMG.jpg`` and ``b/IMG.png`` would otherwise both carry to ``IMG.txt``,
-    one caption overwriting the other.
+    one caption overwriting the other. A name at the destination root also
+    collides with :data:`_RESERVED_STEMS`, flattened or not: with
+    *preserve_structure* that is the one case a file does not keep its rel_path.
     """
-    if preserve_structure:
-        return {r.rel_path: r.rel_path for r in selected}
 
     def key(name: str) -> str:
         return _norm_name(PurePosixPath(name).stem if by_stem else name)
 
-    by_name: dict[str, list[str]] = {}
-    for r in selected:
-        by_name.setdefault(key(PurePosixPath(r.rel_path).name), []).append(r.rel_path)
-
+    reserved = _RESERVED_STEMS if by_stem else frozenset()
     dests: dict[str, str] = {}
     digest_len: dict[str, int] = {}
-    for rels in by_name.values():
-        if len(rels) == 1:
-            dests[rels[0]] = PurePosixPath(rels[0]).name
-        else:
-            logger.warning("export_basename_collision", basename=PurePosixPath(rels[0]).name, rel_paths=rels)
-            digest_len.update(dict.fromkeys(rels, 8))
+    if preserve_structure:
+        dests = {r.rel_path: r.rel_path for r in selected}
+        digest_len = dict.fromkeys((rel for rel in dests if "/" not in rel and key(rel) in reserved), 8)
+        for rel in digest_len:
+            logger.warning("export_basename_collision", basename=rel, rel_paths=[rel])
+    else:
+        by_name: dict[str, list[str]] = {}
+        for r in selected:
+            by_name.setdefault(key(PurePosixPath(r.rel_path).name), []).append(r.rel_path)
+        for name, rels in by_name.items():
+            if len(rels) == 1 and name not in reserved:
+                dests[rels[0]] = PurePosixPath(rels[0]).name
+            else:
+                logger.warning("export_basename_collision", basename=PurePosixPath(rels[0]).name, rel_paths=rels)
+                digest_len.update(dict.fromkeys(rels, 8))
 
     pending = set(digest_len)
     while pending:
@@ -122,10 +140,29 @@ def _transfer_one(src: Path, dst: Path, mode: str) -> None:
             dst.unlink()
         dst.symlink_to(src.resolve())
     else:  # copy
+        if dst.is_symlink():
+            # A link left by an earlier symlink export: copying through it would overwrite its target.
+            dst.unlink()
         shutil.copy2(src, dst)
 
 
-def _carry_sidecars(src: Path, dst: Path, mode: str, rel_path: str) -> tuple[int, int]:
+def _sidecar_users(results: list[ImageResult]) -> Counter[Path]:
+    """How many of the scan's images each sidecar path belongs to.
+
+    An image the export leaves behind counts, so a move does not take the
+    sidecar it shares with a keeper. An image already gone from the source does
+    not: it will never take its sidecar, and counting it would strand the
+    original in the source folder.
+    """
+    users: Counter[Path] = Counter()
+    for r in results:
+        src = Path(r.abs_path)
+        if src.exists():
+            users.update({name(src) for name in _SIDECAR_NAMES})
+    return users
+
+
+def _carry_sidecars(src: Path, dst: Path, mode: str, rel_path: str, waiting: Counter[Path]) -> tuple[int, int]:
     """Transfer the sidecars beside *src* to the matching names beside *dst*. Returns ``(carried, failed)``.
 
     Same mode and the same overwrite semantics as the image (:func:`_transfer_one`):
@@ -135,6 +172,14 @@ def _carry_sidecars(src: Path, dst: Path, mode: str, rel_path: str) -> tuple[int
     ``.json`` beside the exported image, and through a link that write would
     land in the source library. Called only after the image landed; a sidecar that fails is
     logged and counted, never undoing the image.
+
+    *waiting* counts the images that still need each sidecar where it is (see
+    :func:`_sidecar_users`). Under ``mode="move"`` a sidecar two images share
+    (``photo.jpg`` and ``photo.png`` both use ``photo.txt``) is copied until
+    only this image is waiting, so every image gets it, as under copy, and an
+    image that is not exported keeps it. A failed
+    transfer never counts down: an image that could not leave, or a sidecar that
+    did not reach it, keeps the source sidecar where it is.
     """
     carried = failed = 0
     seen: set[Path] = set()
@@ -149,7 +194,8 @@ def _carry_sidecars(src: Path, dst: Path, mode: str, rel_path: str) -> tuple[int
                 # copy2 / move would put the sidecar *inside* it, under a name no consumer looks for.
                 raise IsADirectoryError(f"destination is a directory: {target}")
             # A symlinked image is read-only by nature; a symlinked sidecar would be a write path into the source.
-            _transfer_one(side, target, "copy" if mode == "symlink" else mode)
+            _transfer_one(side, target, "copy" if mode == "symlink" or waiting[side] > 1 else mode)
+            waiting[side] -= 1
             carried += 1
         except Exception as exc:
             logger.warning("export_sidecar_failed", rel_path=rel_path, sidecar=side.name, error=str(exc))
@@ -196,6 +242,7 @@ def write_manifest(
                 primary_face_pose=r.primary_face_pose,
                 score=round(r.score, 4),
                 similar_group=r.similar_group,
+                crop=r.crop,
             )
             f.write(row.model_dump_json() + "\n")
 
@@ -348,29 +395,32 @@ def _region(face: FaceDetection, width: int, height: int, names: dict[str, str])
     )
 
 
-def xmp_data(r: ImageResult, face_names: dict[str, str] | None = None) -> XmpData | None:
+def xmp_data(r: ImageResult, face_names: dict[str, str] | None = None, *, regions: bool = True) -> XmpData | None:
     """What curator records about *r* in a sidecar, or ``None`` when it knows nothing worth writing.
+
+    Face regions are fractions of the frame curator scanned; *regions* False
+    leaves them out for a file that is not that frame.
 
     A field curator has nothing for stays ``None``, so merging leaves whatever
     the sidecar already holds there. Age estimates are never written: a MiVOLO
     guess in a photo library would read as a fact.
     """
     names = face_names or {}
-    regions = None
-    if r.faces and r.width > 0 and r.height > 0:
-        regions = XmpRegions(
+    face_regions = None
+    if regions and r.faces and r.width > 0 and r.height > 0:
+        face_regions = XmpRegions(
             width=r.width, height=r.height, regions=[_region(face, r.width, r.height, names) for face in r.faces]
         )
     persons = sorted({names[f.cluster_id] for f in r.faces if f.cluster_id in names})
-    if regions is None and not persons and r.content_rating is None:
+    if face_regions is None and not persons and r.content_rating is None:
         return None
-    return XmpData(regions=regions, persons=persons or None, content_rating=r.content_rating)
+    return XmpData(regions=face_regions, persons=persons or None, content_rating=r.content_rating)
 
 
 def _source_sidecar(src: Path) -> Path | None:
     """The sidecar already beside *src*: ``photo.jpg.xmp`` (lens, digiKam), else ``photo.xmp`` (Lightroom)."""
-    for candidate in (sidecar_path(src), src.with_suffix(".xmp")):
-        if candidate.is_file():
+    for name in _XMP_NAMES:
+        if (candidate := name(src)).is_file():
             return candidate
     return None
 
@@ -411,11 +461,12 @@ def write_source_sidecars(results: list[ImageResult], face_names: dict[str, str]
     (``--xmp-sources``); the server's write paths stay under the export root.
     Merging keeps every property curator does not set. Regions are replaced as
     a whole, so face regions drawn by hand in a photo app are lost on an image
-    with detected faces.
+    with detected faces. A cropped image gets no regions: curator's are of the
+    cropped frame, and this sidecar describes the uncropped original.
     """
     written = 0
     for r in results:
-        data = xmp_data(r, face_names)
+        data = xmp_data(r, face_names, regions=r.crop is None)
         if data is None:
             continue
         try:
@@ -447,19 +498,29 @@ def _post_manifest_to_lens(manifest_path: Path, caption_url: str) -> bool:
         return False
 
 
-def export_selection(summary: ScanSummary, req: ExportRequest, progress: ProgressFn | None = None) -> ExportResult:
+def export_selection(
+    summary: ScanSummary,
+    req: ExportRequest,
+    progress: ProgressFn | None = None,
+    moved: list[str] | None = None,
+) -> ExportResult:
     """Select per the request, transfer files, and write the manifest/report.
 
     When *progress* is supplied it is called with ``{phase, done, total}`` dicts
     during the ``transferring`` phase (one update per file), so a caller can
     drive a live progress bar (see the /export/stream SSE endpoint).
+
+    Under ``mode="move"``, *moved* collects each rel_path as its file leaves the
+    source. It is filled as the export goes, so a caller still learns what moved
+    when a later step raises (a full disk while writing the report) and no
+    :class:`ExportResult` comes back.
     """
     results = summary.results
 
     if req.selection is not None:
         wanted = set(req.selection)
 
-        # A named list overrides neither the under-18 exposed rejection nor the prefilter.
+        # A named list overrides neither the under-18 exposed rejection nor any reject.
         keep_reason = {
             r.rel_path: hard_exclusion(r) or ("" if r.rel_path in wanted else "not-selected") for r in results
         }
@@ -468,6 +529,14 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         selected, keep_reason = decide_selection(results, req, summary.config.diversity_weight)
 
     selected_rel = {r.rel_path for r in selected}
+    # A cropped image is written cropped; a link or a move would hand on the
+    # source, watermark and all. Refused before anything is transferred.
+    cropped_sel = [r.rel_path for r in selected if r.crop is not None]
+    if cropped_sel and req.mode != "copy":
+        raise ValueError(
+            f'{len(cropped_sel)} selected image(s) were scanned cropped and export only by mode "copy" '
+            f"(e.g. {cropped_sel[0]})"
+        )
     dest_root = Path(req.dest)
     dest_paths = _plan_dest_paths(selected, req.preserve_structure, by_stem=req.carry_sidecars)
 
@@ -480,7 +549,9 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
     xmp_written = 0
     sidecars_carried = 0
     sidecars_failed = 0
+    cropped = 0
     transferred: list[ImageResult] = []
+    waiting = _sidecar_users(results) if req.carry_sidecars and req.mode == "move" else Counter()
     for i, r in enumerate(selected):
         src = Path(r.abs_path)
         if not src.exists():
@@ -489,9 +560,15 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         else:
             dst = dest_root / dest_paths[r.rel_path]
             try:
-                _transfer_one(src, dst, req.mode)
+                if r.crop is not None:
+                    crops.write_cropped(src, dst, r.crop)
+                    cropped += 1
+                else:
+                    _transfer_one(src, dst, req.mode)
                 copied += 1
                 transferred.append(r)
+                if req.mode == "move" and moved is not None:
+                    moved.append(r.rel_path)
             except Exception as exc:
                 logger.warning("export_transfer_failed", rel_path=r.rel_path, error=str(exc))
                 skipped += 1
@@ -500,7 +577,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
                 # sidecar, so under move nothing is left behind and the result
                 # is the source's sidecar plus curator's data.
                 if req.carry_sidecars:
-                    carried, failed = _carry_sidecars(src, dst, req.mode, r.rel_path)
+                    carried, failed = _carry_sidecars(src, dst, req.mode, r.rel_path, waiting)
                     sidecars_carried += carried
                     sidecars_failed += failed
                 if req.write_xmp and (data := xmp_data(r, req.face_names)) is not None:
@@ -553,6 +630,7 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         selected=len(selected),
         sidecars_carried=sidecars_carried,
         sidecars_failed=sidecars_failed,
+        cropped=cropped,
     )
 
     return ExportResult(
@@ -568,5 +646,6 @@ def export_selection(summary: ScanSummary, req: ExportRequest, progress: Progres
         xmp_written=xmp_written,
         sidecars_carried=sidecars_carried,
         sidecars_failed=sidecars_failed,
+        cropped=cropped,
         run_stats_path=str(run_stats_path) if run_stats_path else None,
     )

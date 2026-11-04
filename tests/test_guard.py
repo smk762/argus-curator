@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from argus_curator import guard, guard_context
 from argus_curator.export import write_report
 from argus_curator.models import (
+    MIN_SHORT_SIDE,
     ExportRequest,
     FaceAttributes,
     FaceConfig,
@@ -40,6 +41,7 @@ from argus_curator.models import (
 from argus_curator.runtime import ModelUnavailable
 from argus_curator.scanner import scan_items
 from argus_curator.selection import decide_selection, guard_filter_problem
+from argus_curator.store import ScanStore
 
 _CRIME = "B. Real-World Crimes & Public Safety"
 _GORE = "C. Unethical Behavior"
@@ -217,11 +219,12 @@ def _young_exposed(rel: str, years: float = 16.0) -> ImageResult:
     )
 
 
-def test_force_slow_is_the_under_18_exposed_pairing() -> None:
+def test_force_slow_is_any_exposed_frame() -> None:
     young = _young_exposed("young.png")
     adult = _young_exposed("adult.png", years=22.0)
     covered = _young_exposed("covered.png")
     covered.nsfw = NsfwResult(detections=[], labels={"FEMALE_BREAST_COVERED": 0.9}, exposed_score=0.0)
+    unscored = ImageResult(rel_path="u.png", abs_path="/d/u.png", passed=True)
     faceless = ImageResult(
         rel_path="body.png",
         abs_path="/d/body.png",
@@ -230,14 +233,19 @@ def test_force_slow_is_the_under_18_exposed_pairing() -> None:
         nsfw=NsfwResult(detections=[], labels={"BUTTOCKS_EXPOSED": 0.3}, exposed_score=0.3),
     )
     assert guard.force_slow(young, "cascade") is True
-    assert guard.force_slow(adult, "cascade") is False
+    assert guard.force_slow(adult, "cascade") is True  # exposure alone, whatever the age
     assert guard.force_slow(covered, "cascade") is False
+    assert guard.force_slow(unscored, "cascade") is False
     assert guard.force_slow(young, "fast") is False
     assert guard.force_slow(young, "fast-slow") is False
     assert guard.force_slow(young, "slow") is False
     assert guard.force_slow(faceless, "cascade") is True
     adult_set = faceless.model_copy(update={"set_age": SetAge(years=24.0, cluster_id="face_1", faces=12, share=0.96)})
-    assert guard.force_slow(adult_set, "cascade") is False
+    assert guard.force_slow(adult_set, "cascade") is True
+    below = faceless.model_copy(
+        update={"nsfw": NsfwResult(detections=[], labels={"BUTTOCKS_EXPOSED": 0.1}, exposed_score=0.1)}
+    )
+    assert guard.force_slow(below, "cascade") is False
 
 
 def test_cascade_sends_minor_exposed_to_slow(singguard: type[_SingGuard]) -> None:
@@ -245,6 +253,14 @@ def test_cascade_sends_minor_exposed_to_slow(singguard: type[_SingGuard]) -> Non
     other = ImageResult(rel_path="other.png", abs_path="/d/other.png", passed=True)
     items = [(young.rel_path, young.abs_path, _png(10)), (other.rel_path, other.abs_path, _png(10))]
     assert guard.check_images([young, other], items, GuardConfig())
+    assert sorted(s["thinking"] for s in singguard.seen) == ["cascade", "slow"]
+
+
+def test_cascade_sends_adult_exposed_to_slow(singguard: type[_SingGuard]) -> None:
+    adult = _young_exposed("adult.png", years=30.0)
+    other = ImageResult(rel_path="other.png", abs_path="/d/other.png", passed=True)
+    items = [(adult.rel_path, adult.abs_path, _png(10)), (other.rel_path, other.abs_path, _png(10))]
+    assert guard.check_images([adult, other], items, GuardConfig())
     assert sorted(s["thinking"] for s in singguard.seen) == ["cascade", "slow"]
 
 
@@ -537,15 +553,19 @@ def test_required_check_without_url_fails() -> None:
 
 def test_scan_runs_singguard_when_configured(singguard: type[_SingGuard]) -> None:
     items = [("a.png", "/d/a", _png(20, (600, 600))), ("b.png", "/d/b", _png(10, (600, 600)))]
-    summary = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig())
+    summary = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig())
     assert summary.guard_config.enabled is True
     assert {r.rel_path: r.guard.safe for r in summary.results} == {"a.png": False, "b.png": True}
 
-    adult = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), guard_cfg=GuardConfig(policy="adult"))
+    adult = scan_items(
+        items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), guard_cfg=GuardConfig(policy="adult")
+    )
     assert adult.guard_config.policy == "adult"  # the summary says which policy judged it
     assert {r.guard.policy for r in adult.results} == {"adult"}
 
-    opted_out = scan_items(items, TargetProfile(), ScanConfig(), FaceConfig(), guard_cfg=GuardConfig(enabled=False))
+    opted_out = scan_items(
+        items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), guard_cfg=GuardConfig(enabled=False)
+    )
     assert opted_out.guard_config.enabled is False
     assert all(r.guard is None for r in opted_out.results)
 
@@ -745,3 +765,42 @@ def test_other_failures_and_plain_modes_never_fall_back() -> None:
     assert guard.FallbackClient("http://guard:9150", 5.0, "fast-slow", None).fallback is None
     verdict = GuardResult(safe=True, thinking="slow")  # a server that says which mode it used is believed
     assert _fallback([GuardCheckFailed("HTTP 400")], [verdict]).check(b"x").thinking == "slow"
+
+
+def test_a_rejected_frame_is_never_kept() -> None:
+    from argus_curator.selection import decide_selection, hard_exclusion
+
+    small = ImageResult(
+        rel_path="s.png", abs_path="/d/s", score=0.99, reject_reason="resolution too low (333px short side)"
+    )
+    assert hard_exclusion(small) == small.reject_reason
+    selected, reasons = decide_selection([small], ExportRequest(dest="/out", min_score=0.0, include_rejected=True), 0.0)
+    assert selected == [] and reasons["s.png"] == small.reject_reason
+
+
+def test_min_short_side_has_a_floor() -> None:
+    assert ScanConfig().min_short_side == MIN_SHORT_SIDE
+    assert ScanConfig(min_short_side=1024).min_short_side == 1024
+    with pytest.raises(ValidationError):
+        ScanConfig(min_short_side=MIN_SHORT_SIDE - 1)
+
+
+def test_a_scan_cached_below_the_floor_still_loads(tmp_path: Path) -> None:
+    store = ScanStore(tmp_path)
+    summary = ScanSummary(
+        scan_id="s",
+        folder="/d",
+        target_profile=TargetProfile(),
+        config=ScanConfig(),
+        faces_config=FaceConfig(),
+        total=0,
+        passed=0,
+        rejected=0,
+        duplicates=0,
+        similar_clusters=0,
+    )
+    path = store.save(summary)
+    cached = json.loads(path.read_text(encoding="utf-8"))
+    cached["config"]["min_short_side"] = 256
+    path.write_text(json.dumps(cached), encoding="utf-8")
+    assert store.load("s").config.min_short_side == MIN_SHORT_SIDE

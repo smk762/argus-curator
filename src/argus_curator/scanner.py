@@ -37,7 +37,9 @@ from PIL import Image, ImageFilter
 
 from argus_curator.models import (
     SUPPORTED_EXTS,
+    CropConfig,
     EraxConfig,
+    FaceCluster,
     FaceConfig,
     FaceDetection,
     GarmentConfig,
@@ -420,14 +422,51 @@ def _tally_reasons(rejected: list[ImageResult]) -> dict[str, int]:
     return tally
 
 
+def recount_identities(clusters: list[FaceCluster], results: list[ImageResult]) -> list[FaceCluster]:
+    """Bring identity sizes and representatives in line with *results*; return the ones still in use.
+
+    A prefiltered row does not count: it is never kept or exported, so it adds
+    nothing to an identity's size and is never its representative. That is the
+    only row left out; a minor-exposed frame, also never kept, still counts. A
+    representative that no longer counts gives way to the best face left (highest
+    det_score x area), and an identity with no face left goes. Pooled attributes
+    are not touched here: see :func:`faces.repool_identities`.
+    """
+    from argus_curator.prefilter import is_prefiltered
+
+    members_of: dict[str, list[tuple[str, FaceDetection]]] = {}
+    for r in results:
+        if is_prefiltered(r):
+            continue
+        for f in r.faces:
+            if f.cluster_id is not None:
+                members_of.setdefault(f.cluster_id, []).append((r.rel_path, f))
+    kept = []
+    for cluster in clusters:
+        members = members_of.get(cluster.cluster_id, [])
+        if not members:
+            continue
+        cluster.size = len(members)
+        if cluster.representative_rel_path not in {rel for rel, _face in members}:
+            rel, face = max(members, key=lambda m: m[1].det_score * ((m[1].bbox[2] * m[1].bbox[3]) or 1.0))
+            cluster.representative_rel_path = rel
+            cluster.representative_bbox = face.bbox
+        kept.append(cluster)
+    kept.sort(key=lambda c: -c.size)
+    return kept
+
+
 def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     """Remove *gone* rows from a finished scan and bring everything derived from them up to date.
 
     Near-duplicate groups are rebuilt, so a deleted representative does not leave
-    its siblings marked ``similar-to`` a file that no longer exists. Identity
-    sizes and representatives are recounted from the remaining faces, and an
-    identity with no face left is dropped.
+    its siblings marked ``similar-to`` a file that no longer exists. Identities
+    are recounted from the remaining faces (see :func:`recount_identities`),
+    their attributes pooled again (:func:`faces.repool_identities`), and the set
+    age read again.
     """
+    from argus_curator import faces as faces_mod
+
     gone = set(gone)
     results = [r for r in summary.results if r.rel_path not in gone]
     for r in results:
@@ -436,24 +475,9 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     _mark_duplicates(results, summary.config)
     summary.similar_clusters = _assign_clusters(results)
 
-    members_of: dict[str, list[tuple[str, FaceDetection]]] = {}
-    for r in results:
-        for f in r.faces:
-            if f.cluster_id is not None:
-                members_of.setdefault(f.cluster_id, []).append((r.rel_path, f))
-    clusters = []
-    for cluster in summary.face_clusters:
-        members = members_of.get(cluster.cluster_id, [])
-        if not members:
-            continue
-        cluster.size = len(members)
-        if cluster.representative_rel_path in gone:
-            rel, face = max(members, key=lambda m: m[1].det_score * ((m[1].bbox[2] * m[1].bbox[3]) or 1.0))
-            cluster.representative_rel_path = rel
-            cluster.representative_bbox = face.bbox
-        clusters.append(cluster)
-    clusters.sort(key=lambda c: -c.size)
-    summary.face_clusters = clusters
+    summary.face_clusters = recount_identities(summary.face_clusters, results)
+    faces_mod.repool_identities(summary.face_clusters, results)
+    faces_mod.reread_set_age(summary, results)
 
     rejected = [r for r in results if not r.passed]
     summary.results = results
@@ -481,6 +505,7 @@ def scan_items(
     nsfw_cfg: NsfwConfig | None = None,
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
+    crop_cfg: CropConfig | None = None,
     folder: str = "",
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
@@ -504,6 +529,9 @@ def scan_items(
     SingGuard never run on them; their chunk goes out under phase
     ``prefilter``. It raises ValueError when a rule needs a check the scan
     does not run (a face check *faces_cfg* leaves off, or NudeNet for ``drop_nsfw``).
+    *crop_cfg* (opt-in) crops the boxed images in memory before scoring, so
+    every phase sees the cropped frame (see :mod:`argus_curator.crops`); an
+    image whose box cannot be applied is rejected as ``crop:<why>``.
     *chunk* receives the images finished since the previous call, and *save*
     receives a partial summary so a scan can be reopened while it is still
     running. ``pending_checks`` names the checks (``faces``, ``nsfw``,
@@ -527,11 +555,19 @@ def scan_items(
     nsfw_cfg = nsfw_cfg or NsfwConfig()
     guard_cfg = guard_cfg or GuardConfig()
     prefilter_cfg = prefilter_cfg or PrefilterConfig()
+    crop_cfg = crop_cfg or CropConfig()
+    from argus_curator import crops as crops_mod
     from argus_curator import prefilter as prefilter_mod
 
     # A rule whose check will not run would drop nothing (nsfw) or everything (faces).
     if (why := prefilter_mod.problem(prefilter_cfg, faces_cfg, nsfw_mod.resolve_enabled(nsfw_cfg))) is not None:
         raise ValueError(why)
+    if crop_cfg.enabled and crop_cfg.detect:
+        from argus_curator import watermarks as watermarks_mod
+
+        if not watermarks_mod.configured():
+            raise ValueError(f"watermark detection needs a detector: set {watermarks_mod.URL_ENV}")
+        watermarks_mod.client()  # a malformed URL fails here, not after the scan has started
     requested = requested_checks(faces_cfg, nsfw_cfg, guard_cfg)
     completed: set[str] = set()
 
@@ -545,6 +581,16 @@ def scan_items(
         # remote.check_all holds is drained on the way out.
         check_cancelled()
         _emit(progress, phase, done, phase_total, pending())
+
+    # Every phase reads these bytes, so cropping them here is all a check needs.
+    crop = crops_mod.apply(
+        items,
+        crop_cfg,
+        progress=(lambda done, phase_total: emit("watermarks", done, phase_total)) if progress else None,
+        cancelled=check_cancelled,
+        workers=cfg.max_workers,
+    )
+    items = crop.items
 
     results_by_rel: dict[str, ImageResult] = {}
     face_clusters: list[Any] = []
@@ -583,6 +629,7 @@ def scan_items(
             erax_config=EraxConfig(enabled=erax_ran),
             guard_config=guard_cfg.model_copy(update={"enabled": guard_ran}),
             prefilter_config=prefilter_cfg,
+            crop_config=crop_cfg,
             total=total,
             passed=len(passed),
             rejected=len(rejected),
@@ -638,9 +685,9 @@ def scan_items(
                 "total": phase_total,
                 "pending_checks": pending(),
                 "results": [row.model_dump(mode="json") for row in batch],
+                # Even when empty: the prefilter can empty the list, and a client must hear that.
+                "face_clusters": [cluster.model_dump(mode="json") for cluster in face_clusters],
             }
-            if face_clusters:
-                payload["face_clusters"] = [cluster.model_dump(mode="json") for cluster in face_clusters]
             _emit_chunk(chunk, payload)
             maybe_save(snapshot(), force=force or phase_done)
 
@@ -653,6 +700,14 @@ def scan_items(
         try:
             for fut in as_completed(futures):
                 row = fut.result()
+                row.watermarks = crop.watermarks.get(row.rel_path)
+                if (box := crop.applied.get(row.rel_path)) is not None:
+                    row.crop = box
+                    row.crop_source = crop.sources.get(row.rel_path)
+                elif (why := crop.errors.get(row.rel_path)) is not None:
+                    # Never scanned (or exported) as if the watermark were gone.
+                    row.passed = False
+                    row.reject_reason = f"{crops_mod.PREFIX}{why}"
                 results_by_rel[row.rel_path] = row
                 done += 1
                 batch.append(row)
@@ -715,7 +770,9 @@ def scan_items(
         # the first chunk carrying a row already has the score a viewer
         # unblurs on.
         with_data = {rel for rel, _abs, data in items if data is not None}
-        sendable = {r.rel_path for r in results if r.rel_path in with_data}
+        # A rejected frame has no age, so it stops here: see selection.hard_exclusion.
+        checkable = [r for r in results if r.passed]
+        sendable = {r.rel_path for r in checkable if r.rel_path in with_data}
         nudenet_done: set[str] = set()
         erax_done: set[str] = set()
         sent: set[str] = set()
@@ -771,7 +828,7 @@ def scan_items(
 
         def run_erax() -> bool:
             return erax_mod.check_images(
-                results,
+                checkable,
                 items,
                 progress=erax_progress,
                 on_done=on_erax,
@@ -785,7 +842,7 @@ def scan_items(
                 erax_future = side.submit(run_erax) if fill_in else None
                 try:
                     ran_nudenet = nsfw_mod.check_images(
-                        results,
+                        checkable,
                         items,
                         nsfw_cfg,
                         progress=(lambda phase_done, phase_total: emit("nsfw", phase_done, phase_total))
@@ -837,7 +894,7 @@ def scan_items(
         emit("identities", 0, total)
         face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
         if faces_cfg.set_age:
-            set_age["age"], set_age["skipped"] = faces_mod.infer_set_age(results, face_clusters, faces_cfg)
+            set_age["age"], set_age["skipped"] = faces_mod.infer_set_age(results, faces_cfg)
             logger.info("set_age", years=set_age["age"].years if set_age["age"] else None, skipped=set_age["skipped"])
         emit("identities", total, total)
         deliver("identities", total, total, results, force=True)
@@ -845,10 +902,12 @@ def scan_items(
     # Prefilter (opt-in): drop what the caller has no use for before the
     # heavy phases, SingGuard above all. Read after identities, so a frame
     # with no face counts the set's age. A dropped image stays in the results
-    # as a reject; scenes, garments and SingGuard pass it by.
+    # as a reject; scenes, garments and SingGuard pass it by. It stops counting
+    # toward its identity, though the set age above was read with it.
     dropped = prefilter_mod.apply(results, prefilter_cfg)
     if dropped:
         logger.info("prefilter", dropped=len(dropped))
+        face_clusters = recount_identities(face_clusters, results)
         deliver("prefilter", total, total, dropped, force=True)
 
     # Places365 scene tags (optional): whole-image, independent of faces.
@@ -890,8 +949,9 @@ def scan_items(
             guard_batch.clear()
 
     try:
+        # A rejected image is not judged, a prefilter drop included.
         ran["guard"] = guard_mod.check_images(
-            results,
+            [r for r in results if r.passed],
             items,
             guard_cfg,
             progress=(lambda phase_done, phase_total: emit("guard", phase_done, phase_total)) if progress else None,
@@ -922,6 +982,7 @@ def scan_folder(
     nsfw_cfg: NsfwConfig | None = None,
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
+    crop_cfg: CropConfig | None = None,
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
     chunk: ChunkFn | None = None,
@@ -960,6 +1021,7 @@ def scan_folder(
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
+        crop_cfg=crop_cfg,
         folder=str(root.resolve()),
         scan_id=scan_id,
         progress=progress,

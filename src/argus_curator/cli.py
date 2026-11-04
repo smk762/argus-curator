@@ -5,6 +5,10 @@ from __future__ import annotations
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pydantic import ValidationError
 
 try:
     import typer
@@ -53,6 +57,14 @@ def _label_thresholds(value: str | None) -> dict[str, float] | None:
     return out
 
 
+def _invalid(exc: ValidationError) -> typer.Exit:
+    """Print each field of a pydantic ``ValidationError``; the exit to raise after it."""
+    for err in exc.errors():
+        field = ".".join(str(x) for x in err["loc"]) or "request"
+        typer.echo(f"Error: {field}: {err['msg']}", err=True)
+    return typer.Exit(2)
+
+
 @app.command()
 def scan(
     source: Path = Argument(..., help="Root folder to scan (recurses into sub-folders)"),
@@ -60,15 +72,12 @@ def scan(
     copy_to: Path | None = Option(None, "--copy-to", help="Copy keepers here (structure preserved)"),
     move_to: Path | None = Option(None, "--move-to", help="Move keepers here instead of copying"),
     symlink_to: Path | None = Option(None, "--symlink-to", help="Symlink keepers here"),
-    include_rejected: bool = Option(
-        False, "--include-rejected", help="Keep high-scoring images that failed hard filters"
-    ),
     keep_similar: bool = Option(False, "--keep-similar", help="Keep non-representative near-duplicates"),
     no_cluster: bool = Option(False, "--no-cluster", help="Disable near-duplicate grouping"),
     cluster_distance: int = Option(10, "--cluster-distance", help="pHash Hamming distance for near-duplicates"),
     max_keep: int | None = Option(None, "--max-keep", help="Cap keepers to a diverse N"),
     diversity_weight: float = Option(0.40, "--diversity-weight", help="0=pure score, 1=pure spread"),
-    min_short_side: int = Option(512, "--min-short-side", help="Minimum short-side pixels"),
+    min_short_side: int = Option(512, "--min-short-side", help="Minimum short-side pixels (512 at least)"),
     max_aspect_ratio: float = Option(3.0, "--max-aspect-ratio", help="Maximum long:short ratio"),
     blur_threshold: float = Option(100.0, "--blur-threshold", help="Minimum Laplacian variance"),
     max_workers: int = Option(4, "--max-workers", help="Parallel worker threads"),
@@ -173,6 +182,11 @@ def scan(
     erax_url: str | None = Option(
         None, "--erax-url", help="EraX-NSFW server origin, e.g. http://erax:8080 (ARGUS_CURATOR_ERAX_URL)"
     ),
+    watermark_url: str | None = Option(
+        None,
+        "--watermark-url",
+        help="Watermark detector origin, e.g. http://watermark:8080 (ARGUS_CURATOR_WATERMARK_URL)",
+    ),
     nsfw_threshold: float | None = Option(
         None, "--nsfw-threshold", help="Drop images whose exposed-nudity score is at or above this (0.2..1)"
     ),
@@ -229,6 +243,26 @@ def scan(
         "--drop-no-age",
         help="Reject images with no MiVOLO, body-only or set age before scenes, garments and SingGuard (needs --mivolo)",
     ),
+    crops: bool = Option(
+        False,
+        "--crops",
+        help=(
+            "Crop each image that has a <image>.crop.json sidecar ({left, top, right, bottom}, displayed pixels) "
+            "in memory before every check, and export it cropped (--copy-to only). Sources are never changed."
+        ),
+    ),
+    detect_watermarks: bool = Option(
+        False,
+        "--detect-watermarks",
+        help=(
+            "Find watermarks with the detector (--watermark-url) and cut them away at the frame's edges; "
+            "implies --crops. A watermark no edge cut removes rejects the image (crop:overlay)."
+        ),
+    ),
+    max_cut: float = Option(0.15, "--max-cut", help="Most of a side one edge cut may take (--detect-watermarks)"),
+    keep_overlays: bool = Option(
+        False, "--keep-overlays", help="Keep images whose watermark cannot be cut away, uncropped, instead of rejecting"
+    ),
     xmp: bool = Option(
         False, "--xmp", help="Write an XMP sidecar beside each exported file (face regions, names, content rating)"
     ),
@@ -261,6 +295,7 @@ def scan(
 
     from argus_curator.export import export_selection
     from argus_curator.models import (
+        CropConfig,
         ExportRequest,
         FaceConfig,
         GarmentConfig,
@@ -287,6 +322,7 @@ def scan(
     from argus_curator import mivolo as mivolo_mod
     from argus_curator import nsfw as nsfw_mod
     from argus_curator import scenes as scenes_mod
+    from argus_curator import watermarks as watermarks_mod
 
     for model_file, env in (
         (fairface_model, fairface_mod.MODEL_ENV),
@@ -295,10 +331,29 @@ def scan(
         (garments_model, garments_mod.MODEL_ENV),
         (nudenet_url, nsfw_mod.URL_ENV),
         (erax_url, erax_mod.URL_ENV),
+        (watermark_url, watermarks_mod.URL_ENV),
         (singguard_url, guard_mod.URL_ENV),
     ):
         if model_file is not None:
             os.environ[env] = str(model_file)
+
+    # CropConfig validates max_cut whether or not detection is on, so check it first, not as a traceback.
+    if not 0.0 < max_cut < 0.5:
+        typer.echo("Error: --max-cut must be between 0 and 0.5", err=True)
+        raise typer.Exit(2)
+    if detect_watermarks:
+        from argus_curator.runtime import ModelUnavailable
+
+        if not watermarks_mod.configured():
+            typer.echo(
+                f"Error: --detect-watermarks needs a detector: --watermark-url or {watermarks_mod.URL_ENV}", err=True
+            )
+            raise typer.Exit(2)
+        try:
+            watermarks_mod.client()
+        except ModelUnavailable as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(2) from exc
 
     profile = TargetProfile(
         target_style=style,
@@ -306,14 +361,17 @@ def scan(
         checkpoint=checkpoint,
         target_category=category,
     )
-    cfg = ScanConfig(
-        min_short_side=min_short_side,
-        max_aspect_ratio=max_aspect_ratio,
-        blur_threshold=blur_threshold,
-        cluster_distance=-1 if no_cluster else cluster_distance,
-        diversity_weight=diversity_weight,
-        max_workers=max_workers,
-    )
+    try:
+        cfg = ScanConfig(
+            min_short_side=min_short_side,
+            max_aspect_ratio=max_aspect_ratio,
+            blur_threshold=blur_threshold,
+            cluster_distance=-1 if no_cluster else cluster_distance,
+            diversity_weight=diversity_weight,
+            max_workers=max_workers,
+        )
+    except ValidationError as exc:
+        raise _invalid(exc) from exc
     faces_cfg = FaceConfig(
         enabled=faces,
         model=faces_model,
@@ -353,6 +411,10 @@ def scan(
     # scan rather than after it: unknown labels, inverted ranges, missing models.
     dest = move_to or copy_to or symlink_to
     mode = "move" if move_to else ("symlink" if symlink_to else "copy")
+    crops = crops or detect_watermarks
+    if crops and dest is not None and mode != "copy":
+        typer.echo("Error: --crops writes cropped files; export with --copy-to", err=True)
+        raise typer.Exit(1)
     try:
         label_thresholds = _label_thresholds(nsfw_label_thresholds)
     except ValueError as exc:
@@ -387,7 +449,6 @@ def scan(
             dest=str(dest) if dest else str(source),
             mode=mode,
             min_score=min_score,
-            include_rejected=include_rejected,
             keep_similar=keep_similar,
             max_keep=max_keep,
             face_clusters=[c.strip() for c in face_clusters.split(",")] if face_clusters else None,
@@ -421,10 +482,7 @@ def scan(
             run_stats=stats,
         )
     except ValidationError as exc:
-        for err in exc.errors():
-            field = ".".join(str(x) for x in err["loc"]) or "request"
-            typer.echo(f"Error: {field}: {err['msg']}", err=True)
-        raise typer.Exit(2) from exc
+        raise _invalid(exc) from exc
 
     from argus_curator.attributes import fairface_available, mivolo_available
 
@@ -493,6 +551,7 @@ def scan(
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
+        crop_cfg=CropConfig(enabled=crops, detect=detect_watermarks, max_cut=max_cut, reject_overlay=not keep_overlays),
     )
 
     typer.echo("=" * 56)
@@ -544,14 +603,15 @@ def scan(
         # Count against the threshold the export will apply, over its classes.
         at = export_req.nsfw_threshold if export_req.nsfw_threshold is not None else 0.5
         exposed = sum(1 for r in scored if nsfw_mod.exposed_score(r.nsfw.labels, export_req.nsfw_exposed_labels) >= at)
-        unchecked = summary.total - len(checked)
+        # A rejected frame is not sent, so its missing score is no failure.
+        unchecked = sum(1 for r in summary.results if r.passed and (r.nsfw is None or r.nudenet_failed))
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
         typer.echo(f"  NudeNet:               {len(checked)} checked, {exposed} with exposed score >= {at:g}{tail}")
     if summary.guard_config.enabled:
         judged = [r.guard for r in summary.results if r.guard is not None]
         by_rule = Counter(guard_mod.rule_letter(rule) for g in judged for rule in g.rules)
         rules = f" ({', '.join(f'{k}={n}' for k, n in sorted(by_rule.items()))})" if by_rule else ""
-        unchecked = summary.total - len(judged)
+        unchecked = sum(1 for r in summary.results if r.passed and r.guard is None)
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
         unsafe = sum(1 for g in judged if not g.safe)
         typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{tail}")

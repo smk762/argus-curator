@@ -3,7 +3,7 @@
 Routes (section 4 of the brief):
 
     GET  /health
-    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet, erax, singguard }
+    GET  /detectors        -> { torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, places365, garments, nudenet, erax, watermark, singguard }
     POST /faces            -> { source, faces: [{age_estimate_years, bbox}] }  (memory only)
     POST /scan/folder      -> ScanSummary
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
@@ -44,11 +44,12 @@ from argus_cortex.gpu import GpuLeaseTimeout
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from argus_curator import __version__, export, scanner
+from argus_curator import __version__, crops, export, scanner
 from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator import prefilter as prefilter_mod
+from argus_curator import watermarks as watermarks_mod
 from argus_curator.attributes import fairface_available, mivolo_available
 from argus_curator.bodies import bodies_available
 from argus_curator.faces import faces_available
@@ -209,6 +210,7 @@ def _detectors() -> dict[str, bool | list[str]]:
         # A NudeNet / EraX server URL is configured; reachability is not probed here.
         "nudenet": nsfw_mod.configured(),
         "erax": erax_mod.configured(),
+        "watermark": watermarks_mod.configured(),
         "singguard": guard_mod.configured(),
         # Policy names a scan can pass as guard.policy; empty without a server.
         "singguard_policies": list(guard_mod.POLICIES) if guard_mod.configured() else [],
@@ -514,6 +516,11 @@ def create_app(
             # ScanRequest.prefilter: drop nsfw / faceless / ageless images before
             # scenes, garments and SingGuard (reject_reason "prefilter:*").
             "prefilter": True,
+            # ScanRequest.crops: crops applied to the bytes in memory, so every
+            # check sees the cropped frame; export writes it cropped (copy only).
+            "crops": True,
+            # CropConfig.detect: watermarks found by ARGUS_CURATOR_WATERMARK_URL and cut away at the edges.
+            "watermark_detect": True,
             # ExportRequest.carry_sidecars / run_stats, ExportResult.sidecars_carried
             # / run_stats_path, and a move export dropping the moved rows from the
             # cached scan (0.13 and later).
@@ -624,6 +631,16 @@ def create_app(
         # and the face rules drop every image.
         if (why := prefilter_mod.problem(req.prefilter, req.faces, nsfw_mod.resolve_enabled(req.nsfw))) is not None:
             raise HTTPException(status_code=400, detail=why)
+        if req.crops.enabled and req.crops.detect:
+            try:
+                url = watermarks_mod.client()
+            except ModelUnavailable:
+                url = None
+            if url is None:
+                state = "is not a valid http(s) URL" if watermarks_mod.configured() else "is not set"
+                raise HTTPException(
+                    status_code=400, detail=f"watermark detection requested but {watermarks_mod.URL_ENV} {state}"
+                )
         wanted = (
             (req.faces.fairface, fairface_available, "FairFace", "ARGUS_CURATOR_FAIRFACE_MODEL", "fairface-convert"),
             (req.faces.mivolo, mivolo_available, "MiVOLO", "ARGUS_CURATOR_MIVOLO_MODEL", "mivolo-convert"),
@@ -733,6 +750,7 @@ def create_app(
                 nsfw_cfg=req.nsfw,
                 guard_cfg=req.guard,
                 prefilter_cfg=req.prefilter,
+                crop_cfg=req.crops,
                 scan_id=scan_id,
                 progress=lambda payload: _note_progress(scan_id, requested, payload),
                 cancelled=lambda: gate.cancelled(scan_id),
@@ -790,6 +808,7 @@ def create_app(
                     nsfw_cfg=req.nsfw,
                     guard_cfg=req.guard,
                     prefilter_cfg=req.prefilter,
+                    crop_cfg=req.crops,
                     scan_id=scan_id,
                     progress=on_progress,
                     chunk=on_chunk,
@@ -994,10 +1013,17 @@ def create_app(
         path: str = Query(..., description="image path relative to the scan/mount root"),
         scan_id: str | None = Query(None, description="resolve relative to this scan's folder"),
     ) -> Response:
-        target = _image_file(path, scan_id)
+        summary = store.load(scan_id) if scan_id else None
+        if scan_id and summary is None:
+            raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
+        target = _image_file(path, scan_id, _scan_root_or_400(summary) if summary else None)
+        # A row's face boxes are of the frame the scan saw, so a viewer's thumbnail has to be that frame too.
+        box = next((r.crop for r in summary.results if r.rel_path == path), None) if summary else None
 
         def _render() -> bytes:
             with Image.open(target) as img:
+                if box is not None:
+                    img = crops.crop_image(img, box)
                 img = img.convert("RGB")
                 img.thumbnail((THUMB_MAX, THUMB_MAX))
                 buf = io.BytesIO()
@@ -1093,6 +1119,11 @@ def create_app(
         ):
             if problem is not None:
                 raise HTTPException(status_code=400, detail=problem)
+        if req.mode != "copy" and any(r.crop is not None for r in summary.results):
+            # Its cropped images must be written cropped; a link or a move would pass on the watermark.
+            raise HTTPException(
+                status_code=400, detail=f'this scan cropped images, so it exports only by mode "copy", not "{req.mode}"'
+            )
         # The scan's images are read straight from `abs_path`, so a scan rooted
         # outside the source root would export files the root should fence off.
         _scan_root_or_400(summary)
@@ -1108,7 +1139,7 @@ def create_app(
         dest = _resolve_within(root, req.dest)
         return summary, req.model_copy(update={"dest": str(dest)})
 
-    def _drop_moved(summary: ScanSummary, result: ExportResult) -> None:
+    def _drop_moved(summary: ScanSummary, moved: list[str]) -> None:
         """After a move export, drop the moved images from the cached scan, as delete does.
 
         Their sources are gone, so a cached row would point thumbnails and a
@@ -1117,21 +1148,32 @@ def create_app(
         off the event loop. The files have moved either way, so a failure to
         update the cache is logged rather than failing the export.
         """
-        if result.mode != "move" or not result.exported_paths:
+        if not moved:
             return
         try:
             # Re-read: the export can run for minutes, and saving the copy
             # loaded before it would put back rows a delete removed meanwhile.
-            current = store.load(summary.scan_id) or summary
-            scanner.drop_results(current, list(result.exported_paths))
+            current = store.load(summary.scan_id)
+            if current is None:  # Deleted meanwhile: saving would bring the scan back.
+                return
+            scanner.drop_results(current, moved)
             store.save(current)
         except Exception as exc:
             logger.warning("export_cache_drop_failed", scan_id=summary.scan_id, error=str(exc))
 
     def _export_and_drop(summary: ScanSummary, req: ExportRequest, progress: Any = None) -> ExportResult:
-        result = export.export_selection(summary, req, progress=progress)
-        _drop_moved(summary, result)
-        return result
+        # A move that fails after some files left still has to drop their rows:
+        # those sources are gone whatever the client hears, as with a partial delete.
+        moved: list[str] = []
+        try:
+            return export.export_selection(summary, req, progress=progress, moved=moved)
+        except Exception as exc:
+            if not moved:
+                raise
+            # A retry cannot bring these back, so the client has to hear about them.
+            raise RuntimeError(f"{exc}; {len(moved)} file(s) already left the source") from exc
+        finally:
+            _drop_moved(summary, moved)
 
     @app.post("/export", response_model=ExportResult)
     async def run_export(req: ExportRequest) -> ExportResult:

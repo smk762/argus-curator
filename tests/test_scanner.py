@@ -188,7 +188,7 @@ def test_faces_and_nsfw_run_side_by_side_and_chunks_say_what_is_still_ahead(
     assert "nsfw" not in by_phase["nsfw"][-1]["pending_checks"]
     assert by_phase["identities"][-1]["pending_checks"] == []
     assert summary.nsfw_config.enabled is True
-    assert all(r.nsfw is not None for r in summary.results)
+    assert all((r.nsfw is not None) == r.passed for r in summary.results)
 
 
 def test_set_age_reaches_the_faceless_frames_before_the_guard_pass(

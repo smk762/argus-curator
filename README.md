@@ -58,14 +58,15 @@ argus-curator scan /data/inbox --mivolo --scenes --garments --csv report.csv --j
 
 # 2. Review report.csv: one row per image with every tag and its confidence.
 
-# 3. Keep only images whose primary face reads as clearly adult. --min-score 0,
-#    --include-rejected and --keep-similar stop quality and duplicates from
-#    removing anything, so age is the only criterion. Images where no age could
-#    be estimated (no face found, or too blurry to pass the hard filters that
-#    face detection runs behind) are excluded as `face-attributes-missing`: the
-#    filter fails closed rather than letting unknowns through.
+# 3. Keep only images whose primary face reads as clearly adult. --min-score 0
+#    and --keep-similar stop score and duplicates from removing anything, so
+#    among the images that passed the hard filters age is the only criterion.
+#    An image that failed them is never kept, and shows its own reject reason.
+#    Images where no age could be estimated (no face found) are excluded as
+#    `face-attributes-missing`: the filter fails closed rather than letting
+#    unknowns through.
 argus-curator scan /data/inbox --mivolo --min-age 25 \
-    --min-score 0 --include-rejected --keep-similar \
+    --min-score 0 --keep-similar \
     --copy-to /data/approved --csv decisions.csv
 ```
 
@@ -290,6 +291,9 @@ the frame's SingGuard context says that no face is visible and what the rest
 of the set shows. It is an inference about the set, not a reading of the
 frame: a viewer shows it as such, and where a wrong age is the costlier
 mistake treats it as it treats a measured one. `/health` reports `set_age`.
+Deleting images re-reads the set age from the faces left, which can change it,
+remove it or give one to a frame that had none; a check that already ran is not
+run again.
 
 ### Scene tags (Places365)
 
@@ -451,7 +455,7 @@ mapped (a bare male chest is fine); one NudeNet did not box still counts.
 When NudeNet's check failed, the filled image also gets `nudenet_failed:
 true` and the NudeNet filters exclude it as `nsfw-unchecked` unless the EraX
 hits reach a threshold (EraX has no buttocks class). EraX runs beside
-NudeNet on every image, and each nsfw row is streamed as soon as it is
+NudeNet on every image that passed the hard filters, and each nsfw row is streamed as soon as it is
 decided: at once when NudeNet scored it exposed, otherwise when EraX has
 answered too. `--no-nsfw` turns both off. `GET /detectors` reports `erax`.
 
@@ -511,7 +515,8 @@ server judges each image against a whole moderation policy and answers with a
 It gives **no scores**, so it complements NudeNet rather than replacing it. It
 runs a vision language model: about a second per image in `fast` mode, several
 in `fast-slow` (which also writes why a rule fired). The default is `cascade`
-(`fast` for every image, `slow` for what `fast` flags). `cascade` and `slow`
+(`fast` for every image, `slow` for what `fast` flags; a frame with an exposed
+NudeNet or EraX reading of 0.2 or more skips `fast` and is judged `slow`). `cascade` and `slow`
 are modes of argus-cull's and agent-composer's `singguard` services; a stock
 SingGuard server answers 400 to them. Curator then retries in `fast`, and once
 `fast` works it judges the rest of the run in `fast` and logs
@@ -582,7 +587,11 @@ the keep reason (`guard-unsafe:adult-granular`). The CSV report adds a
 `guard_variants` column.
 `scripts/guard_eval.py --url <singguard>` scores every policy on the text
 probes in `eval/guard_probes.jsonl` and on an optional folder of images
-sorted by expected verdict.
+sorted by expected verdict. `--scan-json <scan_id>.json --context age,scene`
+sends each image with the context and crop of its row in a saved scan, since
+context changes verdicts and a bare image may not reproduce what a scan saw.
+`--candidate NAME=PARENT:FILE` tries a policy wording from a file, scored as
+its parent policy. Rows and the table record the pass that decided each verdict.
 
 Each image records `guard.safe`, the rules that fired, the explanation, the
 model and the policy: `default`, `adult`, or `custom-<sha256 prefix>` of the
@@ -619,12 +628,20 @@ The rules run once, right after identities (so a set age counts), on the
 images that passed the hard filters. A dropped image stays in the results as
 a reject with `reject_reason` `prefilter:nsfw`, `prefilter:no-face` or
 `prefilter:no-age` (the first that applies, in that order); hard rejects keep
-their own reason and are still judged by SingGuard. Unlike a hard reject, a
-dropped image is never kept or exported: not with `include_rejected`
-(`--include-rejected`), whatever its score, and not when named in an export's
-`selection`. Its keep reason (`/scan/{id}/select`, the CSV report) is its
-`reject_reason`, e.g. `prefilter:nsfw`. A streaming scan sends the
-dropped images in a `prefilter` chunk. A rule without the check it needs
+their own reason. A hard reject gets no face or age reading, so the under-18
+rule could not speak for it, and it is not sent to NudeNet, EraX or SingGuard
+either; `min_short_side` cannot go below 512 for the same reason. A dropped
+image has been through faces, NudeNet and EraX, since the rules read them, but
+not SingGuard. No rejected image, dropped or hard, is kept or exported, whatever
+its score, and not when named in an export's `selection`; `include_rejected` is
+ignored. Its keep reason (`/scan/{id}/select`, the CSV report) is its
+`reject_reason`, e.g. `prefilter:nsfw`. A dropped image no longer counts
+toward its identity: `face_clusters[].size` and the representative leave it
+out, an identity with only dropped images is removed from `face_clusters`, and
+its rows and `set_age.cluster_id` keep naming it. The pooled attributes and the
+set age were read before the drop and still include it. A streaming scan sends
+the dropped images in a `prefilter` chunk, with the recounted `face_clusters`.
+A rule without the check it needs
 (`drop_nsfw` with NudeNet off or no `ARGUS_CURATOR_NUDENET_URL`) is refused
 with HTTP 400 (CLI exit 2). The summary records the rules as
 `prefilter_config`, and `/health` reports `prefilter`.
@@ -632,6 +649,83 @@ with HTTP 400 (CLI exit 2). The summary records the rules as
 ```bash
 # Faces with an age only, and no SingGuard pass on nudity NudeNet already saw
 argus-curator scan /data/inbox --mivolo --drop-nsfw --drop-no-age --csv report.csv
+```
+
+### Crops: watermarks and borders, without touching the source
+
+A watermark or a border band is something every check reads and a trainer
+learns. With crops on, a boxed image is cropped once, in memory, right after
+it is read, so scoring, faces, NudeNet, EraX, scenes, garments and SingGuard
+all judge the cropped frame, and export writes it cropped. The source file is
+only ever read.
+
+A box is `{"left", "top", "right", "bottom"}` in pixels of the image **as
+displayed** (after its EXIF orientation; `right`/`bottom` exclusive), which is
+what an editor or a browser shows when the crop is drawn. It comes from a
+sidecar beside the source, `photo.jpg.crop.json`, or inline on the request,
+keyed by `rel_path`; an inline box wins:
+
+```jsonc
+"crops": { "enabled": true, "sidecars": true,
+           "boxes": { "set1/IMG_0001.jpg": { "left": 0, "top": 0, "right": 3000, "bottom": 3800 } } }
+```
+
+An image with no box is scanned as it is. The cropped image is re-encoded in
+its own format (JPEG and lossy WebP at quality 95, keeping the colour profile
+and the EXIF less its orientation), upright. `ImageResult.crop` records the
+box; `width`, `height` and every face and person box are of the cropped frame.
+A box that leaves the frame, is empty, or a sidecar that cannot be read makes
+the image a reject (`crop:invalid`, `crop:unreadable`, `crop:failed`) that is
+never kept or exported, as with the prefilter: it would otherwise ship with
+the watermark. Like any reject, it skips NudeNet, EraX and SingGuard.
+
+Export writes each cropped image cropped, so a scan that cropped anything
+exports only by `mode: "copy"` (HTTP 400 otherwise; a link or a move would
+hand on the source). `ExportResult.cropped` counts them and each manifest row
+carries its `crop` (manifest 2.2). The `.crop.json` sidecar is not carried.
+With `carry_sidecars` and without `write_xmp`, a carried `.xmp` keeps face
+regions drawn on the uncropped frame; with `write_xmp` they are replaced by
+the cropped frame's. `--xmp-sources` writes no regions for a cropped image, as
+its sidecar describes the uncropped original.
+
+`/thumb?scan_id=` shows the cropped frame, which the row's boxes fit. `/image`
+stays the original file: offset boxes by `crop.left` and `crop.top` to draw on it.
+
+#### Finding watermarks
+
+With `"detect": true` the boxes are found rather than given. Every image
+without a box by hand goes to a watermark detector, `ARGUS_CURATOR_WATERMARK_URL`:
+a server speaking NudeNet's `POST /infer` shape, as the EraX sidecar does
+(argus-cull's `watermark` service runs fancyfeast's YOLO11x, the detector
+behind JoyCaption's watermark tags). Curator sends each frame upright, so the
+boxes come back in the pixels it crops by, and never imports Ultralytics.
+
+Each hit of at least `min_conf` (0.4) is cut away along one of the four
+edges, plus `margin` pixels (4). Every way of assigning the hits to edges is
+tried, and the one that keeps the most of the frame wins, provided no edge
+loses more than `max_cut` of its side (0.15). A hit that no such cut removes,
+or more than six hits (a tiled mark), is an overlay: with `reject_overlay`
+(the default) the image is a `crop:overlay` reject, else it is kept uncropped.
+An image the detector could not check is a `crop:unchecked` reject, so a
+detector that is down never lets a watermark through. `ImageResult.watermarks`
+lists the hits on the uncropped frame (empty: none found), and `crop_source`
+says whether a crop was `manual` or `detected`. A streaming scan reports the
+pass as phase `watermarks`, before scoring. Detection runs only when a scan
+asks for it; asking without a detector is HTTP 400. `/detectors` reports
+`watermark`, `/health` reports `watermark_detect`.
+
+```jsonc
+"crops": { "enabled": true, "detect": true, "max_cut": 0.15, "reject_overlay": true }
+```
+
+The summary records the setting as `crop_config`, and `/health` reports
+`crops`. On the CLI, `--crops` reads the sidecars, and `--detect-watermarks`
+(with `--watermark-url`, `--max-cut`, `--keep-overlays`) finds them:
+
+```bash
+# Same folder with and without crops: two scans to compare verdicts
+argus-curator scan /data/inbox --detect-watermarks --watermark-url http://watermark:8080 --json cropped.json
+argus-curator scan /data/inbox --json uncropped.json
 ```
 
 ### HTTP server (:8101, peer to argus-lens)
@@ -676,7 +770,7 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
-| `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount |
+| `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount, of the cropped frame when that scan cropped it |
 | `GET  /image?path=<rel>&scan_id=<id>` | Original image bytes, same containment as `/thumb` |
 | `POST /scan/{scan_id}/select` | Dry-run of the export filter → `{total, kept, rows: [{rel_path, abs_path, keep_reason}]}`. Writes nothing |
 | `POST /scan/{scan_id}/delete` | Delete source files in the scan (`rel_path` or `rel_paths`, all or nothing: a path not in the scan is a 404, a running scan a 409) and drop their rows → `{rel_paths, total}`. Any image needs `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1` (else 403 unless under-18 exposed); `/health` reports `delete_any` |
@@ -691,12 +785,13 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 The `*/stream` variants emit `event: progress` frames (`{phase, done, total}`)
 while the work runs, then a single `event: complete` frame carrying the same
 payload the non-streaming endpoint returns (or `event: error`). A scan runs
-`scoring` → `faces` and `nsfw` together → `identities` → `scenes` →
-`garments` → `guard` → `clustering`: ages and the exposed score come first, so
+`scoring` → `faces` and `nsfw` together → `identities` → `prefilter` →
+`scenes` → `garments` → `guard` → `clustering`: ages and the exposed score come first, so
 a viewer can lift a blur as soon as both are known, and their progress events
 interleave while both run; identities follow at once, so a set age is known
-before the guard pass reads it as context. Scan progress and `event: chunk` frames carry
-`pending_checks`, the checks among `faces`, `nsfw` and `guard` whose results
+before the guard pass reads it as context. Every `event: chunk` frame carries
+the current `face_clusters`, empty until the identities are read. Scan progress
+and `event: chunk` frames carry `pending_checks`, the checks among `faces`, `nsfw` and `guard` whose results
 have not all landed yet; a check that could not run is not listed.
 
 A scan stops cooperatively: `POST /scan/{id}/cancel` raises a flag the
@@ -732,7 +827,7 @@ has it.
   "dest": "training-set-v1",        // relative to the server's --export-root
   "mode": "copy",                   // "copy" | "symlink" | "move" (move needs --allow-move)
   "preserve_structure": true,
-  "min_score": 0.6, "include_rejected": false, "keep_similar": false,
+  "min_score": 0.6, "keep_similar": false,
   "face_clusters": ["face_2"],      // optional: export only these identities
   "face_poses": ["frontal", "three_quarter"],  // optional: export only these head poses
   "face_genders": null,             // optional: gender filter on the primary face
@@ -774,7 +869,12 @@ destination sidecar is replaced, as an existing destination image is. A
 sidecar that fails to transfer does not undo its image: it is logged and
 counted in `ExportResult.sidecars_failed`; `sidecars_carried` counts the ones
 that landed. Two images that share a stem in one folder (`a.jpg`, `a.png`)
-share `a.txt`: under copy both get it, under move the first one takes it.
+share `a.txt`, and both get it in every mode. Under move it is copied to each
+image but the last, which takes the original; if any of them fails to transfer,
+the original stays in the source folder. The export's own files keep their
+names: with sidecars carried, an image at the destination root with the stem
+`run_stats`, `manifest` or `curation_report` gets a hash suffix, even with
+`preserve_structure`, so its `.json` cannot be overwritten by `run_stats.json`.
 
 With `write_xmp` as well, sidecars are carried first and curator's data is then
 merged onto the carried `photo.jpg.xmp` (or, when only a Lightroom `photo.xmp`
@@ -797,7 +897,8 @@ A server `mode: "move"` export also drops the moved images from the cached
 scan, as `POST /scan/{id}/delete` does: their sources are gone, so the rows
 would only point thumbnails at missing files. Only rows whose transfer
 succeeded are dropped, and near-duplicate groups and identities are
-recounted. A move export of the scan that is still running is refused with
+recounted. An export that fails after files moved still drops their rows, and
+its error says how many left the source. A move export of the scan that is still running is refused with
 409, since that scan's next save would put the rows back. `GET /health` says
 `export_sidecars: true` on a server with all of this.
 
@@ -858,17 +959,18 @@ Export writes a JSONL manifest (one row per **exported** image — rows exist
 only for files whose transfer actually succeeded):
 
 ```jsonc
-{ "manifest_version": "2.1", "rel_path": "...", "abs_path": "...",
+{ "manifest_version": "2.2", "rel_path": "...", "abs_path": "...",
   "exported_path": "...", "exported_abs_path": "...", "target_profile": { ... },
   "primary_face_cluster": "face_2", "primary_face_pose": "three_quarter",
-  "score": 0.87, "similar_group": 3 }
+  "score": 0.87, "similar_group": 3, "crop": null }
 ```
 
 The row shape is published in the wire schema as `ManifestRow`.
 `exported_path` is the path actually written under the export root — consumers
 must use it rather than re-deriving a location from `rel_path`. Flattened
 exports (`preserve_structure: false`) de-collide duplicate basenames with a
-short hash suffix, so the two can differ; collisions are detected
+short hash suffix, and with `carry_sidecars` a root image with a reserved stem
+gets one in any export, so the two can differ; collisions are detected
 case-insensitively (and Unicode-normalised) so the result is safe on
 case-insensitive destination filesystems, and the export fails loudly rather
 than overwrite if a unique name cannot be generated. The same
@@ -889,6 +991,10 @@ and nothing in a row names that root.
 from: `mode: "move"` deletes the source during transfer, so for a moved export
 `abs_path` equals `exported_abs_path`. Use `rel_path` for the original location
 within the scan.
+
+`crop` (manifest 2.2) is the box baked into the exported file when the scan
+[cropped](#crops-watermarks-and-borders-without-touching-the-source) it, in
+the source's displayed pixels; `null` means the file is the source as it was.
 
 `GET /health` reports `manifest_version` alongside the package `version`, so a
 consumer can check the contract it is about to speak — and refuse an unknown

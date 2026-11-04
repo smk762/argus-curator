@@ -28,6 +28,7 @@ _MODEL_ENVS = (
         (["--scene", "beech"], "unknown Places365 scene"),
         (["--garment", "tshirt"], "garments"),
         (["--min-age", "40", "--max-age", "25"], "above max_age_years"),
+        (["--min-short-side", "256"], "greater than or equal to 512"),
     ],
 )
 def test_bad_filters_fail_before_scanning(dataset: Path, tmp_path: Path, args: list[str], message: str) -> None:
@@ -185,3 +186,18 @@ def test_drop_nsfw_is_recorded_on_the_summary(dataset: Path, tmp_path: Path, mon
     )
     assert result.exit_code == 0, result.output
     assert json.loads(out.read_text())["prefilter_config"]["drop_nsfw"] is True
+
+
+def test_rejected_frames_do_not_count_as_failed_checks(dataset: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator import nsfw as nsfw_mod
+    from argus_curator.models import NsfwResult
+
+    def score_all(results: list, *_a: object, **_k: object) -> bool:
+        for row in results:
+            row.nsfw = NsfwResult(exposed_score=0.0)
+        return True
+
+    monkeypatch.setattr(nsfw_mod, "check_images", score_all)
+    result = runner.invoke(app, ["scan", str(dataset), "--nudenet-url", "http://n:1"])
+    assert result.exit_code == 0, result.output
+    assert "NudeNet:" in result.output and "could not be checked" not in result.output

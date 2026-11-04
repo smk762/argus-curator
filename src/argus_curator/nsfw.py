@@ -21,7 +21,10 @@ from argus_cortex.moderation import (
     NudeNetClient,
     exposed_score,  # noqa: F401 - re-exported for selection
 )
-from argus_cortex.moderation.nudenet import to_result  # noqa: F401 - re-exported
+from argus_cortex.moderation.nudenet import (
+    MIN_REPORTED_SCORE,
+    to_result,  # noqa: F401 - re-exported
+)
 
 from argus_curator.models import ImageResult, NsfwConfig
 from argus_curator.remote import RemoteService, check_all
@@ -91,9 +94,15 @@ def exposed_reading(result: ImageResult) -> float | None:
     """The image's exposed-nudity reading, or ``None`` when NudeNet (and EraX) did not score it.
 
     The higher of the recorded ``exposed_score`` and the exposed classes' label
-    scores. Compared against ``MIN_REPORTED_SCORE`` (0.2) by :func:`selection.minor_exposed`
-    and the scan prefilter.
+    scores. Compared against ``MIN_REPORTED_SCORE`` (0.2) by :func:`is_exposed`, which
+    :func:`selection.minor_exposed`, the scan prefilter and the cascade router share.
     """
     if result.nsfw is None:
         return None
     return max(result.nsfw.exposed_score, exposed_score(result.nsfw.labels))
+
+
+def is_exposed(result: ImageResult) -> bool:
+    """Whether :func:`exposed_reading` is at least ``MIN_REPORTED_SCORE`` (0.2); unscored is not exposed."""
+    reading = exposed_reading(result)
+    return reading is not None and reading >= MIN_REPORTED_SCORE

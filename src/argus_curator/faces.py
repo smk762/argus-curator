@@ -15,14 +15,24 @@ from __future__ import annotations
 
 import io
 import threading
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
 import structlog
 
-from argus_curator.attributes import RawAttributes, pool, to_attributes
-from argus_curator.models import FaceCluster, FaceConfig, FaceDetection, ImageResult, PersonDetection, SetAge
+from argus_curator.attributes import RawAttributes, from_readings, pool, to_attributes, to_readings
+from argus_curator.models import (
+    FaceCluster,
+    FaceConfig,
+    FaceDetection,
+    FaceReadings,
+    ImageResult,
+    PersonDetection,
+    ScanSummary,
+    SetAge,
+)
 from argus_curator.runtime import gpu_lease, providers
 
 logger = structlog.get_logger()
@@ -490,6 +500,7 @@ def _detect_one(
     raws = _face_attributes(sessions, image, kps_by_face, [f.bbox for f in r.faces], rel, body_crops=body_crops)
     for f, raw in zip(r.faces, raws, strict=True):
         f.attributes = to_attributes(raw)
+        f.readings = to_readings(raw)
     found.raws.extend(raws)
     _link_people(r, sessions[1], image, boxes_xyxy, cfg, rel)
     _assign_primary(r)
@@ -545,45 +556,77 @@ def cluster_identities(
     return clusters
 
 
-def infer_set_age(
-    results: list[ImageResult], clusters: list[FaceCluster], cfg: FaceConfig
-) -> tuple[SetAge | None, str | None]:
+def repool_identities(clusters: list[FaceCluster], results: list[ImageResult]) -> None:
+    """Pool each identity's attributes again from the faces in *results*, in place.
+
+    Every face in *results* counts, prefiltered ones too, as when the scan pooled
+    them. An identity with a face that has no readings (a scan cached before they
+    were kept) keeps its attributes: a pool of some of its faces would look exact.
+    """
+    readings: dict[str, list[FaceReadings | None]] = {}
+    for r in results:
+        for f in r.faces:
+            if f.cluster_id is not None:
+                readings.setdefault(f.cluster_id, []).append(f.readings)
+    for cluster in clusters:
+        members = readings.get(cluster.cluster_id, [])
+        if members and all(m is not None for m in members):
+            cluster.attributes = pool([from_readings(m) for m in members if m is not None])
+
+
+def infer_set_age(results: list[ImageResult], cfg: FaceConfig) -> tuple[SetAge | None, str | None]:
     """Give the passing frames with no face an age read off the set, when the scan looks like one subject.
 
     The dominant identity must hold at least ``cfg.set_age_min_share`` of the
-    scan's faces and have at least ``cfg.set_age_min_faces`` MiVOLO ages; its
+    faces in *results* and have at least ``cfg.set_age_min_faces`` MiVOLO ages; its
     median age becomes each faceless frame's :class:`SetAge`. Returns the age
     and ``None``, or ``None`` and why nothing was given. Frames the hard
     filters rejected are left alone: face detection never looked at them.
     """
-    if not clusters:
+    sizes = Counter(f.cluster_id for r in results for f in r.faces if f.cluster_id is not None)
+    if not sizes:
         return None, "no faces were found in this scan"
-    total = sum(cluster.size for cluster in clusters)
-    top = max(clusters, key=lambda cluster: cluster.size)
-    share = top.size / total if total else 0.0
+    # A tie goes to the lowest id, so it does not change with the order of the rows.
+    top = min(sizes, key=lambda cluster_id: (-sizes[cluster_id], len(cluster_id), cluster_id))
+    share = sizes[top] / sum(sizes.values())
     if share < cfg.set_age_min_share:
         return (
             None,
-            f"the largest identity ({top.cluster_id}) has {share:.0%} of the faces, {cfg.set_age_min_share:.0%} needed",
+            f"the largest identity ({top}) has {share:.0%} of the faces, {cfg.set_age_min_share:.0%} needed",
         )
     ages = [
         face.attributes.age_years
         for r in results
         for face in r.faces
-        if face.cluster_id == top.cluster_id
+        if face.cluster_id == top
         and face.attributes is not None
         and face.attributes.age_years is not None
         and face.attributes.age_source in (None, "mivolo")
     ]
     if len(ages) < cfg.set_age_min_faces:
-        return None, f"{top.cluster_id} has {len(ages)} MiVOLO ages, {cfg.set_age_min_faces} needed"
-    set_age = SetAge(
-        years=round(float(np.median(ages)), 1), cluster_id=top.cluster_id, faces=len(ages), share=round(share, 3)
-    )
+        return None, f"{top} has {len(ages)} MiVOLO ages, {cfg.set_age_min_faces} needed"
+    set_age = SetAge(years=round(float(np.median(ages)), 1), cluster_id=top, faces=len(ages), share=round(share, 3))
     for r in results:
         if r.passed and not r.faces and not any(p.age_years is not None for p in r.people):
             r.set_age = set_age
     return set_age, None
+
+
+def reread_set_age(summary: ScanSummary, results: list[ImageResult]) -> None:
+    """Read the set age again from *results*, for the rows that have one and any that now qualify.
+
+    Faces count as they did in the scan, which read the age before the prefilter
+    ran, so a dropped frame still counts and still follows the set's age. Checks
+    that already used the old age are not run again.
+    """
+    if not summary.faces_config.set_age:
+        return
+    aged = [r for r in results if r.set_age is not None]
+    for r in aged:
+        r.set_age = None
+    summary.set_age, summary.set_age_skipped = infer_set_age(results, summary.faces_config)
+    for r in aged:
+        r.set_age = summary.set_age
 
 
 def detect_and_cluster(

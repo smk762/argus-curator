@@ -11,6 +11,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from argus_curator import export  # noqa: E402
 from argus_curator.server import create_app  # noqa: E402
 
 
@@ -99,6 +100,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "garments",
         "nudenet",
         "erax",
+        "watermark",
         "singguard",
         "singguard_policies",
     }
@@ -220,18 +222,18 @@ def test_prefiltered_images_are_never_kept_or_exported(contained: tuple[TestClie
     loose = {"min_score": 0.0, "include_rejected": True, "keep_similar": True}
     rows = {r["rel_path"]: r["keep_reason"] for r in client.post(f"/scan/{scan_id}/select", json=loose).json()["rows"]}
     assert rows["personA/s2/img.png"] == "prefilter:nsfw"
-    assert rows["personB/blurry.png"] == ""  # an ordinary hard reject is still kept under include_rejected
+    assert rows["personB/blurry.png"].startswith("blur")  # include_rejected keeps no reject
 
     exp = client.post("/export", json={"scan_id": scan_id, "dest": "out", "mode": "copy", **loose}).json()
     assert "personA/s2/img.png" not in exp["selected_rel_paths"]
     assert "personA/s2/img.png" not in exp["exported_paths"]
-    assert "personB/blurry.png" in exp["exported_paths"]
+    assert "personB/blurry.png" not in exp["exported_paths"]
 
     named = client.post(
         "/export",
         json={"scan_id": scan_id, "dest": "named", "selection": ["personA/s2/img.png", "personB/blurry.png"]},
     ).json()
-    assert list(named["exported_paths"]) == ["personB/blurry.png"]
+    assert list(named["exported_paths"]) == []
     assert not (exports / "named" / "personA").exists()
 
 
@@ -719,6 +721,53 @@ def test_move_export_drops_moved_rows_from_the_cached_scan(dataset: Path, tmp_pa
     assert client.get("/thumb", params={"path": other, "scan_id": scan_id}).status_code == 200
 
 
+@pytest.mark.parametrize("endpoint", ["/export", "/export/stream"])
+def test_failed_move_export_still_drops_the_moved_rows(
+    dataset: Path, tmp_path: Path, endpoint: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, exports = _move_client(dataset, tmp_path)
+    scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
+    scan_id, before = scan["scan_id"], scan["total"]
+    moved = "personA/s1/img.png"
+
+    def disk_full(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(export, "write_report", disk_full)
+    # The stream reports the failure in-band, /export as a 500.
+    fail = TestClient(client.app, raise_server_exceptions=False)
+    resp = fail.post(endpoint, json={"scan_id": scan_id, "selection": [moved], "dest": "out", "mode": "move"})
+    if endpoint == "/export":
+        assert resp.status_code == 500
+    else:
+        assert "event: error" in resp.text and "disk full" in resp.text
+    assert "1 file(s) already left the source" in resp.text
+    assert (exports / "out" / moved).is_file() and not (dataset / moved).exists()
+
+    after = client.get(f"/scan/{scan_id}").json()
+    assert after["total"] == before - 1
+    assert moved not in {r["rel_path"] for r in after["results"]}
+
+
+def test_move_export_does_not_bring_back_a_scan_deleted_meanwhile(
+    dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _exports = _move_client(dataset, tmp_path)
+    scan_id = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()["scan_id"]
+    real = export.write_report
+
+    def delete_then_report(*args: object, **kwargs: object) -> None:
+        assert client.delete(f"/scan/{scan_id}").status_code == 200
+        real(*args, **kwargs)
+
+    monkeypatch.setattr(export, "write_report", delete_then_report)
+    selection = ["personA/s1/img.png"]
+    resp = client.post("/export", json={"scan_id": scan_id, "selection": selection, "dest": "out", "mode": "move"})
+
+    assert resp.status_code == 200
+    assert client.get(f"/scan/{scan_id}").status_code == 404
+
+
 def test_copy_export_keeps_the_cached_scan(contained: tuple[TestClient, Path]) -> None:
     client, _exports = contained
     scan = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}}).json()
@@ -1095,8 +1144,9 @@ def test_select_filters_without_writing_the_export_root(contained: tuple[TestCli
     assert loose.status_code == 200
     loose_body = loose.json()
     assert loose_body["total"] == scan["total"]
-    assert loose_body["kept"] == loose_body["total"]
-    assert all(row["keep_reason"] == "" for row in loose_body["rows"])
+    rejected = {r["rel_path"] for r in scan["results"] if not r["passed"]}
+    assert loose_body["kept"] == loose_body["total"] - len(rejected)
+    assert {row["rel_path"] for row in loose_body["rows"] if row["keep_reason"]} == rejected
     assert {row["rel_path"] for row in loose_body["rows"]} == {r["rel_path"] for r in scan["results"]}
 
     tight = client.post(f"/scan/{scan_id}/select", json={"min_score": 0.99})

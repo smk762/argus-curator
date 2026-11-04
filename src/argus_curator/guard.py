@@ -13,8 +13,8 @@ apparent minors. Requests choose a policy by name, never by text.
 SingGuard gives no scores, so its filters are by verdict and by rule. It runs
 a vision language model: expect about a second per image in ``fast`` mode and
 several with ``fast-slow`` or ``slow``. The default is ``cascade`` (``fast``
-for every image, ``slow`` for what ``fast`` flags and for a MiVOLO age under
-18 with an exposed NudeNet score of at least 0.2).
+for every image, ``slow`` for what ``fast`` flags; a frame with an exposed
+NudeNet or EraX reading of at least 0.2 skips ``fast`` and is judged ``slow``).
 
 ``ARGUS_CURATOR_SINGGUARD_CONTEXT`` sends what the scan already knows about an
 image (its MiVOLO age, its folder, its caption sidecar, and optionally scene,
@@ -44,17 +44,14 @@ from argus_cortex.moderation import (
     rule_letter,  # noqa: F401 - re-exported for the CLI
     rule_matches,  # noqa: F401 - re-exported
 )
-from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import POLICIES
 from argus_cortex.moderation.policies import policy_text as cortex_policy_text
 
-from argus_curator.guard_context import CONTEXT_KINDS, body_only_ages, image_context, mivolo_ages
+from argus_curator.guard_context import image_context, parse_kinds
 from argus_curator.models import GuardConfig, GuardPolicy, GuardResult, ImageResult
-from argus_curator.nsfw import exposed_score
-from argus_curator.prefilter import is_prefiltered
+from argus_curator.nsfw import is_exposed
 from argus_curator.remote import check_all, env_set, env_value, float_env
 from argus_curator.runtime import ModelUnavailable
-from argus_curator.selection import minor_exposed
 
 URL_ENV = "ARGUS_CURATOR_SINGGUARD_URL"
 TIMEOUT_ENV = "ARGUS_CURATOR_SINGGUARD_TIMEOUT"
@@ -112,13 +109,10 @@ def context_kinds() -> frozenset[str]:
     raw = env_value(CONTEXT_ENV)
     if raw is None:
         return frozenset()
-    kinds = frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
-    unknown = kinds - CONTEXT_KINDS
-    if unknown:
-        raise ModelUnavailable(
-            f"{CONTEXT_ENV} must name only {', '.join(sorted(CONTEXT_KINDS))}, got {', '.join(sorted(unknown))}"
-        )
-    return kinds
+    try:
+        return parse_kinds(raw)
+    except ValueError as exc:
+        raise ModelUnavailable(f"{CONTEXT_ENV} {exc}") from exc
 
 
 def policy(name: GuardPolicy = "default") -> tuple[str, str | None]:
@@ -221,7 +215,7 @@ def client(name: GuardPolicy = "default", *, mode: str | None = None) -> Fallbac
     """A client for the configured server and policy *name*, or ``None`` when SingGuard is not configured.
 
     *mode* overrides :func:`thinking` for one client: cascade sends most frames
-    in ``cascade``, and the under-18 + exposure pairing in ``slow``.
+    in ``cascade``, and every exposed frame (:func:`force_slow`) in ``slow``.
     """
     url = endpoint()
     if url is None:
@@ -231,25 +225,24 @@ def client(name: GuardPolicy = "default", *, mode: str | None = None) -> Fallbac
 
 
 def force_slow(result: ImageResult, mode: str) -> bool:
-    """Under cascade, skip the fast screen when a young age shares the frame with exposure.
+    """Under cascade, skip the fast screen for every frame NudeNet (or EraX) reads as exposed.
 
-    Fast is only there to save work. A MiVOLO age under 18 with an exposed
-    NudeNet score of at least 0.2 already holds and deletes the frame, so it
-    is cheap to send it to slow. Measured faces and body-only ages go through
-    :func:`minor_exposed`. A faceless frame that took the set's age uses the
-    same pairing.
+    Fast is only there to save work, and a fast pass is final, so a frame it
+    passes is never reasoned about. A Safe bullet for adult content leaned the
+    fast screen towards pass, losing unclear-age cases (eval 2026-11-03).
+    Exposure of 0.2 or more, the lowest score NudeNet reports, goes straight to
+    slow. That includes the under-18 pairing (:func:`minor_exposed`) and a
+    faceless frame with a young set age, which both need the same exposure.
+
+    Frames with no exposed reading keep the fast screen. Measured in #107
+    (2026-11-04, ``adult-cinematic``, 3 runs each): of 31 unexposed ``other``
+    images fast passed 5 at least once. Slow passed 4 of those every time and
+    was noisy on the fifth, so more routing would catch little, while slow
+    costs about 10 times fast per frame. One policy, on calibration buckets.
     """
     if mode != "cascade":
         return False
-    if minor_exposed(result):
-        return True
-    if mivolo_ages(result) or body_only_ages(result):
-        return False
-    if result.set_age is None or result.set_age.years >= 18:
-        return False
-    if result.nsfw is None:
-        return False
-    return exposed_score(result.nsfw.labels) >= MIN_REPORTED_SCORE
+    return is_exposed(result)
 
 
 def check_images(
@@ -265,19 +258,16 @@ def check_images(
     With ``cfg.variants``, every image is then judged again under each variant,
     one pass per policy, and ``guard_variants`` holds every verdict by policy
     name, the official one included. Progress counts images times policies.
-
-    Images the scan prefilter dropped are not judged (nor counted); other
-    rejects are, since a blurry explicit image is still explicit.
+    Which images to judge is the caller's choice: every row in *results* is.
     """
     if not resolve_enabled(cfg):
         return False
-    results = [r for r in results if not is_prefiltered(r)]
     names = [cfg.policy, *cfg.variants]
     clients = {name: client(name) for name in names}
     if clients[cfg.policy] is None:
         raise ModelUnavailable(f"SingGuard check requested but {URL_ENV} is not set")
     mode = thinking()
-    # Cascade's fast pass is a screen. Under-18 + exposure skips it and is judged slow.
+    # Cascade's fast pass is a screen. An exposed frame skips it and is judged slow.
     slow_clients = {name: client(name, mode="slow") for name in names} if mode == "cascade" else {}
     by_rel = {r.rel_path: r for r in results}
     workers = int(float_env(WORKERS_ENV, DEFAULT_WORKERS))
