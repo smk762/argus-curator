@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import time
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import numpy as np
@@ -209,3 +212,85 @@ def test_unopenable_files_do_not_take_the_detector_for_down(
     out = watermarks.detect_all({**corrupt, "good.png": buf.getvalue()})
     assert all("cannot open" in out[rel] for rel in corrupt)
     assert out["good.png"] == ([], (100, 100))
+
+
+@pytest.fixture
+def health_server() -> Iterator[tuple[str, dict]]:  # type: ignore[type-arg]
+    """A local server that answers every GET with ``state["status"]`` and records the paths and auth it saw."""
+    state: dict = {"status": 200, "paths": [], "auth": []}  # type: ignore[type-arg]
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            state["paths"].append(self.path)
+            state["auth"].append(self.headers.get("Authorization"))
+            self.send_response(state["status"])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"127.0.0.1:{server.server_port}", state
+    server.shutdown()
+    server.server_close()
+
+
+def _closed_port() -> str:
+    server = HTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    port = server.server_port
+    server.server_close()
+    return f"http://127.0.0.1:{port}"
+
+
+@pytest.mark.parametrize("status", [200, 404, 401])
+def test_any_answer_below_500_counts_as_up(health_server: tuple[str, dict], status: int) -> None:  # type: ignore[type-arg]
+    host, state = health_server
+    state["status"] = status
+    assert watermarks.WatermarkClient(f"http://{host}").unreachable() is None
+    assert state["paths"] == ["/health"]
+
+
+def test_a_server_error_or_no_answer_is_unreachable(health_server: tuple[str, dict]) -> None:  # type: ignore[type-arg]
+    host, state = health_server
+    state["status"] = 503
+    assert watermarks.WatermarkClient(f"http://{host}").unreachable() == "returned HTTP 503"
+    assert "is not answering" in (watermarks.WatermarkClient(_closed_port()).unreachable() or "")
+
+
+def test_health_follows_the_configured_path_and_credentials(health_server: tuple[str, dict]) -> None:  # type: ignore[type-arg]
+    host, state = health_server
+    assert watermarks.WatermarkClient(f"http://user:secret@{host}/wm/infer?key=1").unreachable() is None
+    assert state["paths"] == ["/wm/health"]
+    assert state["auth"][0].startswith("Basic ")
+
+
+@pytest.mark.parametrize("path", ["/scan/folder", "/scan/folder/stream"])
+def test_server_refuses_a_scan_while_the_detector_is_down(
+    folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    monkeypatch.setenv(watermarks.URL_ENV, _closed_port())
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache"), source_root=str(folder)))
+    r = client.post(path, json={"folder": "", "faces": {"enabled": False}, "crops": {"enabled": True, "detect": True}})
+    assert r.status_code == 503
+    assert "is not answering" in r.json()["detail"]
+
+
+def test_a_scan_not_asking_for_detection_ignores_a_down_detector(
+    folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(watermarks.URL_ENV, _closed_port())
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache"), source_root=str(folder)))
+    r = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}, "nsfw": {"enabled": False}})
+    assert r.status_code == 200
+
+
+def test_cli_refuses_detection_while_the_detector_is_down(folder: Path) -> None:
+    from typer.testing import CliRunner
+
+    from argus_curator.cli import app
+
+    result = CliRunner().invoke(app, ["scan", str(folder), "--detect-watermarks", "--watermark-url", _closed_port()])
+    assert result.exit_code == 2
+    assert "is not answering" in result.output

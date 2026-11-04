@@ -711,7 +711,10 @@ detector that is down never lets a watermark through. `ImageResult.watermarks`
 lists the hits on the uncropped frame (empty: none found), and `crop_source`
 says whether a crop was `manual` or `detected`. A streaming scan reports the
 pass as phase `watermarks`, before scoring. Detection runs only when a scan
-asks for it; asking without a detector is HTTP 400. `/detectors` reports
+asks for it; asking without a detector is HTTP 400, and asking while it is not
+answering (`GET /health` fails or returns 5xx, as while it loads) is HTTP 503,
+so the scan never starts. A server with no `/health` route still counts as up.
+`/detectors` reports
 `watermark`, `/health` reports `watermark_detect`.
 
 ```jsonc
