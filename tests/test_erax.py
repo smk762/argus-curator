@@ -6,7 +6,7 @@ import io
 import json
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from email.parser import BytesParser
 from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +15,7 @@ import pytest
 from PIL import Image
 
 from argus_curator import erax, nsfw
+from argus_curator import faces as faces_mod
 from argus_curator.models import (
     EraxConfig,
     ExportRequest,
@@ -22,6 +23,7 @@ from argus_curator.models import (
     ImageResult,
     NsfwConfig,
     ScanConfig,
+    ScanSummary,
     TargetProfile,
 )
 from argus_curator.runtime import ModelUnavailable, ScanCancelled
@@ -362,6 +364,148 @@ def test_nudenet_exposed_rows_do_not_wait_for_erax(monkeypatch: pytest.MonkeyPat
     assert by["exposed.png"].erax_filled is False
     assert by["missed.png"].erax_filled is True
     assert summary.erax_config.enabled is True
+
+
+class _CleanNudeNet:
+    def check(self, data: bytes, filename: str = "image"):
+        return nsfw.to_result([])
+
+
+def _scan_with_a_faces_chunk_before_erax(
+    monkeypatch: pytest.MonkeyPatch, erax_check: Callable[[], object]
+) -> tuple[ScanSummary, list[dict], list[dict]]:
+    """A scan where a faces chunk and a snapshot land after NudeNet scored the row and before EraX answers."""
+    faces_shipped = threading.Event()
+
+    def fake_faces(results, items, cfg, progress=None, on_done=None):
+        deadline = time.monotonic() + 5
+        while results[0].nsfw is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert results[0].nsfw is not None, "NudeNet never scored the row"
+        on_done(results[0], 1, 1)
+        faces_shipped.set()
+        return faces_mod.DetectedFaces([], [], [])
+
+    class _SlowEraX:
+        url = "http://erax:8080/infer"
+
+        def check(self, data: bytes, filename: str = "image"):
+            assert faces_shipped.wait(5), "the faces chunk never went out"
+            return erax_check()
+
+    monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
+    monkeypatch.setenv(erax.URL_ENV, "http://erax:8080")
+    monkeypatch.setattr(nsfw, "client", lambda: _CleanNudeNet())
+    monkeypatch.setattr(erax, "client", lambda: _SlowEraX())
+    monkeypatch.setattr(faces_mod, "detect_faces", fake_faces)
+    chunks: list[dict] = []
+    saved: list[dict] = []
+    summary = scan_items(
+        [("a.png", "/d/a", _png(20, (600, 600)))],
+        TargetProfile(),
+        ScanConfig(blur_threshold=0.0),
+        FaceConfig(enabled=True),
+        chunk=chunks.append,
+        save=lambda s: saved.append(s.model_dump(mode="json")),
+    )
+    return summary, chunks, saved
+
+
+def _row_in(chunks: list[dict], phase: str) -> dict:
+    return next(r for c in chunks if c["phase"] == phase for r in c["results"])
+
+
+def test_a_faces_chunk_before_erax_answers_carries_no_score(monkeypatch: pytest.MonkeyPatch) -> None:
+    summary, chunks, saved = _scan_with_a_faces_chunk_before_erax(
+        monkeypatch, lambda: erax.to_erax_result([{"class": "vagina", "score": 0.8, "box": [0, 0, 3, 3]}])
+    )
+
+    held = _row_in(chunks, "faces")
+    assert held["nsfw"] is None and held["content_rating"] is None
+    # The only score a client ever sees for the row is the decided one.
+    scores = [r["nsfw"]["exposed_score"] for c in chunks for r in c["results"] if r["nsfw"] is not None]
+    assert scores and set(scores) == {0.8}
+    # GET /scan/{id} serves the snapshots of a running scan, so they hold it back too.
+    assert {r["nsfw"]["exposed_score"] for s in saved for r in s["results"] if r["nsfw"] is not None} == {0.8}
+    assert summary.results[0].nsfw.exposed_score == 0.8
+
+
+def test_a_clean_row_is_released_once_erax_agrees(monkeypatch: pytest.MonkeyPatch) -> None:
+    summary, chunks, _saved = _scan_with_a_faces_chunk_before_erax(monkeypatch, lambda: erax.to_erax_result([]))
+
+    assert _row_in(chunks, "faces")["nsfw"] is None
+    assert _row_in(chunks, "nsfw")["nsfw"]["exposed_score"] == 0.0
+    assert summary.results[0].nsfw.exposed_score == 0.0
+
+
+def test_a_failed_erax_check_still_releases_nudenets_score(monkeypatch: pytest.MonkeyPatch) -> None:
+    def down() -> object:
+        raise erax.EraxCheckFailed("EraX is down")
+
+    summary, chunks, _saved = _scan_with_a_faces_chunk_before_erax(monkeypatch, down)
+
+    assert _row_in(chunks, "nsfw")["nsfw"]["exposed_score"] == 0.0
+    assert summary.results[0].nsfw is not None
+
+
+def test_without_erax_a_faces_chunk_keeps_nudenets_score(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing can change the score, so it goes out at once, even before NudeNet's own callback."""
+    scored = threading.Event()
+    faces_shipped = threading.Event()
+
+    def fake_faces(results, items, cfg, progress=None, on_done=None):
+        assert scored.wait(5), "NudeNet never scored the row"
+        on_done(results[0], 1, 1)
+        faces_shipped.set()
+        return faces_mod.DetectedFaces([], [], [])
+
+    def fake_nsfw(results, items, cfg, progress=None, on_done=None):
+        results[0].nsfw = nsfw.to_result([])
+        scored.set()
+        assert faces_shipped.wait(5), "the faces chunk never went out"
+        on_done(results[0], 1, 1)
+        return True
+
+    monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
+    monkeypatch.setattr(nsfw, "check_images", fake_nsfw)
+    monkeypatch.setattr(faces_mod, "detect_faces", fake_faces)
+    chunks: list[dict] = []
+    scan_items(
+        [("a.png", "/d/a", _png(20, (600, 600)))],
+        TargetProfile(),
+        ScanConfig(blur_threshold=0.0),
+        FaceConfig(enabled=True),
+        chunk=chunks.append,
+    )
+    assert _row_in(chunks, "faces")["nsfw"]["exposed_score"] == 0.0
+
+
+def test_a_row_never_released_keeps_its_score_in_the_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hold ends with the pass: it must not blank a score out of the finished scan."""
+
+    class _QuietEraX:
+        url = "http://erax:8080/infer"
+
+        def check(self, data: bytes, filename: str = "image"):
+            return erax.to_erax_result([])
+
+    def fake_nsfw(results, items, cfg, progress=None, on_done=None):
+        results[0].nsfw = nsfw.to_result([])  # scored, but its callback never fires
+        return True
+
+    monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
+    monkeypatch.setenv(erax.URL_ENV, "http://erax:8080")
+    monkeypatch.setattr(nsfw, "check_images", fake_nsfw)
+    monkeypatch.setattr(erax, "client", lambda: _QuietEraX())
+
+    summary = scan_items(
+        [("a.png", "/d/a", _png(20, (600, 600)))],
+        TargetProfile(),
+        ScanConfig(blur_threshold=0.0),
+        FaceConfig(),
+    )
+
+    assert summary.results[0].nsfw is not None
 
 
 def test_fill_when_erax_answers_before_nudenet(monkeypatch: pytest.MonkeyPatch) -> None:

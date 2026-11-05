@@ -610,6 +610,14 @@ def scan_items(
     # Face detection and NudeNet run side by side, so chunks, saves and the
     # completed set are touched under one lock.
     lock = threading.Lock()
+    # Rows whose ``nsfw`` EraX may still change: while the NudeNet pass runs,
+    # the ones it has not released. See :func:`visible`.
+    undecided: set[str] = set()
+
+    def visible(row: ImageResult) -> ImageResult:
+        """*row* as a client may see it. A viewer lifts a blur on a clean score,
+        so an undecided one goes out as no score, which keeps the frame held."""
+        return row.model_copy(update={"nsfw": None}) if row.rel_path in undecided else row
 
     def snapshot() -> ScanSummary:
         rows = ordered()
@@ -639,7 +647,7 @@ def scan_items(
             face_clusters=face_clusters,
             set_age=set_age["age"],
             set_age_skipped=set_age["skipped"],
-            results=rows,
+            results=[visible(r) for r in rows],
             returned=len(rows),
         )
 
@@ -685,7 +693,7 @@ def scan_items(
                 "done": done,
                 "total": phase_total,
                 "pending_checks": pending(),
-                "results": [row.model_dump(mode="json") for row in batch],
+                "results": [visible(row).model_dump(mode="json") for row in batch],
                 # Even when empty: the prefilter can empty the list, and a client must hear that.
                 "face_clusters": [cluster.model_dump(mode="json") for cluster in face_clusters],
             }
@@ -778,6 +786,8 @@ def scan_items(
         # A rejected frame has no age, so it stops here: see selection.hard_exclusion.
         checkable = [r for r in results if r.passed]
         sendable = {r.rel_path for r in checkable if r.rel_path in with_data}
+        if fill_in:
+            undecided.update(sendable)
         nudenet_done: set[str] = set()
         erax_done: set[str] = set()
         sent: set[str] = set()
@@ -795,6 +805,7 @@ def scan_items(
             if row.rel_path in sent:
                 return
             sent.add(row.rel_path)
+            undecided.discard(row.rel_path)
             nsfw_batch.append(row)
             sent_n, sent_total = len(sent), len(sendable)
             last = sent_n == sent_total
@@ -874,6 +885,7 @@ def scan_items(
             ran["nsfw"] = ran_nudenet
         finally:
             # Over whether it ran or not: a client must not wait for a result that will not come.
+            undecided.clear()
             finish("nsfw")
 
     detected_faces = None
