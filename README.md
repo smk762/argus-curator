@@ -1024,6 +1024,9 @@ Scans are cached on disk (keyed by `scan_id`, default `~/.cache/argus_curator/sc
 override with `CURATOR_CACHE_DIR`). This is what makes paginated `GET /scan/{id}`
 and export-by-id work without recomputing. `POST /scans/purge` empties it (and
 stops a scan that is writing to it first); nothing else on disk is touched.
+A streamed scan saves snapshots as it runs, and marks them with a
+`<scan_id>.running` file until it finishes. If the server dies mid-scan, the next
+start removes that scan, so a partial one is never listed as a result.
 
 ## Related projects
 

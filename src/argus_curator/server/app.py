@@ -448,6 +448,9 @@ def create_app(
         )
 
     store = ScanStore(cache_dir)
+    # A scan cut off by a kill or crash never reached its failure handling.
+    if dropped := store.drop_unfinished():
+        logger.info("unfinished_scans_dropped", count=dropped)
     gate = ScanGate()
     app.state.scan_gate = gate
     app.state.scan_store = store
@@ -824,10 +827,11 @@ def create_app(
                     scan_id=scan_id,
                     progress=on_progress,
                     chunk=on_chunk,
-                    save=store.save,
+                    save=store.save_snapshot,
                     cancelled=lambda: gate.cancelled(scan_id),
                 )
                 store.save(summary)
+                store.mark_finished(scan_id)
                 events.put(("complete", summary.model_dump(mode="json")))
             except scanner.ScanCancelled:
                 drop_snapshots()
