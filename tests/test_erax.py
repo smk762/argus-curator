@@ -397,3 +397,47 @@ def test_fill_when_erax_answers_before_nudenet(monkeypatch: pytest.MonkeyPatch) 
     assert row.erax_filled is True and row.nsfw.exposed_score == 0.66
     sent = [r for c in chunks for r in c["results"]]
     assert len(sent) == 1 and sent[0]["nsfw"]["exposed_score"] == 0.66
+
+
+def test_faces_chunk_holds_back_a_score_erax_may_still_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Faces share rows with NudeNet. A 0 sent before EraX answers reads as a
+    finished clean score, so a client would unblur a frame EraX goes on to flag."""
+    from argus_curator import faces as faces_mod
+
+    faces_sent = threading.Event()
+
+    class _EmptyNudeNet:
+        def check(self, data: bytes, filename: str = "image"):
+            return nsfw.to_result([])
+
+    class _LateEraX:
+        url = "http://erax:8080/infer"
+
+        def check(self, data: bytes, filename: str = "image"):
+            faces_sent.wait(5)
+            return erax.to_erax_result([{"class": "vagina", "score": 0.66, "box": [0, 0, 3, 3]}])
+
+    def fake_faces(results, items, cfg, progress=None, on_done=None):
+        deadline = time.monotonic() + 5
+        while results[0].nsfw is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert results[0].nsfw is not None, "NudeNet never scored the row"
+        on_done(results[0], 1, 1)
+        faces_sent.set()
+        return faces_mod.DetectedFaces([], [], [])
+
+    monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
+    monkeypatch.setenv(erax.URL_ENV, "http://erax:8080")
+    monkeypatch.setattr(nsfw, "client", lambda: _EmptyNudeNet())
+    monkeypatch.setattr(erax, "client", lambda: _LateEraX())
+    monkeypatch.setattr(faces_mod, "detect_faces", fake_faces)
+    chunks: list[dict] = []
+    items = [("a.png", "/d/a", _png(20, (600, 600)))]
+    summary = scan_items(
+        items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(enabled=True), chunk=chunks.append
+    )
+
+    by_phase = {c["phase"]: c for c in chunks}
+    assert by_phase["faces"]["results"][0]["nsfw"] is None
+    assert by_phase["nsfw"]["results"][0]["nsfw"]["exposed_score"] == 0.66
+    assert summary.results[0].nsfw.exposed_score == 0.66

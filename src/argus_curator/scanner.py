@@ -610,6 +610,15 @@ def scan_items(
     # Face detection and NudeNet run side by side, so chunks, saves and the
     # completed set are touched under one lock.
     lock = threading.Lock()
+    # Rows EraX may still change. A faces chunk can carry one, so it goes out
+    # with no ``nsfw``, which a client holds on: a score it does see is final.
+    undecided: set[str] = set()
+
+    def wire_row(row: ImageResult) -> dict[str, Any]:
+        dumped = row.model_dump(mode="json")
+        if row.rel_path in undecided:
+            dumped["nsfw"] = None
+        return dumped
 
     def snapshot() -> ScanSummary:
         rows = ordered()
@@ -684,12 +693,13 @@ def scan_items(
                 "done": done,
                 "total": phase_total,
                 "pending_checks": pending(),
-                "results": [row.model_dump(mode="json") for row in batch],
+                "results": [wire_row(row) for row in batch],
                 # Even when empty: the prefilter can empty the list, and a client must hear that.
                 "face_clusters": [cluster.model_dump(mode="json") for cluster in face_clusters],
             }
-            _emit_chunk(chunk, payload)
+            # Saved first: a client asks /thumb for these rows by scan_id, which 404s until the scan is on disk.
             maybe_save(snapshot(), force=force or phase_done)
+            _emit_chunk(chunk, payload)
 
     # Phase 1: per-image scoring. Batches land in the grid while later phases run.
     emit("scoring", 0, total)
@@ -777,6 +787,9 @@ def scan_items(
         erax_done: set[str] = set()
         sent: set[str] = set()
         decide = threading.Lock()
+        if fill_in:
+            with lock:
+                undecided.update(sendable)
         # Set when the NudeNet pass dies, so EraX stops at its next image.
         abort = threading.Event()
 
@@ -790,6 +803,8 @@ def scan_items(
             if row.rel_path in sent:
                 return
             sent.add(row.rel_path)
+            with lock:
+                undecided.discard(row.rel_path)
             nsfw_batch.append(row)
             sent_n, sent_total = len(sent), len(sendable)
             last = sent_n == sent_total

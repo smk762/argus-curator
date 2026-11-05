@@ -191,6 +191,15 @@ def test_faces_and_nsfw_run_side_by_side_and_chunks_say_what_is_still_ahead(
     assert all((r.nsfw is not None) == r.passed for r in summary.results)
 
 
+def test_the_scan_is_saved_before_a_chunk_goes_out(dataset: Path) -> None:
+    """A client asks /thumb for a chunk's rows by scan_id, which 404s until the scan is on disk."""
+    saved: list[object] = []
+    saved_when_sent: list[int] = []
+    scan_folder(dataset, save=saved.append, chunk=lambda payload: saved_when_sent.append(len(saved)))
+    assert saved_when_sent
+    assert saved_when_sent[0] >= 1
+
+
 def test_set_age_reaches_the_faceless_frames_before_the_guard_pass(
     dataset: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
