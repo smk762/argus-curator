@@ -777,8 +777,8 @@ def create_app(
         frames (those counts plus the images finished since the previous chunk),
         then a single ``event: complete`` frame carrying the full ScanSummary, or
         ``event: error``, or ``event: cancelled`` after ``POST /scan/{id}/cancel``
-        (the partial summary is dropped). A second scan is refused while one is
-        still running.
+        (either way the partial summary is dropped). A second scan is refused
+        while one is still running.
         """
         await asyncio.to_thread(_require_models, req)
         folder = _resolve_scan_folder(req.folder)
@@ -798,6 +798,15 @@ def create_app(
 
         def on_chunk(payload: dict[str, Any]) -> None:
             events.put(("chunk", payload))
+
+        def drop_snapshots() -> None:
+            # What was saved while it ran is not a result, so it must not reach
+            # GET /scans as one. The failure may be a full or broken cache, and
+            # that must not cost the client the event saying why the scan ended.
+            try:
+                store.delete(scan_id)
+            except OSError as exc:
+                logger.warning("scan_snapshot_drop_failed", scan_id=scan_id, error=str(exc))
 
         def run_scan() -> None:
             try:
@@ -821,13 +830,13 @@ def create_app(
                 store.save(summary)
                 events.put(("complete", summary.model_dump(mode="json")))
             except scanner.ScanCancelled:
-                # The snapshots saved while it ran are not a result.
-                store.delete(scan_id)
+                drop_snapshots()
                 events.put(("cancelled", {"scan_id": scan_id}))
             except GpuLeaseTimeout as exc:
-                store.delete(scan_id)
+                drop_snapshots()
                 events.put(("error", {"detail": f"GPU busy: {exc}", "retry_after": 5}))
             except Exception as exc:  # surface as a stream error, not a 500
+                drop_snapshots()
                 events.put(("error", {"detail": f"scan failed: {exc}"}))
             finally:
                 gate.finish(scan_id)

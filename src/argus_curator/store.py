@@ -93,6 +93,8 @@ class ScanStore:
 
     def delete(self, scan_id: str) -> bool:
         path = self._path(scan_id)
+        # A save that failed part-way leaves this behind, and nothing else would remove it.
+        path.with_suffix(".json.tmp").unlink(missing_ok=True)
         if path.exists():
             path.unlink()
             return True

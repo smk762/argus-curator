@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A streamed scan that fails no longer leaves its partial snapshot.** Only a
+  cancel or a busy GPU dropped it; any other failure left it in `GET /scans`
+  like a finished scan, open and exportable, with rows that may lack nudity or
+  age results. If the snapshot cannot be removed, that is logged and the client
+  still gets `event: error`. Deleting a scan also removes a half-written save.
 - **A scan asking for watermark detection is refused while the detector is
   down.** `/detectors` only says the URL is set, so a scan could start with the
   detector stopped or still loading and reject its frames as `crop:unchecked`.
