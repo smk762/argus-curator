@@ -787,7 +787,9 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 
 The `*/stream` variants emit `event: progress` frames (`{phase, done, total}`)
 while the work runs, then a single `event: complete` frame carrying the same
-payload the non-streaming endpoint returns (or `event: error`). A scan runs
+payload the non-streaming endpoint returns (or `event: error`). A streamed scan
+saves snapshots as it runs; a scan that fails or is cancelled drops them, so
+`GET /scans` lists only finished scans. A scan runs
 `scoring` → `faces` and `nsfw` together → `identities` → `prefilter` →
 `scenes` → `garments` → `guard` → `clustering`: ages and the exposed score come first, so
 a viewer can lift a blur as soon as both are known, and their progress events
