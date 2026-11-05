@@ -650,9 +650,10 @@ def scan_items(
         now = time.monotonic()
         if not force and saved_at and now - saved_at < 2:
             return
-        saved_at = now
-        with contextlib.suppress(Exception):  # pragma: no cover
+        # Marked only once it lands: until a save does, the next chunk tries again first.
+        with contextlib.suppress(Exception):
             save(summary)
+            saved_at = now
 
     def finish(check: str) -> None:
         with lock:
@@ -688,6 +689,10 @@ def scan_items(
                 # Even when empty: the prefilter can empty the list, and a client must hear that.
                 "face_clusters": [cluster.model_dump(mode="json") for cluster in face_clusters],
             }
+            # A viewer asks for thumbnails as soon as it has a row, and /thumb
+            # resolves the scan from the store: it must know the scan by then.
+            if save is not None and not saved_at:
+                maybe_save(snapshot())
             _emit_chunk(chunk, payload)
             maybe_save(snapshot(), force=force or phase_done)
 
