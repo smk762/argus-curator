@@ -14,7 +14,11 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+import structlog
+
 from argus_curator.models import STORE_CONTEXT, ScanSummary
+
+logger = structlog.get_logger()
 
 
 def default_cache_dir() -> Path:
@@ -36,6 +40,9 @@ class ScanStore:
         safe = scan_id.replace("/", "_").replace("\\", "_").replace("..", "_")
         return self.cache_dir / f"{safe}.json"
 
+    def _marker(self, scan_id: str) -> Path:
+        return self._path(scan_id).with_suffix(".running")
+
     def save(self, summary: ScanSummary) -> Path:
         path = self._path(summary.scan_id)
         # Replace atomically so a reader never sees a half-written summary.
@@ -43,6 +50,34 @@ class ScanStore:
         tmp.write_text(summary.model_dump_json(context=STORE_CONTEXT), encoding="utf-8")
         tmp.replace(path)
         return path
+
+    def save_snapshot(self, summary: ScanSummary) -> Path:
+        """Save a scan still running, so a server killed mid-scan can be told from one that finished.
+
+        The marker is a file of its own, not a field: rows are re-saved from
+        loaded copies, and a stale copy must not make a finished scan look unfinished.
+        """
+        # Marker first: a kill between the two then leaves nothing unmarked.
+        self._marker(summary.scan_id).touch()
+        return self.save(summary)
+
+    def mark_finished(self, scan_id: str) -> None:
+        """The saved summary is the result: it survives :meth:`drop_unfinished` from now on."""
+        self._marker(scan_id).unlink(missing_ok=True)
+
+    def drop_unfinished(self) -> int:
+        """Remove scans a dead server left part-way. Returns how many had a snapshot.
+
+        For startup only, when nothing here is running. One that cannot be
+        removed is logged and left marked, so the next start tries again.
+        """
+        count = 0
+        for marker in self.cache_dir.glob("*.running"):
+            try:
+                count += self.delete(marker.stem)
+            except OSError as exc:
+                logger.warning("unfinished_scan_drop_failed", scan_id=marker.stem, error=str(exc))
+        return count
 
     def load(self, scan_id: str) -> ScanSummary | None:
         path = self._path(scan_id)
@@ -95,15 +130,17 @@ class ScanStore:
         path = self._path(scan_id)
         # A save that failed part-way leaves this behind, and nothing else would remove it.
         path.with_suffix(".json.tmp").unlink(missing_ok=True)
-        if path.exists():
-            path.unlink()
-            return True
-        return False
+        existed = path.exists()
+        path.unlink(missing_ok=True)
+        # Last: if the snapshot would not go, the next start still knows to drop it.
+        self._marker(scan_id).unlink(missing_ok=True)
+        return existed
 
     def delete_all(self) -> int:
-        """Remove every cached scan, half-written ones included. Returns how many."""
+        """Remove every cached scan, half-written ones and markers included. Returns how many."""
         count = 0
-        for path in list(self.cache_dir.glob("*.json")) + list(self.cache_dir.glob("*.json.tmp")):
+        paths = [path for pattern in ("*.json", "*.json.tmp", "*.running") for path in self.cache_dir.glob(pattern)]
+        for path in paths:
             with contextlib.suppress(FileNotFoundError):
                 path.unlink()
                 count += path.suffix == ".json"

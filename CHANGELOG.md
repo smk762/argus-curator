@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Requires `argus-cortex>=0.4.6`.** `adult-cinematic` now passes depicted crime
+  without a film cue, and its letters B to G no longer match the other adult
+  policies, so `--guard-rules B` picks a different rule under it, including on
+  verdicts recorded earlier. The pin keeps every install on the same letters.
+
 ### Fixed
 
 - **No undecided NudeNet score reaches a client.** With EraX on, a faces chunk
@@ -22,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like a finished scan, open and exportable, with rows that may lack nudity or
   age results. If the snapshot cannot be removed, that is logged and the client
   still gets `event: error`. Deleting a scan also removes a half-written save.
+- **A streamed scan cut off by a server kill or crash no longer stays listed.**
+  Its snapshots carry a `<scan_id>.running` marker until the scan finishes, and
+  the server removes any marked scan when it starts. Scans cached before this
+  release have no marker and are kept, so a partial one left earlier stays until
+  it is deleted or purged.
 - **A scan asking for watermark detection is refused while the detector is
   down.** `/detectors` only says the URL is set, so a scan could start with the
   detector stopped or still loading and reject its frames as `crop:unchecked`.

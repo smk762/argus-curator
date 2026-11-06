@@ -571,9 +571,15 @@ policy file's text is served too, to anyone who can read from the server.
 
 `adult-granular` (a letter per hard case: A minors, H non-consent, I sexual
 violence), `adult-cautious` (doubt about age or consent counts as rule A), and
-`adult-cinematic` (adult, with B narrowed to how-to / real targeting; fictional
-crime and legal adult entertainment are Safe) are under evaluation against
-`adult`; don't build on them yet.
+`adult-cinematic` (adult, but a depiction of crime or violence is Safe unless it
+is sexual, shows gore or dismemberment, or teaches how to do it, with no sign of
+fiction needed; legal adult entertainment is Safe) are under evaluation against
+`adult`; don't build on them yet. `adult-cinematic` has its own letters: B to F
+are Unethical Behavior, Cybersecurity, Agent Safety, Politically Sensitive and
+Animal Abuse, and G is Criminal Instructions, so `--guard-rules B` picks a
+different rule there than under `adult`. A letter is read against the policy's
+current wording, so this also applies to `adult-cinematic` verdicts recorded
+before argus-cortex 0.4.6.
 
 To compare policies on your own images, judge one scan under several:
 `"guard": {"policy": "adult", "variants": ["adult-granular", "adult-cautious"]}`
@@ -1026,6 +1032,9 @@ Scans are cached on disk (keyed by `scan_id`, default `~/.cache/argus_curator/sc
 override with `CURATOR_CACHE_DIR`). This is what makes paginated `GET /scan/{id}`
 and export-by-id work without recomputing. `POST /scans/purge` empties it (and
 stops a scan that is writing to it first); nothing else on disk is touched.
+A streamed scan saves snapshots as it runs, and marks them with a
+`<scan_id>.running` file until it finishes. If the server dies mid-scan, the next
+start removes that scan, so a partial one is never listed as a result.
 
 ## Related projects
 
