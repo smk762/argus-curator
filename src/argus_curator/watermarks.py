@@ -104,7 +104,7 @@ class WatermarkClient:
         except urllib.error.HTTPError as exc:
             exc.close()
             return f"returned HTTP {exc.code}" if exc.code >= 500 else None
-        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
+        except (http.client.HTTPException, OSError) as exc:  # OSError covers URLError and timeouts
             return f"is not answering: {getattr(exc, 'reason', exc)}"
 
 

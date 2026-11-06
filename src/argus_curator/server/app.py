@@ -628,8 +628,7 @@ def create_app(
         """Refuse up front when an optional model is requested but not configured.
 
         Without this the scan would score every image first and only then fail.
-        The detail names the env var, not the server's filesystem layout. It
-        calls the watermark detector, so routes run it off the event loop.
+        The detail names the env var, not the server's filesystem layout.
         """
         # A prefilter rule needs its check: without it drop_nsfw drops nothing
         # and the face rules drop every image.
@@ -645,8 +644,6 @@ def create_app(
                 raise HTTPException(
                     status_code=400, detail=f"watermark detection requested but {watermarks_mod.URL_ENV} {state}"
                 )
-            if (why := url.unreachable()) is not None:
-                raise HTTPException(status_code=503, detail=f"watermark detection requested but the detector {why}")
         wanted = (
             (req.faces.fairface, fairface_available, "FairFace", "ARGUS_CURATOR_FAIRFACE_MODEL", "fairface-convert"),
             (req.faces.mivolo, mivolo_available, "MiVOLO", "ARGUS_CURATOR_MIVOLO_MODEL", "mivolo-convert"),
@@ -708,6 +705,19 @@ def create_app(
             except ModelUnavailable as exc:  # these name no URL or path
                 raise HTTPException(status_code=400, detail=f"SingGuard check requested but {exc}") from exc
 
+    def _require_detector(req: ScanRequest) -> None:
+        """Refuse a watermark scan while the detector is down.
+
+        This calls the detector, so routes run it off the event loop and after
+        the checks that need no network. A running scan gets its 409 from
+        :func:`_claim_scan`; the detector may be too busy with it to answer here.
+        """
+        if not (req.crops.enabled and req.crops.detect) or gate.snapshot() is not None:
+            return
+        detector = watermarks_mod.client()
+        if detector is not None and (why := detector.unreachable()) is not None:
+            raise HTTPException(status_code=503, detail=f"watermark detection requested but the detector {why}")
+
     def _requested_checks(req: ScanRequest) -> list[str]:
         return scanner.requested_checks(req.faces, req.nsfw, req.guard)
 
@@ -740,8 +750,9 @@ def create_app(
 
     @app.post("/scan/folder", response_model=ScanSummary)
     async def scan_folder(req: ScanRequest) -> ScanSummary:
-        await asyncio.to_thread(_require_models, req)
+        _require_models(req)
         folder = _resolve_scan_folder(req.folder)
+        await asyncio.to_thread(_require_detector, req)
         scan_id = _claim_scan(folder, req)
         requested = _requested_checks(req)
         try:
@@ -783,8 +794,9 @@ def create_app(
         (either way the partial summary is dropped). A second scan is refused
         while one is still running.
         """
-        await asyncio.to_thread(_require_models, req)
+        _require_models(req)
         folder = _resolve_scan_folder(req.folder)
+        await asyncio.to_thread(_require_detector, req)
         scan_id = _claim_scan(folder, req)
         requested = _requested_checks(req)
 
