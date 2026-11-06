@@ -480,6 +480,47 @@ def test_without_erax_a_faces_chunk_keeps_nudenets_score(monkeypatch: pytest.Mon
     assert _row_in(chunks, "faces")["nsfw"]["exposed_score"] == 0.0
 
 
+def test_a_pass_that_dies_leaves_its_rows_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scan fails, but the faces thread runs on: EraX never decided the row it ships."""
+    pass_over = threading.Event()
+
+    class _QuietEraX:
+        url = "http://erax:8080/infer"
+
+    def fake_nsfw(results, items, cfg, progress=None, on_done=None):
+        results[0].nsfw = nsfw.to_result([])
+        on_done(results[0], 1, 1)
+        pass_over.set()
+        return True
+
+    def fake_faces(results, items, cfg, progress=None, on_done=None):
+        assert pass_over.wait(5), "the NudeNet pass never ended"
+        time.sleep(0.2)  # for the failure to unwind out of run_nsfw
+        on_done(results[0], 1, 1)
+        return faces_mod.DetectedFaces([], [], [])
+
+    def broken_erax(*_args, **_kwargs):
+        raise RuntimeError("EraX broke")
+
+    monkeypatch.setenv(nsfw.URL_ENV, "http://nudenet:8080")
+    monkeypatch.setenv(erax.URL_ENV, "http://erax:8080")
+    monkeypatch.setattr(nsfw, "check_images", fake_nsfw)
+    monkeypatch.setattr(erax, "client", lambda: _QuietEraX())
+    monkeypatch.setattr(erax, "check_images", broken_erax)
+    monkeypatch.setattr(faces_mod, "detect_faces", fake_faces)
+    chunks: list[dict] = []
+    with pytest.raises(RuntimeError, match="EraX broke"):
+        scan_items(
+            [("a.png", "/d/a", _png(20, (600, 600)))],
+            TargetProfile(),
+            ScanConfig(blur_threshold=0.0),
+            FaceConfig(enabled=True),
+            chunk=chunks.append,
+        )
+
+    assert _row_in(chunks, "faces")["nsfw"] is None
+
+
 def test_a_row_never_released_keeps_its_score_in_the_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     """The hold ends with the pass: it must not blank a score out of the finished scan."""
 

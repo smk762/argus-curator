@@ -277,6 +277,23 @@ def test_server_refuses_a_scan_while_the_detector_is_down(
     assert "is not answering" in r.json()["detail"]
 
 
+def test_a_bad_folder_or_a_running_scan_is_refused_without_calling_the_detector(
+    folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_call(self: watermarks.WatermarkClient) -> str:
+        raise AssertionError("the detector was called")
+
+    monkeypatch.setenv(watermarks.URL_ENV, "http://watermark:8080")
+    monkeypatch.setattr(watermarks.WatermarkClient, "unreachable", no_call)
+    app = create_app(cache_dir=str(tmp_path / "cache"), source_root=str(folder))
+    client = TestClient(app)
+    body = {"faces": {"enabled": False}, "crops": {"enabled": True, "detect": True}}
+
+    assert client.post("/scan/folder", json={**body, "folder": "missing"}).status_code == 400
+    app.state.scan_gate.start("running", str(folder), [])
+    assert client.post("/scan/folder", json={**body, "folder": ""}).status_code == 409
+
+
 def test_a_scan_not_asking_for_detection_ignores_a_down_detector(
     folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -651,17 +651,20 @@ def scan_items(
             returned=len(rows),
         )
 
-    def maybe_save(summary: ScanSummary, *, force: bool = False) -> None:
+    def maybe_save(*, force: bool = False) -> None:
         nonlocal saved_at
         if save is None:
             return
         now = time.monotonic()
         if not force and saved_at and now - saved_at < 2:
             return
+        summary = snapshot()
         # Marked only once it lands: until a save does, the next chunk tries again first.
-        with contextlib.suppress(Exception):
+        try:
             save(summary)
             saved_at = now
+        except Exception as exc:
+            logger.warning("scan_snapshot_save_failed", scan_id=scan_id, error=str(exc))
 
     def finish(check: str) -> None:
         with lock:
@@ -699,10 +702,12 @@ def scan_items(
             }
             # A viewer asks for thumbnails as soon as it has a row, and /thumb
             # resolves the scan from the store: it must know the scan by then.
-            if save is not None and not saved_at:
-                maybe_save(snapshot())
+            first = not saved_at
+            if first:
+                maybe_save()
             _emit_chunk(chunk, payload)
-            maybe_save(snapshot(), force=force or phase_done)
+            if not first:
+                maybe_save(force=force or phase_done)
 
     # Phase 1: per-image scoring. Batches land in the grid while later phases run.
     emit("scoring", 0, total)
@@ -883,9 +888,11 @@ def scan_items(
                         if row.rel_path in nudenet_done:
                             release(row)
             ran["nsfw"] = ran_nudenet
+            # Only here: when the pass dies, its rows stay undecided, and the
+            # faces thread goes on shipping them until it ends.
+            undecided.clear()
         finally:
             # Over whether it ran or not: a client must not wait for a result that will not come.
-            undecided.clear()
             finish("nsfw")
 
     detected_faces = None

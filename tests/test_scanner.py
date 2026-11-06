@@ -153,7 +153,7 @@ def test_a_failed_first_save_is_tried_again_at_the_next_chunk(tmp_path: Path) ->
 
     def flaky(summary: ScanSummary) -> None:
         attempts.append(1)
-        if len(attempts) <= 2:  # both saves around the first chunk
+        if len(attempts) == 1:  # the one save a first chunk tries
             raise OSError("cache unavailable")
         store.save(summary)
 
