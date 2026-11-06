@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import numpy as np
@@ -9,8 +10,9 @@ import pytest
 from PIL import Image, ImageDraw, ImageFilter
 
 from argus_curator import scan_folder
-from argus_curator.models import FaceConfig, ScanConfig, TargetProfile
-from argus_curator.scanner import _sharpness
+from argus_curator.models import FaceConfig, ScanConfig, ScanSummary, TargetProfile
+from argus_curator.scanner import CHUNK_SIZE, _sharpness, scan_items
+from argus_curator.store import ScanStore
 
 
 def test_relative_path_keying_no_clobber(dataset: Path) -> None:
@@ -117,6 +119,55 @@ def test_pending_checks_name_the_unfinished_ones_in_order() -> None:
     # Nothing configured: no check is requested, whatever faces say.
     assert requested_checks(FaceConfig(enabled=False), NsfwConfig(), GuardConfig()) == []
     assert requested_checks(FaceConfig(enabled=True), NsfwConfig(), GuardConfig()) == ["faces"]
+
+
+def _noise_items(n: int) -> list[tuple[str, str, bytes]]:
+    rng = np.random.default_rng(0)
+    items = []
+    for i in range(n):
+        buf = io.BytesIO()
+        Image.fromarray(rng.integers(0, 255, (600, 600, 3), dtype=np.uint8)).save(buf, "PNG")
+        items.append((f"{i}.png", f"/d/{i}.png", buf.getvalue()))
+    return items
+
+
+def test_the_store_knows_the_scan_before_its_first_chunk(dataset: Path, tmp_path: Path) -> None:
+    """/thumb resolves a scan from the store, and a viewer asks as soon as it has a row."""
+    store = ScanStore(tmp_path / "cache")
+    known: list[bool] = []
+
+    scan_folder(
+        dataset,
+        scan_id="s",
+        save=store.save,
+        chunk=lambda _payload: known.append(store.load("s") is not None),
+    )
+
+    assert known and all(known)
+
+
+def test_a_failed_first_save_is_tried_again_at_the_next_chunk(tmp_path: Path) -> None:
+    store = ScanStore(tmp_path / "cache")
+    attempts: list[int] = []
+    known: list[bool] = []
+
+    def flaky(summary: ScanSummary) -> None:
+        attempts.append(1)
+        if len(attempts) <= 2:  # both saves around the first chunk
+            raise OSError("cache unavailable")
+        store.save(summary)
+
+    scan_items(
+        _noise_items(CHUNK_SIZE * 2 + 1),
+        TargetProfile(),
+        ScanConfig(),
+        FaceConfig(enabled=False),
+        scan_id="s",
+        save=flaky,
+        chunk=lambda _payload: known.append(store.load("s") is not None),
+    )
+
+    assert known[:2] == [False, True]
 
 
 def test_faces_and_nsfw_run_side_by_side_and_chunks_say_what_is_still_ahead(

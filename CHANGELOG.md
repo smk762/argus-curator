@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **No undecided NudeNet score reaches a client.** With EraX on, a faces chunk
+  could carry a row's NudeNet 0 before EraX had answered, so a viewer unblurred
+  a frame EraX then flagged. Until a row is decided, chunks and the snapshots
+  behind a running scan's `GET /scan/{id}` now say `nsfw: null`.
+- **A streamed scan's first chunk no longer beats its first snapshot.** The
+  scan is saved before its first chunk goes out, so `/thumb?scan_id=` cannot
+  answer 404 for that chunk's rows. A snapshot that fails to save is tried again
+  at the next chunk.
 - **A streamed scan that fails no longer leaves its partial snapshot.** Only a
   cancel or a busy GPU dropped it; any other failure left it in `GET /scans`
   like a finished scan, open and exportable, with rows that may lack nudity or

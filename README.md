@@ -797,7 +797,9 @@ interleave while both run; identities follow at once, so a set age is known
 before the guard pass reads it as context. Every `event: chunk` frame carries
 the current `face_clusters`, empty until the identities are read. Scan progress
 and `event: chunk` frames carry `pending_checks`, the checks among `faces`, `nsfw` and `guard` whose results
-have not all landed yet; a check that could not run is not listed.
+have not all landed yet; a check that could not run is not listed. A row's
+`nsfw` is `null` until it is decided: with EraX on, a NudeNet score of 0 is held
+back until EraX has answered, so a non-null `nsfw` is a score a viewer can act on.
 
 A scan stops cooperatively: `POST /scan/{id}/cancel` raises a flag the
 scanner reads before each image and between phases, the checks already with
