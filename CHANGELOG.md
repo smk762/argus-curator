@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Requires `argus-cortex>=0.4.6`.** `adult-cinematic` now passes depicted crime
+  without a film cue, and its letters B to G no longer match the other adult
+  policies, so `--guard-rules B` picks a different rule under it, including on
+  verdicts recorded earlier. The pin keeps every install on the same letters.
+
 ### Fixed
 
 - **No undecided NudeNet score reaches a client.** With EraX on, a faces chunk
