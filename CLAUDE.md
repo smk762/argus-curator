@@ -23,7 +23,7 @@ Curator and lens share one `TargetProfile`, so a manifest written here is consum
 - `selection.py` — score-threshold + optional diversity cap (`decide_selection`, `select_diverse`). Nothing is silently dropped: every excluded image gets a `keep_reason`.
 - `export.py` — structure-preserving transfer (copy/symlink/move), basename de-collision (`_plan_dest_paths`), `write_manifest`/`write_report`, optional `_post_manifest_to_lens` handoff.
 - `faces.py` — optional InsightFace detect/embed/cluster into `face_<n>` identities + head-pose bucketing (`classify_pose`). All heavy imports deferred; `import faces` is always safe.
-- `store.py` — `ScanStore`, a flat `<scan_id>.json` cache that makes paginated `GET /scan/{id}` and export-by-id possible.
+- `store.py` — `ScanStore`, a flat `<scan_id>.json` cache that makes paginated `GET /scan/{id}` and export-by-id possible. A `<scan_id>.running` marker sits beside a streamed scan's snapshots until it finishes; `create_app` drops any marked scan on start.
 - `cli.py` — Typer app (`scan`, `serve`, `detectors`, `schema`).
 - `server/app.py` — `create_app()`: routes + containment + `argus_cortex` write-guard. Optional `[server]` extra. `POST /faces` is memory-only (no source root); it is the age-check HTTP surface for darkroom.
 

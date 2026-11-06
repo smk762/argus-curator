@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-11-06
+
 ### Changed
 
 - **Requires `argus-cortex>=0.4.6`.** `adult-cinematic` now passes depicted crime
@@ -843,7 +845,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/smk762/argus-curator/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/smk762/argus-curator/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/smk762/argus-curator/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/smk762/argus-curator/compare/v0.11.1...v0.12.0
