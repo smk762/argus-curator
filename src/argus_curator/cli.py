@@ -350,10 +350,13 @@ def scan(
             )
             raise typer.Exit(2)
         try:
-            watermarks_mod.client()
+            detector = watermarks_mod.client()
         except ModelUnavailable as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(2) from exc
+        if detector is not None and (why := detector.unreachable()) is not None:
+            typer.echo(f"Error: --detect-watermarks: the detector {why}", err=True)
+            raise typer.Exit(2)
 
     profile = TargetProfile(
         target_style=style,

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-11-06
+
+### Changed
+
+- **Requires `argus-cortex>=0.4.6`.** `adult-cinematic` now passes depicted crime
+  without a film cue, and its letters B to G no longer match the other adult
+  policies, so `--guard-rules B` picks a different rule under it, including on
+  verdicts recorded earlier. The pin keeps every install on the same letters.
+
+### Fixed
+
+- **No undecided NudeNet score reaches a client.** With EraX on, a faces chunk
+  could carry a row's NudeNet 0 before EraX had answered, so a viewer unblurred
+  a frame EraX then flagged. Until a row is decided, chunks and the snapshots
+  behind a running scan's `GET /scan/{id}` now say `nsfw: null`.
+- **A streamed scan's first chunk no longer beats its first snapshot.** The
+  scan is saved before its first chunk goes out, so `/thumb?scan_id=` cannot
+  answer 404 for that chunk's rows. A snapshot that fails to save is tried again
+  at the next chunk.
+- **A streamed scan that fails no longer leaves its partial snapshot.** Only a
+  cancel or a busy GPU dropped it; any other failure left it in `GET /scans`
+  like a finished scan, open and exportable, with rows that may lack nudity or
+  age results. If the snapshot cannot be removed, that is logged and the client
+  still gets `event: error`. Deleting a scan also removes a half-written save.
+- **A streamed scan cut off by a server kill or crash no longer stays listed.**
+  Its snapshots carry a `<scan_id>.running` marker until the scan finishes, and
+  the server removes any marked scan when it starts. Scans cached before this
+  release have no marker and are kept, so a partial one left earlier stays until
+  it is deleted or purged.
+- **A scan asking for watermark detection is refused while the detector is
+  down.** `/detectors` only says the URL is set, so a scan could start with the
+  detector stopped or still loading and reject its frames as `crop:unchecked`.
+  The scan routes now answer HTTP 503, and `--detect-watermarks` exits 2, when
+  the detector's `GET /health` fails or returns 5xx. Any answer below 500 counts
+  as up, as a deployer's server need not have `/health`.
+
 ## [0.14.0] - 2026-11-04
 
 ### Added
@@ -809,7 +845,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/smk762/argus-curator/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/smk762/argus-curator/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/smk762/argus-curator/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/smk762/argus-curator/compare/v0.11.1...v0.12.0

@@ -1798,6 +1798,242 @@ def test_scan_stream_drops_a_partial_cache_when_the_gpu_is_busy(
     assert client.get("/scans").json()["scans"] == []
 
 
+def test_scan_stream_drops_a_partial_cache_when_the_scan_fails(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.server import app as app_mod
+
+    seen: list[str] = []
+
+    def fake_scan_folder(folder, profile, cfg, faces_cfg, *, scan_id, progress, cancelled, save=None, **_):  # noqa: ANN001, ANN003
+        seen.append(scan_id)
+        path = save(_summary(scan_id, str(folder), total=3))
+        assert path.is_file()  # a snapshot really is on disk when the scan dies
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app_mod.scanner, "scan_folder", fake_scan_folder)
+    client, _exports = contained
+    resp = client.post("/scan/folder/stream", json={"folder": "", "faces": {"enabled": False}})
+    events = _parse_sse(resp.text)
+    assert events[-1] == ("error", {"detail": "scan failed: boom"})
+    assert client.get("/scans").json()["scans"] == []
+    assert client.get(f"/scan/{seen[0]}").status_code == 404
+
+
+def test_a_real_scan_dying_in_a_late_phase_leaves_nothing(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.server import app as app_mod
+    from argus_curator.store import ScanStore
+
+    saved: list[str] = []
+    real_save = ScanStore.save
+
+    def spy(self: ScanStore, summary: object) -> Path:
+        saved.append(summary.scan_id)
+        return real_save(self, summary)
+
+    def die(*_args: object) -> None:
+        raise RuntimeError("late failure")
+
+    monkeypatch.setattr(ScanStore, "save", spy)
+    monkeypatch.setattr(app_mod.scanner, "_mark_duplicates", die)
+    client, _exports = contained
+    resp = client.post("/scan/folder/stream", json={"folder": "", "faces": {"enabled": False}})
+
+    assert _parse_sse(resp.text)[-1][0] == "error"
+    assert saved  # snapshots were written before the failure
+    assert client.get("/scans").json()["scans"] == []
+
+
+def test_a_snapshot_that_cannot_be_dropped_does_not_lose_the_error(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.server import app as app_mod
+    from argus_curator.store import ScanStore
+
+    def fake_scan_folder(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    def broken_delete(self: ScanStore, scan_id: str) -> bool:
+        raise OSError("read-only cache")
+
+    monkeypatch.setattr(app_mod.scanner, "scan_folder", fake_scan_folder)
+    monkeypatch.setattr(ScanStore, "delete", broken_delete)
+    client, _exports = contained
+    resp = client.post("/scan/folder/stream", json={"folder": "", "faces": {"enabled": False}})
+
+    assert _parse_sse(resp.text)[-1] == ("error", {"detail": "scan failed: boom"})
+    # The slot is free again, so the next scan is not refused.
+    assert client.get("/scans").json()["active"] is None
+
+
+def test_deleting_a_scan_removes_a_half_written_save(tmp_path: Path) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    (tmp_path / "s.json.tmp").write_text("{")
+
+    assert store.delete("s") is False  # no finished scan went
+    assert list(tmp_path.iterdir()) == []
+
+
+def _store_with_a_killed_scan(cache: Path, scan_id: str = "killed") -> None:
+    from argus_curator.store import ScanStore
+
+    ScanStore(cache).save_snapshot(_summary(scan_id, "/data", total=3))
+
+
+def test_a_restart_drops_a_scan_the_server_died_during(tmp_path: Path) -> None:
+    _store_with_a_killed_scan(tmp_path)
+
+    client = TestClient(create_app(cache_dir=tmp_path))
+
+    assert client.get("/scans").json()["scans"] == []
+    assert client.get("/scan/killed").status_code == 404
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_restart_keeps_a_scan_that_finished(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.server import app as app_mod
+
+    client, _exports = contained
+    store = client.app.state.scan_store
+    marked_while_running: list[Path] = []
+
+    def fake_scan_folder(folder, profile, cfg, faces_cfg, *, scan_id, progress, cancelled, save=None, **_):  # noqa: ANN001, ANN003
+        save(_summary(scan_id, str(folder), total=2))
+        marked_while_running.extend(store.cache_dir.glob("*.running"))
+        return _summary(scan_id, str(folder), total=3)
+
+    monkeypatch.setattr(app_mod.scanner, "scan_folder", fake_scan_folder)
+    resp = client.post("/scan/folder/stream", json={"folder": "", "faces": {"enabled": False}})
+    assert _parse_sse(resp.text)[-1][0] == "complete"
+
+    assert len(marked_while_running) == 1
+    assert store.drop_unfinished() == 0
+    assert [row["total"] for row in client.get("/scans").json()["scans"]] == [3]
+
+
+def test_a_restart_keeps_a_scan_cached_before_markers_existed(tmp_path: Path) -> None:
+    from argus_curator.store import ScanStore
+
+    ScanStore(tmp_path).save(_summary("older", "/data", total=3))
+
+    client = TestClient(create_app(cache_dir=tmp_path))
+
+    assert [row["scan_id"] for row in client.get("/scans").json()["scans"]] == ["older"]
+
+
+def test_saving_a_running_scan_again_leaves_it_marked(tmp_path: Path) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    store.save_snapshot(_summary("s", "/data", total=3))
+    store.save(_summary("s", "/data", total=2))  # a delete or export re-saves the rows
+
+    assert store.drop_unfinished() == 1
+
+
+def test_a_snapshot_is_not_written_unless_its_marker_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.store import ScanStore
+
+    def touch(self: Path) -> None:
+        raise OSError("cache full")
+
+    store = ScanStore(tmp_path)
+    monkeypatch.setattr(Path, "touch", touch)
+    with pytest.raises(OSError):
+        store.save_snapshot(_summary("s", "/data", total=3))
+
+    assert store.load("s") is None
+
+
+def test_a_scan_that_outlives_a_stray_start_is_marked_again(tmp_path: Path) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    store.save_snapshot(_summary("s", "/data", total=2))
+    ScanStore(tmp_path).drop_unfinished()  # a second server started on this cache
+    store.save_snapshot(_summary("s", "/data", total=3))
+
+    assert store.load("s").total == 3
+    assert store.drop_unfinished() == 1
+
+
+def test_a_scan_that_will_not_go_does_not_stop_the_server_or_the_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.store import ScanStore
+
+    _store_with_a_killed_scan(tmp_path, "stuck")
+    _store_with_a_killed_scan(tmp_path, "gone")
+    real_delete = ScanStore.delete
+
+    def delete(self: ScanStore, scan_id: str) -> bool:
+        if scan_id == "stuck":
+            raise OSError("read-only file")
+        return real_delete(self, scan_id)
+
+    monkeypatch.setattr(ScanStore, "delete", delete)
+    client = TestClient(create_app(cache_dir=tmp_path))
+
+    assert client.get("/health").status_code == 200
+    assert client.app.state.scan_store.load("gone") is None
+    monkeypatch.undo()
+    assert ScanStore(tmp_path).drop_unfinished() == 1  # still marked, so the next start retries
+
+
+def test_a_snapshot_that_will_not_delete_stays_marked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    store.save_snapshot(_summary("s", "/data", total=3))
+    real_unlink = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.suffix == ".json" and self.stem == "s":
+            raise OSError("read-only file")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(OSError):
+        store.delete("s")
+    monkeypatch.undo()
+
+    assert store.drop_unfinished() == 1
+
+
+def test_deleting_and_purging_remove_markers(tmp_path: Path) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    store.save_snapshot(_summary("a", "/data", total=3))
+    assert store.delete("a") is True
+    assert list(tmp_path.iterdir()) == []
+
+    store.save_snapshot(_summary("b", "/data", total=3))
+    store._marker("orphan").touch()
+    assert store.delete_all() == 1  # markers are not scans
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_failed_stream_leaves_no_marker(contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.server import app as app_mod
+
+    def fake_scan_folder(folder, profile, cfg, faces_cfg, *, scan_id, progress, cancelled, save=None, **_):  # noqa: ANN001, ANN003
+        save(_summary(scan_id, str(folder), total=3))
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app_mod.scanner, "scan_folder", fake_scan_folder)
+    client, _exports = contained
+    client.post("/scan/folder/stream", json={"folder": "", "faces": {"enabled": False}})
+
+    assert list(client.app.state.scan_store.cache_dir.glob("*.running")) == []
+
+
 def test_faces_body_query_asks_mivolo_for_bodies(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from argus_curator.models import FaceAttributes, FaceDetection
 

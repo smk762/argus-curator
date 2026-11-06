@@ -610,6 +610,14 @@ def scan_items(
     # Face detection and NudeNet run side by side, so chunks, saves and the
     # completed set are touched under one lock.
     lock = threading.Lock()
+    # Rows whose ``nsfw`` EraX may still change: while the NudeNet pass runs,
+    # the ones it has not released. See :func:`visible`.
+    undecided: set[str] = set()
+
+    def visible(row: ImageResult) -> ImageResult:
+        """*row* as a client may see it. A viewer lifts a blur on a clean score,
+        so an undecided one goes out as no score, which keeps the frame held."""
+        return row.model_copy(update={"nsfw": None}) if row.rel_path in undecided else row
 
     def snapshot() -> ScanSummary:
         rows = ordered()
@@ -639,20 +647,24 @@ def scan_items(
             face_clusters=face_clusters,
             set_age=set_age["age"],
             set_age_skipped=set_age["skipped"],
-            results=rows,
+            results=[visible(r) for r in rows],
             returned=len(rows),
         )
 
-    def maybe_save(summary: ScanSummary, *, force: bool = False) -> None:
+    def maybe_save(*, force: bool = False) -> None:
         nonlocal saved_at
         if save is None:
             return
         now = time.monotonic()
         if not force and saved_at and now - saved_at < 2:
             return
-        saved_at = now
-        with contextlib.suppress(Exception):  # pragma: no cover
+        summary = snapshot()
+        # Marked only once it lands: until a save does, the next chunk tries again first.
+        try:
             save(summary)
+            saved_at = now
+        except Exception as exc:
+            logger.warning("scan_snapshot_save_failed", scan_id=scan_id, error=str(exc))
 
     def finish(check: str) -> None:
         with lock:
@@ -684,12 +696,18 @@ def scan_items(
                 "done": done,
                 "total": phase_total,
                 "pending_checks": pending(),
-                "results": [row.model_dump(mode="json") for row in batch],
+                "results": [visible(row).model_dump(mode="json") for row in batch],
                 # Even when empty: the prefilter can empty the list, and a client must hear that.
                 "face_clusters": [cluster.model_dump(mode="json") for cluster in face_clusters],
             }
+            # A viewer asks for thumbnails as soon as it has a row, and /thumb
+            # resolves the scan from the store: it must know the scan by then.
+            first = not saved_at
+            if first:
+                maybe_save()
             _emit_chunk(chunk, payload)
-            maybe_save(snapshot(), force=force or phase_done)
+            if not first:
+                maybe_save(force=force or phase_done)
 
     # Phase 1: per-image scoring. Batches land in the grid while later phases run.
     emit("scoring", 0, total)
@@ -773,6 +791,8 @@ def scan_items(
         # A rejected frame has no age, so it stops here: see selection.hard_exclusion.
         checkable = [r for r in results if r.passed]
         sendable = {r.rel_path for r in checkable if r.rel_path in with_data}
+        if fill_in:
+            undecided.update(sendable)
         nudenet_done: set[str] = set()
         erax_done: set[str] = set()
         sent: set[str] = set()
@@ -790,6 +810,7 @@ def scan_items(
             if row.rel_path in sent:
                 return
             sent.add(row.rel_path)
+            undecided.discard(row.rel_path)
             nsfw_batch.append(row)
             sent_n, sent_total = len(sent), len(sendable)
             last = sent_n == sent_total
@@ -867,6 +888,9 @@ def scan_items(
                         if row.rel_path in nudenet_done:
                             release(row)
             ran["nsfw"] = ran_nudenet
+            # Only here: when the pass dies, its rows stay undecided, and the
+            # faces thread goes on shipping them until it ends.
+            undecided.clear()
         finally:
             # Over whether it ran or not: a client must not wait for a result that will not come.
             finish("nsfw")

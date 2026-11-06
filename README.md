@@ -571,9 +571,15 @@ policy file's text is served too, to anyone who can read from the server.
 
 `adult-granular` (a letter per hard case: A minors, H non-consent, I sexual
 violence), `adult-cautious` (doubt about age or consent counts as rule A), and
-`adult-cinematic` (adult, with B narrowed to how-to / real targeting; fictional
-crime and legal adult entertainment are Safe) are under evaluation against
-`adult`; don't build on them yet.
+`adult-cinematic` (adult, but a depiction of crime or violence is Safe unless it
+is sexual, shows gore or dismemberment, or teaches how to do it, with no sign of
+fiction needed; legal adult entertainment is Safe) are under evaluation against
+`adult`; don't build on them yet. `adult-cinematic` has its own letters: B to F
+are Unethical Behavior, Cybersecurity, Agent Safety, Politically Sensitive and
+Animal Abuse, and G is Criminal Instructions, so `--guard-rules B` picks a
+different rule there than under `adult`. A letter is read against the policy's
+current wording, so this also applies to `adult-cinematic` verdicts recorded
+before argus-cortex 0.4.6.
 
 To compare policies on your own images, judge one scan under several:
 `"guard": {"policy": "adult", "variants": ["adult-granular", "adult-cautious"]}`
@@ -711,7 +717,10 @@ detector that is down never lets a watermark through. `ImageResult.watermarks`
 lists the hits on the uncropped frame (empty: none found), and `crop_source`
 says whether a crop was `manual` or `detected`. A streaming scan reports the
 pass as phase `watermarks`, before scoring. Detection runs only when a scan
-asks for it; asking without a detector is HTTP 400. `/detectors` reports
+asks for it; asking without a detector is HTTP 400, and asking while it is not
+answering (`GET /health` fails or returns 5xx, as while it loads) is HTTP 503,
+so the scan never starts. A server with no `/health` route still counts as up.
+`/detectors` reports
 `watermark`, `/health` reports `watermark_detect`.
 
 ```jsonc
@@ -784,7 +793,9 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 
 The `*/stream` variants emit `event: progress` frames (`{phase, done, total}`)
 while the work runs, then a single `event: complete` frame carrying the same
-payload the non-streaming endpoint returns (or `event: error`). A scan runs
+payload the non-streaming endpoint returns (or `event: error`). A streamed scan
+saves snapshots as it runs, so `GET /scans` lists it while it is `active`; a scan
+that fails or is cancelled drops them, so what stays listed is a finished scan. A scan runs
 `scoring` → `faces` and `nsfw` together → `identities` → `prefilter` →
 `scenes` → `garments` → `guard` → `clustering`: ages and the exposed score come first, so
 a viewer can lift a blur as soon as both are known, and their progress events
@@ -792,7 +803,9 @@ interleave while both run; identities follow at once, so a set age is known
 before the guard pass reads it as context. Every `event: chunk` frame carries
 the current `face_clusters`, empty until the identities are read. Scan progress
 and `event: chunk` frames carry `pending_checks`, the checks among `faces`, `nsfw` and `guard` whose results
-have not all landed yet; a check that could not run is not listed.
+have not all landed yet; a check that could not run is not listed. A row's
+`nsfw` is `null` until it is decided: with EraX on, a NudeNet score of 0 is held
+back until EraX has answered, so a non-null `nsfw` is a score a viewer can act on.
 
 A scan stops cooperatively: `POST /scan/{id}/cancel` raises a flag the
 scanner reads before each image and between phases, the checks already with
@@ -1019,6 +1032,9 @@ Scans are cached on disk (keyed by `scan_id`, default `~/.cache/argus_curator/sc
 override with `CURATOR_CACHE_DIR`). This is what makes paginated `GET /scan/{id}`
 and export-by-id work without recomputing. `POST /scans/purge` empties it (and
 stops a scan that is writing to it first); nothing else on disk is touched.
+A streamed scan saves snapshots as it runs, and marks them with a
+`<scan_id>.running` file until it finishes. If the server dies mid-scan, the next
+start removes that scan, so a partial one is never listed as a result.
 
 ## Related projects
 

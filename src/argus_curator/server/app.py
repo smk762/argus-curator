@@ -448,6 +448,9 @@ def create_app(
         )
 
     store = ScanStore(cache_dir)
+    # A scan cut off by a kill or crash never reached its failure handling.
+    if dropped := store.drop_unfinished():
+        logger.info("unfinished_scans_dropped", count=dropped)
     gate = ScanGate()
     app.state.scan_gate = gate
     app.state.scan_store = store
@@ -702,6 +705,19 @@ def create_app(
             except ModelUnavailable as exc:  # these name no URL or path
                 raise HTTPException(status_code=400, detail=f"SingGuard check requested but {exc}") from exc
 
+    def _require_detector(req: ScanRequest) -> None:
+        """Refuse a watermark scan while the detector is down.
+
+        This calls the detector, so routes run it off the event loop and after
+        the checks that need no network. A running scan gets its 409 from
+        :func:`_claim_scan`; the detector may be too busy with it to answer here.
+        """
+        if not (req.crops.enabled and req.crops.detect) or gate.snapshot() is not None:
+            return
+        detector = watermarks_mod.client()
+        if detector is not None and (why := detector.unreachable()) is not None:
+            raise HTTPException(status_code=503, detail=f"watermark detection requested but the detector {why}")
+
     def _requested_checks(req: ScanRequest) -> list[str]:
         return scanner.requested_checks(req.faces, req.nsfw, req.guard)
 
@@ -736,6 +752,7 @@ def create_app(
     async def scan_folder(req: ScanRequest) -> ScanSummary:
         _require_models(req)
         folder = _resolve_scan_folder(req.folder)
+        await asyncio.to_thread(_require_detector, req)
         scan_id = _claim_scan(folder, req)
         requested = _requested_checks(req)
         try:
@@ -774,11 +791,12 @@ def create_app(
         frames (those counts plus the images finished since the previous chunk),
         then a single ``event: complete`` frame carrying the full ScanSummary, or
         ``event: error``, or ``event: cancelled`` after ``POST /scan/{id}/cancel``
-        (the partial summary is dropped). A second scan is refused while one is
-        still running.
+        (either way the partial summary is dropped). A second scan is refused
+        while one is still running.
         """
         _require_models(req)
         folder = _resolve_scan_folder(req.folder)
+        await asyncio.to_thread(_require_detector, req)
         scan_id = _claim_scan(folder, req)
         requested = _requested_checks(req)
 
@@ -796,6 +814,15 @@ def create_app(
         def on_chunk(payload: dict[str, Any]) -> None:
             events.put(("chunk", payload))
 
+        def drop_snapshots() -> None:
+            # What was saved while it ran is not a result, so it must not reach
+            # GET /scans as one. The failure may be a full or broken cache, and
+            # that must not cost the client the event saying why the scan ended.
+            try:
+                store.delete(scan_id)
+            except OSError as exc:
+                logger.warning("scan_snapshot_drop_failed", scan_id=scan_id, error=str(exc))
+
         def run_scan() -> None:
             try:
                 summary = scanner.scan_folder(
@@ -812,19 +839,20 @@ def create_app(
                     scan_id=scan_id,
                     progress=on_progress,
                     chunk=on_chunk,
-                    save=store.save,
+                    save=store.save_snapshot,
                     cancelled=lambda: gate.cancelled(scan_id),
                 )
                 store.save(summary)
+                store.mark_finished(scan_id)
                 events.put(("complete", summary.model_dump(mode="json")))
             except scanner.ScanCancelled:
-                # The snapshots saved while it ran are not a result.
-                store.delete(scan_id)
+                drop_snapshots()
                 events.put(("cancelled", {"scan_id": scan_id}))
             except GpuLeaseTimeout as exc:
-                store.delete(scan_id)
+                drop_snapshots()
                 events.put(("error", {"detail": f"GPU busy: {exc}", "retry_after": 5}))
             except Exception as exc:  # surface as a stream error, not a 500
+                drop_snapshots()
                 events.put(("error", {"detail": f"scan failed: {exc}"}))
             finally:
                 gate.finish(scan_id)
