@@ -1041,6 +1041,8 @@ start removes that scan, so a partial one is never listed as a result.
 - [**argus-quarry**](https://github.com/smk762/argus-quarry) — provenance-first acquisition of public-domain / CC0 portraits (the suite's input stage).
 - [**argus-lens**](https://github.com/smk762/argus-lens) — intent-aware, multi-model captioning (consumes the manifest this package exports).
 - [**argus-studio**](https://github.com/smk762/argus-studio) — the suite's Next.js web UI (its `/curate` view drives this server).
+- [**argus-darkroom**](https://github.com/smk762/argus-darkroom) — guarded image generation; its records carry with an export under `--carry-sidecars`.
+- [**argus-mask**](https://github.com/smk762/argus-mask) — a talking face. [docs/synthetic-face-sets.md](docs/synthetic-face-sets.md) shows how darkroom, curator and lens make its synthetic source portraits.
 
 ## License
 
