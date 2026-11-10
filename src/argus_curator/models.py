@@ -23,6 +23,7 @@ from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import PolicyName
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     SerializationInfo,
     SerializerFunctionWrapHandler,
@@ -33,6 +34,13 @@ from pydantic import (
 )
 
 TargetStyle = Literal["photo", "anime"]
+ExportMode = Literal["copy", "symlink", "move"]
+
+# For models only ever sent, never received: a defaulted field is always in the
+# payload, so the wire schema lists it as required. A model a request also
+# carries must not use this, since a client may leave its defaulted fields out
+# (tests/test_schema.py checks which models carry it).
+RESPONSE_ONLY = ConfigDict(json_schema_serialization_defaults_required=True)
 TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
 
 # Head-pose bucket of the primary face, derived from InsightFace yaw. Lets the UI
@@ -283,6 +291,8 @@ EraxLabel = Literal["anus", "make_love", "nipple", "penis", "vagina"]
 class EraxDetection(BaseModel):
     """One EraX-NSFW detection. ``bbox`` is ``[x, y, w, h]`` in source pixels."""
 
+    model_config = RESPONSE_ONLY
+
     label: EraxLabel
     score: float
     bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
@@ -290,6 +300,8 @@ class EraxDetection(BaseModel):
 
 class EraxResult(BaseModel):
     """EraX-NSFW's view of one image. Classes are EraX's own, not NudeNet's."""
+
+    model_config = RESPONSE_ONLY
 
     detections: list[EraxDetection] = Field(default_factory=list)
     labels: dict[EraxLabel, float] = Field(default_factory=dict)
@@ -301,6 +313,8 @@ class EraxConfig(BaseModel):
     The URL (ARGUS_CURATOR_ERAX_URL) is process configuration, like NudeNet.
     A finished scan records whether the check ran as True or False.
     """
+
+    model_config = RESPONSE_ONLY
 
     enabled: bool | None = None
 
@@ -375,9 +389,11 @@ class CropBox(BaseModel):
 class WatermarkDetection(BaseModel):
     """One watermark the detector found: ``[x, y, w, h]`` in displayed pixels of the uncropped frame."""
 
+    model_config = RESPONSE_ONLY
+
     label: str
     score: float
-    bbox: list[float]
+    bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
 
 
 class CropConfig(BaseModel):
@@ -425,6 +441,8 @@ class FaceAttributes(BaseModel):
     ``age`` is its derived bracket, and ``age_conf`` is ``None``.
     """
 
+    model_config = RESPONSE_ONLY
+
     race: FaceRace | None = None
     race_conf: float | None = None
     gender: FaceGender | None = None
@@ -450,6 +468,8 @@ class SetAge(BaseModel):
     the costlier mistake.
     """
 
+    model_config = RESPONSE_ONLY
+
     years: float
     # Read before the prefilter: an identity it emptied is gone from face_clusters but still named here.
     cluster_id: str
@@ -470,6 +490,8 @@ class FaceReadings(BaseModel):
     not on the wire (see :data:`STORE_CONTEXT`).
     """
 
+    model_config = RESPONSE_ONLY
+
     # Sized here so a bad cache fails on load, not while pooling after the files are gone.
     fairface: list[float] | None = Field(None, min_length=18, max_length=18)
     mivolo_gender: list[float] | None = Field(None, min_length=2, max_length=2)
@@ -478,6 +500,8 @@ class FaceReadings(BaseModel):
 
 class FaceDetection(BaseModel):
     """One detected face within an image."""
+
+    model_config = RESPONSE_ONLY
 
     bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
     det_score: float
@@ -517,6 +541,8 @@ class PersonDetection(BaseModel):
     are NudeNet detections whose box overlaps this person.
     """
 
+    model_config = RESPONSE_ONLY
+
     bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
     det_score: float
     face_index: int | None = None
@@ -528,6 +554,8 @@ class PersonDetection(BaseModel):
 
 
 class SceneLabel(BaseModel):
+    model_config = RESPONSE_ONLY
+
     label: str
     conf: float
 
@@ -540,6 +568,8 @@ class SceneTags(BaseModel):
     categories of the chosen environment, so it is always at least 0.5.
     """
 
+    model_config = RESPONSE_ONLY
+
     categories: list[SceneLabel] = Field(default_factory=list)
     environment: SceneEnvironment
     environment_conf: float
@@ -547,6 +577,8 @@ class SceneTags(BaseModel):
 
 class GarmentDetection(BaseModel):
     """One detected garment."""
+
+    model_config = RESPONSE_ONLY
 
     label: GarmentLabel
     conf: float
@@ -588,6 +620,8 @@ class ImageResult(BaseModel):
     ``rel_path`` is the path relative to the scanned root and is the stable key
     everywhere (it stays unique across sub-folders, unlike a bare basename).
     """
+
+    model_config = RESPONSE_ONLY
 
     rel_path: str
     abs_path: str
@@ -682,11 +716,13 @@ class ImageResult(BaseModel):
 class FaceCluster(BaseModel):
     """A clustered identity across the scanned dataset."""
 
+    model_config = RESPONSE_ONLY
+
     cluster_id: str
     # Size and representative leave out images the prefilter dropped, which can never be kept.
     size: int
     representative_rel_path: str
-    representative_bbox: list[float] | None = None
+    representative_bbox: list[float] | None = Field(None, min_length=4, max_length=4, description="[x, y, w, h]")
     # Pooled over every member face, dropped images included: per-head probabilities are averaged before
     # taking the top label, so one odd frame cannot flip an identity's label.
     attributes: FaceAttributes | None = None
@@ -694,6 +730,8 @@ class FaceCluster(BaseModel):
 
 class ScanSummary(BaseModel):
     """Full result of a scan — persisted on disk and paginated by the server."""
+
+    model_config = RESPONSE_ONLY
 
     scan_id: str
     folder: str
@@ -773,7 +811,7 @@ class ExportRequest(BaseModel):
     # --allow-move / CURATOR_ALLOW_MOVE=1. An image the scan cropped is written
     # cropped, which neither a link nor a move can do: selecting one refuses
     # any mode but "copy".
-    mode: Literal["copy", "symlink", "move"] = "copy"
+    mode: ExportMode = "copy"
     preserve_structure: bool = True
 
     min_score: float = 0.6
@@ -955,6 +993,8 @@ class ManifestRow(BaseModel):
     original location within the scan.
     """
 
+    model_config = RESPONSE_ONLY
+
     manifest_version: str = MANIFEST_VERSION
     rel_path: str
     abs_path: str
@@ -971,6 +1011,8 @@ class ManifestRow(BaseModel):
 
 
 class ExportResult(BaseModel):
+    model_config = RESPONSE_ONLY
+
     # Version of the manifest this curator writes, declared whether or not a
     # manifest was requested. Without it a client can only compat-detect by
     # sniffing which fields are present, which cannot distinguish "old server"
@@ -980,7 +1022,7 @@ class ExportResult(BaseModel):
     copied: int
     skipped: int
     dest: str
-    mode: str
+    mode: ExportMode
     # What the selection *chose*, before transfer. A file here can still be
     # missing from exported_paths — its source vanished, or the transfer failed
     # — so this is not a record of what landed. Use exported_paths for that.
@@ -1021,6 +1063,8 @@ class SelectRow(BaseModel):
     value is why ``decide_selection`` left it out — the same strings an export
     report would write, without copying anything.
     """
+
+    model_config = RESPONSE_ONLY
 
     rel_path: str
     abs_path: str
@@ -1084,6 +1128,8 @@ class SelectRequest(BaseModel):
 
 class SelectResult(BaseModel):
     """What the current filter would keep, without writing the export root."""
+
+    model_config = RESPONSE_ONLY
 
     scan_id: str
     total: int
