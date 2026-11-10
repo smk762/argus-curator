@@ -10,6 +10,8 @@ generate, guarded   shortlist          reading aid      pick     inspect, serve
 records every run   age, pose, faces   captions         look-alike check
 ```
 
+**Real people:** a real person's face needs their documented consent ([argus-mask#19](https://github.com/smk762/argus-mask/issues/19)). Curator support for consented real-person sets is tracked in [argus-curator#133](https://github.com/smk762/argus-curator/issues/133). This guide covers synthetic faces only.
+
 **Not used:**
 - **argus-quarry** collects public-domain and CC0 portraits of real people. A licence to use a photo isn't the person's consent to be made into a talking face, so quarry images must never be a mask source, even as a reference for an identity adapter.
 - **argus-forge and argus-proof** are for LoRA training, which this workflow doesn't need.
@@ -167,4 +169,9 @@ These parts of the guide have no tool support yet:
 | Identity distance per view | Cluster membership only. |
 | Licence and look-alike check in the record | Added by hand. |
 
-[argus-curator#130](https://github.com/smk762/argus-curator/issues/130) tracks the face-reference export that would close the first three gaps.
+These issues track the gaps:
+
+- **[argus-curator#130](https://github.com/smk762/argus-curator/issues/130):** roll, face size, face sharpness, eyes open and mouth closed (from landmarks), and identity distance per view.
+- **[argus-darkroom#33](https://github.com/smk762/argus-darkroom/issues/33):** licences in the record, a check for named real people in the prompt, and adding the look-alike check to a record afterwards.
+
+Lighting and background stay checks by eye.
