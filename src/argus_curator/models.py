@@ -34,6 +34,7 @@ from pydantic import (
 )
 
 TargetStyle = Literal["photo", "anime"]
+TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
 ExportMode = Literal["copy", "symlink", "move"]
 
 # For models only ever sent, never received: a defaulted field is always in the
@@ -41,7 +42,6 @@ ExportMode = Literal["copy", "symlink", "move"]
 # carries must not use this, since a client may leave its defaulted fields out
 # (tests/test_schema.py checks which models carry it).
 RESPONSE_ONLY = ConfigDict(json_schema_serialization_defaults_required=True)
-TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
 
 # Head-pose bucket of the primary face, derived from InsightFace yaw. Lets the UI
 # pick a balanced subset by orientation (head-on / three-quarter / side profile).
@@ -489,8 +489,6 @@ class FaceReadings(BaseModel):
     cached before readings were kept. Only the scan cache holds them: they are
     not on the wire (see :data:`STORE_CONTEXT`).
     """
-
-    model_config = RESPONSE_ONLY
 
     # Sized here so a bad cache fails on load, not while pooling after the files are gone.
     fairface: list[float] | None = Field(None, min_length=18, max_length=18)

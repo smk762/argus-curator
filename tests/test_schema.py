@@ -30,6 +30,8 @@ def _reachable(root: type) -> set[type]:
             continue
         seen.add(model)
         for field in model.model_fields.values():
+            if field.exclude:  # never on the wire, so it has no schema to flag
+                continue
             stack = [field.annotation]
             while stack:
                 tp = stack.pop()
