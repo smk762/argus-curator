@@ -59,3 +59,7 @@ Run a single test: `uv run --no-sync pytest tests/test_export.py::test_name -q`.
 - **CORS is not a write boundary.** The `WriteGuard` + `cross_site_refuse` from **argus-cortex** gate cross-site writes on Origin; the wildcard grants anonymous *reads* only. Reuse the shared cortex helpers (write-guard, `env_flag`) rather than re-implementing.
 - **Versioning is git-tag-derived** (`hatch-vcs`). Never hand-edit a version; `src/argus_curator/_version.py` is generated (gitignored). Tag `vX.Y.Z` to release (PyPI via OIDC).
 - `structlog` for logging; Pydantic v2 everywhere; `pytest asyncio_mode = auto`. Ruff line-length 120, `ignore = E501,B008`.
+
+## Branches
+
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date by merging `origin/dev`, never `main`. Never open a PR against `main` or push work to it directly: `main` must never be ahead of `dev`. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected and needs a PR, merge the release PR, then immediately merge `main` back into `dev` so the merge commit is not left on `main` alone.
