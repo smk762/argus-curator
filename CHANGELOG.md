@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A guide to synthetic source portraits for argus-mask**
+  ([docs/synthetic-face-sets.md](docs/synthetic-face-sets.md)). It follows
+  argus-mask's own guide step by step: generate with argus-darkroom, shortlist
+  with curator, read argus-lens captions, then hand off. It also lists what no
+  tool checks. Docs only.
+
 ### Changed
 
 - **The wire schema says what the server always sends (#129).** In models that

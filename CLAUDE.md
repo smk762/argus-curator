@@ -13,6 +13,16 @@ argus-quarry -> argus-curator -> argus-lens -> argus-forge -> your trainer -> ar
 
 Curator and lens share one `TargetProfile`, so a manifest written here is consumed downstream with no remapping. Ships as an engine (Pillow/numpy/ImageHash/pydantic), an optional Typer CLI, and an optional FastAPI server on **:8101** (the `/curate` UI backend). Read [README.md](README.md) for the *why*.
 
+## Argus suite
+<!-- argus-suite: keep this block; argus-ci checks for it -->
+This repo is part of the Argus suite. The suite map below lists every sibling and what it owns; check it before
+building something a sibling may already do. **On every release, update this repo's row and capabilities in
+argus-cortex's SUITE.md** (a PR to argus-cortex in the same release).
+
+@../argus-core/SUITE.md
+
+Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
+
 ## Layout
 
 `src/argus_curator/`:
@@ -50,3 +60,7 @@ Run a single test: `uv run --no-sync pytest tests/test_export.py::test_name -q`.
 - **CORS is not a write boundary.** The `WriteGuard` + `cross_site_refuse` from **argus-cortex** gate cross-site writes on Origin; the wildcard grants anonymous *reads* only. Reuse the shared cortex helpers (write-guard, `env_flag`) rather than re-implementing.
 - **Versioning is git-tag-derived** (`hatch-vcs`). Never hand-edit a version; `src/argus_curator/_version.py` is generated (gitignored). Tag `vX.Y.Z` to release (PyPI via OIDC).
 - `structlog` for logging; Pydantic v2 everywhere; `pytest asyncio_mode = auto`. Ruff line-length 120, `ignore = E501,B008`.
+
+## Branches
+
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date by merging `origin/dev`, never `main`. Never open a PR against `main` or push work to it directly: `main` must never be ahead of `dev`. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected and needs a PR, merge the release PR, then immediately merge `main` back into `dev` so the merge commit is not left on `main` alone.
