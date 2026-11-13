@@ -859,7 +859,8 @@ class FaceSourceFilter(BaseModel):
     best first.
     """
 
-    # The identity to keep (a face cluster id). None = the scan's largest.
+    # The identity to keep (a face cluster id). None = the scan's largest, or
+    # with FaceConfig.reference_paths any (the reference distance names it).
     cluster: str | None = None
     # Exactly one face in the frame.
     single_face: bool = True

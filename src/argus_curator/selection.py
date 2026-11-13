@@ -357,6 +357,16 @@ def face_source_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
             "the face-source preset's adult check needs MiVOLO ages; rescan with faces.mivolo, "
             "or set face_source.require_adult to false"
         )
+    if fs.cluster is not None and fs.cluster not in {c.cluster_id for c in summary.face_clusters}:
+        return f"face_source.cluster {fs.cluster!r} is not an identity in this scan"
+    if fs.max_identity_distance is not None and summary.faces_config.reference_paths and summary.reference_skipped:
+        # The identity check would fall back to the cluster distance: another
+        # person's identity could pass as the reference's.
+        return (
+            f"the face-source identity check needs the scan's reference, which gave no distances "
+            f"({summary.reference_skipped}); rescan with a usable reference, "
+            "or set face_source.max_identity_distance to null"
+        )
     return None
 
 
@@ -498,7 +508,10 @@ def decide_selection(
     fs_cluster = None
     if fs is not None:
         fs_cluster = fs.cluster
-        if fs_cluster is None:
+        # With a reference the reference distance names the identity; the
+        # largest identity need not be the reference's, so it is no default.
+        referenced = any(f.reference_distance is not None for r in results for f in r.faces)
+        if fs_cluster is None and not referenced:
             counts = Counter(r.primary_face_cluster for r in results if r.passed and r.primary_face_cluster)
             fs_cluster = counts.most_common(1)[0][0] if counts else None
 

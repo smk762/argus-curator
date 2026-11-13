@@ -591,7 +591,8 @@ def cluster_identities(
         return []
 
     result_by_rel = {r.rel_path: r for r in results}
-    labels = _cluster_embeddings(np.vstack(detected.embeddings), cfg.cluster_eps)
+    embeddings = np.vstack(detected.embeddings)
+    labels = _cluster_embeddings(embeddings, cfg.cluster_eps)
 
     # Stable, size-ordered cluster ids: the largest identity becomes face_1.
     raw_sizes: dict[int, int] = {}
@@ -616,9 +617,10 @@ def cluster_identities(
         _assign_primary(r)
 
     # Each face's cosine distance to its identity's centroid.
-    embeddings = np.vstack(detected.embeddings)
-    for lbl in raw_sizes:
-        idx = [i for i, other in enumerate(labels) if other == lbl]
+    members_by_label: dict[int, list[int]] = {}
+    for i, lbl in enumerate(labels):
+        members_by_label.setdefault(lbl, []).append(i)
+    for idx in members_by_label.values():
         centroid = _unit(embeddings[idx].mean(axis=0))
         for i in idx:
             rel, face_idx = detected.meta[i][0], detected.meta[i][1]
@@ -768,5 +770,6 @@ def detect_and_cluster(
     """Detect, attribute, and cluster. Ages are set before clustering starts."""
     detected = detect_faces(results, items, cfg, progress=progress)
     clusters = cluster_identities(results, detected, cfg)
-    measure_reference(results, detected, cfg)
+    if (skipped := measure_reference(results, detected, cfg)) is not None:
+        logger.warning("reference_skipped", reason=skipped)
     return clusters

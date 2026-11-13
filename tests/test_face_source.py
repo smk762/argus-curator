@@ -354,3 +354,36 @@ def test_landmarks_live_in_the_scan_cache_only() -> None:
     stored = face.model_dump(context=STORE_CONTEXT)
     assert len(stored["landmarks"]["landmark_3d_68"]) == 68
     assert FaceDetection.model_validate(stored).landmarks == face.landmarks
+
+
+def test_a_reference_lifts_the_largest_identity_default() -> None:
+    # The reference's person is face_2, the smaller identity: the reference
+    # distance names who to keep, not the cluster count.
+    rows = [
+        _source("other1.png", cluster_id="face_1", reference_distance=0.8),
+        _source("other2.png", cluster_id="face_1", reference_distance=0.8),
+        _source("ref.png", cluster_id="face_2", reference_distance=0.05),
+    ]
+    _chosen, reasons = _select(rows)
+    assert reasons == {
+        "other1.png": "face-source:identity-distance",
+        "other2.png": "face-source:identity-distance",
+        "ref.png": "",
+    }
+
+
+def test_face_source_problem_refuses_an_unknown_cluster_and_a_failed_reference() -> None:
+    from argus_curator.models import FaceCluster
+
+    summary = _summary([], FaceConfig(mivolo=True))
+    summary.face_clusters = [FaceCluster(cluster_id="face_1", size=3, representative_rel_path="a.png")]
+    unknown = ExportRequest(dest=".", face_source=FaceSourceFilter(cluster="face_9"))
+    assert "face_9" in face_source_problem(unknown, summary)
+    assert face_source_problem(ExportRequest(dest=".", face_source=FaceSourceFilter(cluster="face_1")), summary) is None
+
+    referenced = _summary([], FaceConfig(mivolo=True, reference_paths=["gone.png"]))
+    referenced.reference_skipped = "no reference image is in the scan (gone.png)"
+    req = ExportRequest(dest=".", face_source=FaceSourceFilter())
+    assert "reference" in face_source_problem(req, referenced)
+    off = ExportRequest(dest=".", face_source=FaceSourceFilter(max_identity_distance=None))
+    assert face_source_problem(off, referenced) is None

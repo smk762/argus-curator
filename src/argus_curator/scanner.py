@@ -607,6 +607,7 @@ def scan_items(
     set_age: dict[str, Any] = {
         "age": None,
         "skipped": "the identities have not been read yet" if faces_cfg.set_age else None,
+        "reference_skipped": None,
     }
     # Face detection and NudeNet run side by side, so chunks, saves and the
     # completed set are touched under one lock.
@@ -648,7 +649,7 @@ def scan_items(
             face_clusters=face_clusters,
             set_age=set_age["age"],
             set_age_skipped=set_age["skipped"],
-            reference_skipped=set_age.get("reference_skipped"),
+            reference_skipped=set_age["reference_skipped"],
             results=[visible(r) for r in rows],
             returned=len(rows),
         )
