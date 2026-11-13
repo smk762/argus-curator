@@ -23,7 +23,15 @@ from argus_cortex.moderation import rule_letter
 from argus_cortex.xmp import XmpData, XmpError, XmpRegion, XmpRegions, sidecar_path, write_xmp
 
 from argus_curator import crops
-from argus_curator.models import ExportRequest, ExportResult, FaceDetection, ImageResult, ManifestRow, ScanSummary
+from argus_curator.models import (
+    ExportMode,
+    ExportRequest,
+    ExportResult,
+    FaceDetection,
+    ImageResult,
+    ManifestRow,
+    ScanSummary,
+)
 from argus_curator.selection import decide_selection, hard_exclusion
 
 logger = structlog.get_logger()
@@ -131,7 +139,7 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_s
     return dests
 
 
-def _transfer_one(src: Path, dst: Path, mode: str) -> None:
+def _transfer_one(src: Path, dst: Path, mode: ExportMode) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if mode == "move":
         shutil.move(str(src), str(dst))
@@ -162,7 +170,7 @@ def _sidecar_users(results: list[ImageResult]) -> Counter[Path]:
     return users
 
 
-def _carry_sidecars(src: Path, dst: Path, mode: str, rel_path: str, waiting: Counter[Path]) -> tuple[int, int]:
+def _carry_sidecars(src: Path, dst: Path, mode: ExportMode, rel_path: str, waiting: Counter[Path]) -> tuple[int, int]:
     """Transfer the sidecars beside *src* to the matching names beside *dst*. Returns ``(carried, failed)``.
 
     Same mode and the same overwrite semantics as the image (:func:`_transfer_one`):
@@ -209,7 +217,7 @@ def write_manifest(
     path: Path,
     exported_paths: dict[str, str],
     exported_abs_paths: dict[str, str] | None = None,
-    mode: str = "copy",
+    mode: ExportMode = "copy",
 ) -> None:
     """Write the JSONL handoff manifest (one :class:`ManifestRow` per line).
 

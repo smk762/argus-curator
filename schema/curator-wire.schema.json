@@ -103,6 +103,9 @@
           "title": "Enabled"
         }
       },
+      "required": [
+        "enabled"
+      ],
       "title": "EraxConfig",
       "type": "object"
     },
@@ -170,6 +173,10 @@
           "type": "object"
         }
       },
+      "required": [
+        "detections",
+        "labels"
+      ],
       "title": "EraxResult",
       "type": "object"
     },
@@ -794,6 +801,11 @@
           "type": "string"
         },
         "mode": {
+          "enum": [
+            "copy",
+            "symlink",
+            "move"
+          ],
           "title": "Mode",
           "type": "string"
         },
@@ -837,10 +849,21 @@
         }
       },
       "required": [
+        "manifest_version",
+        "manifest_path",
         "copied",
         "skipped",
         "dest",
-        "mode"
+        "mode",
+        "selected_rel_paths",
+        "exported_paths",
+        "exported_abs_paths",
+        "captioned",
+        "xmp_written",
+        "sidecars_carried",
+        "sidecars_failed",
+        "cropped",
+        "run_stats_path"
       ],
       "title": "ExportResult",
       "type": "object"
@@ -1001,6 +1024,18 @@
           "title": "Race Conf"
         }
       },
+      "required": [
+        "race",
+        "race_conf",
+        "gender",
+        "gender_conf",
+        "gender_source",
+        "age",
+        "age_conf",
+        "age_years",
+        "age_source",
+        "age_body"
+      ],
       "title": "FaceAttributes",
       "type": "object"
     },
@@ -1028,6 +1063,8 @@
               "items": {
                 "type": "number"
               },
+              "maxItems": 4,
+              "minItems": 4,
               "type": "array"
             },
             {
@@ -1035,6 +1072,7 @@
             }
           ],
           "default": null,
+          "description": "[x, y, w, h]",
           "title": "Representative Bbox"
         },
         "representative_rel_path": {
@@ -1049,7 +1087,9 @@
       "required": [
         "cluster_id",
         "size",
-        "representative_rel_path"
+        "representative_rel_path",
+        "representative_bbox",
+        "attributes"
       ],
       "title": "FaceCluster",
       "type": "object"
@@ -1296,7 +1336,16 @@
       },
       "required": [
         "bbox",
-        "det_score"
+        "det_score",
+        "cluster_id",
+        "primary",
+        "yaw",
+        "pitch",
+        "pose",
+        "attributes",
+        "person_index",
+        "nsfw_labels",
+        "exposed_score"
       ],
       "title": "FaceDetection",
       "type": "object"
@@ -1389,6 +1438,7 @@
         "label",
         "conf",
         "bbox",
+        "touches_edge",
         "color"
       ],
       "title": "GarmentDetection",
@@ -1883,6 +1933,43 @@
       "required": [
         "rel_path",
         "abs_path",
+        "score",
+        "passed",
+        "reject_reason",
+        "similar_group",
+        "group_size",
+        "is_representative",
+        "is_duplicate",
+        "duplicate_of",
+        "keep_reason",
+        "sharpness",
+        "artifact_score",
+        "width",
+        "height",
+        "faces",
+        "face_count",
+        "face_error",
+        "people",
+        "people_check",
+        "people_error",
+        "primary_face_cluster",
+        "primary_face_pose",
+        "primary_face_yaw",
+        "primary_face_attributes",
+        "set_age",
+        "scene",
+        "garments",
+        "nsfw",
+        "erax",
+        "erax_filled",
+        "nudenet_failed",
+        "guard",
+        "guard_variants",
+        "crop",
+        "crop_source",
+        "watermarks",
+        "phash",
+        "score_breakdown",
         "content_rating"
       ],
       "title": "ImageResult",
@@ -1965,13 +2052,17 @@
         }
       },
       "required": [
+        "manifest_version",
         "rel_path",
         "abs_path",
         "exported_path",
         "exported_abs_path",
         "target_profile",
+        "primary_face_cluster",
+        "primary_face_pose",
         "score",
-        "similar_group"
+        "similar_group",
+        "crop"
       ],
       "title": "ManifestRow",
       "type": "object"
@@ -2199,7 +2290,13 @@
       },
       "required": [
         "bbox",
-        "det_score"
+        "det_score",
+        "face_index",
+        "age_years",
+        "age_source",
+        "age_body",
+        "nsfw_labels",
+        "exposed_score"
       ],
       "title": "PersonDetection",
       "type": "object"
@@ -2468,11 +2565,26 @@
         "target_profile",
         "config",
         "faces_config",
+        "scenes_config",
+        "garments_config",
+        "nsfw_config",
+        "erax_config",
+        "guard_config",
+        "prefilter_config",
+        "crop_config",
         "total",
         "passed",
         "rejected",
         "duplicates",
-        "similar_clusters"
+        "similar_clusters",
+        "reject_reasons",
+        "face_clusters",
+        "set_age",
+        "set_age_skipped",
+        "results",
+        "offset",
+        "limit",
+        "returned"
       ],
       "title": "ScanSummary",
       "type": "object"
@@ -2543,6 +2655,7 @@
         }
       },
       "required": [
+        "categories",
         "environment",
         "environment_conf"
       ],
@@ -3019,7 +3132,8 @@
       "required": [
         "scan_id",
         "total",
-        "kept"
+        "kept",
+        "rows"
       ],
       "title": "SelectResult",
       "type": "object"
@@ -3043,7 +3157,8 @@
       },
       "required": [
         "rel_path",
-        "abs_path"
+        "abs_path",
+        "keep_reason"
       ],
       "title": "SelectRow",
       "type": "object"
@@ -3132,9 +3247,12 @@
       "description": "One watermark the detector found: ``[x, y, w, h]`` in displayed pixels of the uncropped frame.",
       "properties": {
         "bbox": {
+          "description": "[x, y, w, h]",
           "items": {
             "type": "number"
           },
+          "maxItems": 4,
+          "minItems": 4,
           "title": "Bbox",
           "type": "array"
         },

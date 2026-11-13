@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with curator, read argus-lens captions, then hand off. It also lists what no
   tool checks. Docs only.
 
+### Changed
+
+- **The wire schema says what the server always sends (#129).** In models that
+  only go out (`ScanSummary`, `ImageResult`, `ExportResult`, `ManifestRow`,
+  `SelectResult` and what they hold), a field with a default is now required,
+  since every response carries it. Request models and the configs a request
+  also carries are unchanged, as a client may still leave those fields out.
+  `ExportResult.mode` is the `copy` / `symlink` / `move` enum rather than any
+  string, and `WatermarkDetection.bbox` and `FaceCluster.representative_bbox`
+  are 4 numbers, like the other boxes. The payloads themselves are unchanged,
+  and so is the manifest version. Cortex's `NsfwResult`, `NsfwDetection` and
+  `GuardResult` still list their defaulted fields as optional.
+
 ## [0.14.1] - 2026-11-06
 
 ### Changed
