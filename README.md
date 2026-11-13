@@ -391,13 +391,13 @@ a detector for 18 body-part classes (`FEMALE_BREAST_EXPOSED`, `BUTTOCKS_COVERED`
 imports NudeNet, so it gains no dependency and stays MIT. NudeNet itself is
 AGPL-3.0, so running its server is a choice for whoever deploys it.
 
-Configure the server in the environment (or `.env`), never per request:
+Configure the server in the environment (or `.env`), never per request. Hosts below are placeholders; the real host/IP is in the local `.env` (see `.env.example`), so check it there:
 
 ```bash
-ARGUS_CURATOR_NUDENET_URL=http://192.168.1.50:8080   # its origin; /infer is appended
+ARGUS_CURATOR_NUDENET_URL=http://<LAN_HOST>:8080   # its origin; /infer is appended
 ARGUS_CURATOR_NUDENET_TIMEOUT=30                     # seconds per image (default 30)
 ARGUS_CURATOR_NUDENET_WORKERS=4                      # concurrent requests (default 4)
-ARGUS_CURATOR_ERAX_URL=http://192.168.1.50:8081      # optional; empty turns EraX off
+ARGUS_CURATOR_ERAX_URL=http://<LAN_HOST>:8081      # optional; empty turns EraX off
 ARGUS_CURATOR_ERAX_TIMEOUT=30
 ARGUS_CURATOR_ERAX_WORKERS=4
 ```
@@ -524,7 +524,7 @@ SingGuard server answers 400 to them. Curator then retries in `fast`, and once
 Configure it like NudeNet:
 
 ```bash
-ARGUS_CURATOR_SINGGUARD_URL=http://192.168.1.198:9150   # its origin; /api/guard/check is appended
+ARGUS_CURATOR_SINGGUARD_URL=http://<AGENT_HOST>:9150   # its origin; /api/guard/check is appended (real host in local .env)
 ARGUS_CURATOR_SINGGUARD_THINKING=cascade                 # or fast / fast-slow / slow
 ARGUS_CURATOR_SINGGUARD_POLICY_FILE=/etc/curator/policy.txt  # optional: replaces the default rules
 ARGUS_CURATOR_SINGGUARD_TIMEOUT=90                       # seconds per image (default 90)
