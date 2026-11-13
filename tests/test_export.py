@@ -52,6 +52,8 @@ def test_manifest_rows_carry_target_profile(dataset: Path, tmp_path: Path) -> No
         "score",
         "similar_group",
         "crop",
+        "primary_face",
+        "set_age",
     }
     assert row["manifest_version"] == MANIFEST_VERSION
     assert row["target_profile"]["target_category"] == "identity"

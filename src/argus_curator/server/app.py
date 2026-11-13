@@ -71,6 +71,7 @@ from argus_curator.runtime import ModelUnavailable, gpu_coordinator
 from argus_curator.scenes import scenes_available
 from argus_curator.selection import (
     decide_selection,
+    face_source_problem,
     garment_floor_problem,
     guard_filter_problem,
     minor_exposed,
@@ -953,12 +954,17 @@ def create_app(
         for problem in (
             garment_floor_problem(export_req, summary.garments_config.min_conf),
             nsfw_filter_problem(export_req, summary),
+            face_source_problem(export_req, summary),
             guard_filter_problem(export_req, summary),
         ):
             if problem is not None:
                 raise HTTPException(status_code=400, detail=problem)
         _selected, reasons = await asyncio.to_thread(
-            decide_selection, summary.results, export_req, summary.config.diversity_weight
+            decide_selection,
+            summary.results,
+            export_req,
+            summary.config.diversity_weight,
+            set_age=summary.set_age,
         )
         rows = [
             SelectRow(rel_path=r.rel_path, abs_path=r.abs_path, keep_reason=reasons.get(r.rel_path, ""))
@@ -1143,6 +1149,7 @@ def create_app(
         for problem in (
             garment_floor_problem(req, summary.garments_config.min_conf),
             nsfw_filter_problem(req, summary),
+            face_source_problem(req, summary),
             guard_filter_problem(req, summary),
         ):
             if problem is not None:

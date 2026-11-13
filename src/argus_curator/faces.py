@@ -27,6 +27,7 @@ from argus_curator.models import (
     FaceCluster,
     FaceConfig,
     FaceDetection,
+    FaceLandmarks,
     FaceReadings,
     ImageResult,
     PersonDetection,
@@ -118,21 +119,84 @@ def classify_pose(yaw: float | None, cfg: FaceConfig) -> str | None:
     return "profile"
 
 
-def _extract_pose(face: object) -> tuple[float | None, float | None]:
-    """Return ``(yaw, pitch)`` in degrees from an InsightFace face, if present.
+def _extract_pose(face: object) -> tuple[float | None, float | None, float | None]:
+    """Return ``(yaw, pitch, roll)`` in degrees from an InsightFace face, if present.
 
     ``buffalo_l`` ships the 3D-68 landmark model, which populates
     ``face.pose = [pitch, yaw, roll]``. Older packs may omit it.
     """
     pose_arr = getattr(face, "pose", None)
     if pose_arr is None:
-        return None, None
+        return None, None, None
     try:
         pitch = float(pose_arr[0])
         yaw = float(pose_arr[1])
     except (TypeError, ValueError, IndexError):
+        return None, None, None
+    try:
+        roll: float | None = float(pose_arr[2])
+    except (TypeError, ValueError, IndexError):
+        roll = None
+    return yaw, pitch, roll
+
+
+# iBUG 68-point indices: each eye's six points (outer corner first) and the
+# inner lip (left corner, three top points, right corner, three bottom points).
+_RIGHT_EYE = (36, 37, 38, 39, 40, 41)
+_LEFT_EYE = (42, 43, 44, 45, 46, 47)
+
+
+def _eye_aspect(pts: np.ndarray, idx: tuple[int, ...]) -> float:
+    p1, p2, p3, p4, p5, p6 = (pts[i] for i in idx)
+    width = float(np.linalg.norm(p1 - p4))
+    if width <= 1e-6:
+        return 0.0
+    return (float(np.linalg.norm(p2 - p6)) + float(np.linalg.norm(p3 - p5))) / (2.0 * width)
+
+
+def eye_mouth_openness(landmarks_68: object) -> tuple[float | None, float | None]:
+    """``(eye_open, mouth_open)`` from InsightFace's ``landmark_3d_68``, or ``(None, None)``.
+
+    ``eye_open`` is the eye aspect ratio averaged over both eyes; ``mouth_open``
+    the mean inner-lip gap (points 61-67, 62-66, 63-65) over the inner mouth
+    width (60-64). Read in the image plane (x, y); z is ignored.
+    """
+    try:
+        pts = np.asarray(landmarks_68, dtype=np.float32)[:, :2]
+    except (TypeError, ValueError, IndexError):
         return None, None
-    return yaw, pitch
+    if pts.shape != (68, 2):
+        return None, None
+    eye = (_eye_aspect(pts, _RIGHT_EYE) + _eye_aspect(pts, _LEFT_EYE)) / 2.0
+    width = float(np.linalg.norm(pts[60] - pts[64]))
+    gap = sum(float(np.linalg.norm(pts[a] - pts[b])) for a, b in ((61, 67), (62, 66), (63, 65))) / 3.0
+    mouth = gap / width if width > 1e-6 else 0.0
+    return round(eye, 4), round(mouth, 4)
+
+
+def face_sharpness(image: object, bbox_xywh: list[float]) -> float | None:
+    """Laplacian variance (``scanner._sharpness``) over the face box alone."""
+    from argus_curator.scanner import _sharpness
+
+    x, y, w, h = bbox_xywh
+    iw, ih = image.size  # type: ignore[attr-defined]
+    box = (max(0, int(x)), max(0, int(y)), min(iw, int(x + w)), min(ih, int(y + h)))
+    if box[2] - box[0] < 2 or box[3] - box[1] < 2:
+        return None
+    return round(_sharpness(image.crop(box)), 2)  # type: ignore[attr-defined]
+
+
+def _points(arr: object, dims: int) -> list[list[float]] | None:
+    """A landmark array as rounded ``[[x, y(, z)], ...]``, or None."""
+    if arr is None:
+        return None
+    try:
+        a = np.asarray(arr, dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
+    if a.ndim != 2 or a.shape[1] < dims:
+        return None
+    return [[round(float(v), 2) for v in row[:dims]] for row in a]
 
 
 def _centrality(bbox_xywh: list[float], w: int, h: int) -> float:
@@ -364,6 +428,8 @@ def _assign_primary(result: ImageResult) -> None:
     result.primary_face_cluster = primary.cluster_id
     result.primary_face_pose = primary.pose
     result.primary_face_yaw = primary.yaw
+    result.primary_face_pitch = primary.pitch
+    result.primary_face_roll = primary.roll
     result.primary_face_attributes = primary.attributes
 
 
@@ -456,6 +522,7 @@ def _detect_one(
     if detections is None:
         detections = []
     h, w = bgr.shape[:2]
+    image = Image.fromarray(bgr[:, :, ::-1])
     kept = 0
     kps_by_face: list[np.ndarray | None] = []
     for face in detections:
@@ -471,22 +538,30 @@ def _detect_one(
                 continue
             emb = emb / (np.linalg.norm(emb) + 1e-9)
         area = bbox[2] * bbox[3]
-        yaw, pitch = _extract_pose(face)
+        yaw, pitch, roll = _extract_pose(face)
+        lmk68 = getattr(face, "landmark_3d_68", None)
+        eye_open, mouth_open = eye_mouth_openness(lmk68) if lmk68 is not None else (None, None)
         found.embeddings.append(np.asarray(emb, dtype=np.float32))
         found.meta.append((rel, kept, bbox, det_score, _centrality(bbox, w, h), area))
+        kps = _points(getattr(face, "kps", None), 2)
+        lmk = _points(lmk68, 3)
         r.faces.append(
             FaceDetection(
                 bbox=bbox,
                 det_score=round(det_score, 4),
                 yaw=round(yaw, 2) if yaw is not None else None,
                 pitch=round(pitch, 2) if pitch is not None else None,
+                roll=round(roll, 2) if roll is not None else None,
                 pose=classify_pose(yaw, cfg),
+                sharpness=face_sharpness(image, bbox),
+                eye_open=eye_open,
+                mouth_open=mouth_open,
+                landmarks=FaceLandmarks(kps=kps, landmark_3d_68=lmk) if kps or lmk else None,
             )
         )
         kps_by_face.append(getattr(face, "kps", None))
         kept += 1
     r.face_count = kept
-    image = Image.fromarray(bgr[:, :, ::-1])
     body_crops = None
     boxes_xyxy = None
     if body_detector is not None:
@@ -516,7 +591,8 @@ def cluster_identities(
         return []
 
     result_by_rel = {r.rel_path: r for r in results}
-    labels = _cluster_embeddings(np.vstack(detected.embeddings), cfg.cluster_eps)
+    embeddings = np.vstack(detected.embeddings)
+    labels = _cluster_embeddings(embeddings, cfg.cluster_eps)
 
     # Stable, size-ordered cluster ids: the largest identity becomes face_1.
     raw_sizes: dict[int, int] = {}
@@ -540,6 +616,16 @@ def cluster_identities(
     for r in results:
         _assign_primary(r)
 
+    # Each face's cosine distance to its identity's centroid.
+    members_by_label: dict[int, list[int]] = {}
+    for i, lbl in enumerate(labels):
+        members_by_label.setdefault(lbl, []).append(i)
+    for idx in members_by_label.values():
+        centroid = _unit(embeddings[idx].mean(axis=0))
+        for i in idx:
+            rel, face_idx = detected.meta[i][0], detected.meta[i][1]
+            result_by_rel[rel].faces[face_idx].cluster_distance = _cosine_distance(embeddings[i], centroid)
+
     clusters: list[FaceCluster] = []
     for cluster_id, members in cluster_members.items():
         rep_rel, rep_bbox, _ = max(members, key=lambda m: m[2])
@@ -554,6 +640,52 @@ def cluster_identities(
         )
     clusters.sort(key=lambda c: -c.size)
     return clusters
+
+
+def _unit(v: np.ndarray) -> np.ndarray:
+    return v / (np.linalg.norm(v) + 1e-9)
+
+
+def _cosine_distance(a: np.ndarray, unit_b: np.ndarray) -> float:
+    return round(max(0.0, 1.0 - float(np.dot(_unit(a), unit_b))), 4)
+
+
+def measure_reference(results: list[ImageResult], detected: DetectedFaces, cfg: FaceConfig) -> str | None:
+    """Set each face's ``reference_distance`` from ``cfg.reference_paths``; return why not, or None.
+
+    The reference is the centroid of the primary faces of the named images.
+    Run after :func:`cluster_identities` (which picks the primary faces). Only
+    the distances are kept: the embeddings stay in *detected*, which the scan
+    never writes.
+    """
+    if not cfg.reference_paths or not detected.embeddings:
+        return None if not cfg.reference_paths else "no faces were detected"
+    result_by_rel = {r.rel_path: r for r in results}
+    missing = [p for p in cfg.reference_paths if p not in result_by_rel]
+    if len(missing) == len(cfg.reference_paths):
+        return f"no reference image is in the scan ({', '.join(missing)})"
+    index = {(rel, face_idx): i for i, (rel, face_idx, *_rest) in enumerate(detected.meta)}
+    refs = []
+    for rel in cfg.reference_paths:
+        r = result_by_rel.get(rel)
+        if r is None:
+            continue
+        primary = next((j for j, f in enumerate(r.faces) if f.primary), None)
+        if primary is not None and (rel, primary) in index:
+            refs.append(detected.embeddings[index[(rel, primary)]])
+    if not refs:
+        rejected = [p for p in cfg.reference_paths if p in result_by_rel and not result_by_rel[p].passed]
+        if rejected:
+            # A rejected image is never face-checked, so it cannot be a reference.
+            why = result_by_rel[rejected[0]].reject_reason or "rejected"
+            return f"no reference image has a face; the scan rejected {rejected[0]} ({why})"
+        return "no reference image has a face"
+    centroid = _unit(np.vstack([_unit(e) for e in refs]).mean(axis=0))
+    for (rel, face_idx, *_rest), emb in zip(detected.meta, detected.embeddings, strict=True):
+        result_by_rel[rel].faces[face_idx].reference_distance = _cosine_distance(emb, centroid)
+    if missing:
+        logger.warning("reference_paths_missing", missing=missing)
+    return None
 
 
 def repool_identities(clusters: list[FaceCluster], results: list[ImageResult]) -> None:
@@ -637,4 +769,7 @@ def detect_and_cluster(
 ) -> list[FaceCluster]:
     """Detect, attribute, and cluster. Ages are set before clustering starts."""
     detected = detect_faces(results, items, cfg, progress=progress)
-    return cluster_identities(results, detected, cfg)
+    clusters = cluster_identities(results, detected, cfg)
+    if (skipped := measure_reference(results, detected, cfg)) is not None:
+        logger.warning("reference_skipped", reason=skipped)
+    return clusters

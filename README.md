@@ -298,6 +298,42 @@ Deleting images re-reads the set age from the faces left, which can change it,
 remove it or give one to a frame that had none; a check that already ran is not
 run again.
 
+### Face sources (argus-mask)
+
+With faces on, every face also carries its head **roll** (beside yaw and
+pitch), its own **sharpness** (Laplacian variance over the face box, so a
+sharp face on a plain background isn't judged by the background), **eye_open**
+and **mouth_open** (the eye aspect ratio and the inner-lip gap over the mouth
+width, from InsightFace's 68 landmarks), and **cluster_distance**, the cosine
+distance from its identity's centroid. Name reference images in the scan and
+each face also gets a **reference_distance** from them:
+
+```bash
+argus-curator scan views/ --mivolo --face-reference portrait.png \
+    --face-source --blur-threshold 0 --csv views.csv --copy-to source/
+```
+
+`--face-source` (`face_source: {}` on `POST /export` and `/scan/{id}/select`)
+is a preset over those measurements: one face, of one identity (the largest,
+or `face_source.cluster`), with yaw and pitch within 15° and roll within 10°,
+a face box at least 256 px on its short side, face sharpness at least 100, eyes
+open (`eye_open >= 0.18`), mouth closed (`mouth_open <= 0.1`), an identity
+distance within 0.4 (to the reference when there is one, else to the
+identity's centroid), and a MiVOLO age of 18 or over (with an adult set age
+when the scan read one). Set any check to `null` to turn it off. An image
+that fails gets `face-source:<check>` as its keep reason, and the kept images
+come back ranked best first. A scan without face detection, or (for the age
+check) without MiVOLO, is refused with a 400 rather than keeping nothing.
+The measurements are not an expression classifier: a closed-lip smile passes.
+
+A reference must pass the scan's filters, as a rejected image is never
+face-checked; `reference_skipped` on the summary says why none was used.
+Embeddings are not stored, only the distances. The 5 keypoints and 68
+landmarks are kept in the scan cache (not served by `GET /scan/{id}`) and
+written into the manifest when an export asks (`--landmarks`,
+`landmarks: true`). [docs/synthetic-face-sets.md](docs/synthetic-face-sets.md)
+walks through a face-source shortlist end to end.
+
 ### Scene tags (Places365)
 
 `--scenes` (or `"scenes": {"enabled": true}` on the scan request) runs a
@@ -975,10 +1011,15 @@ Export writes a JSONL manifest (one row per **exported** image — rows exist
 only for files whose transfer actually succeeded):
 
 ```jsonc
-{ "manifest_version": "2.2", "rel_path": "...", "abs_path": "...",
+{ "manifest_version": "2.3", "rel_path": "...", "abs_path": "...",
   "exported_path": "...", "exported_abs_path": "...", "target_profile": { ... },
   "primary_face_cluster": "face_2", "primary_face_pose": "three_quarter",
-  "score": 0.87, "similar_group": 3, "crop": null }
+  "score": 0.87, "similar_group": 3, "crop": null,
+  "primary_face": { "bbox": [412.0, 188.0, 301.5, 380.0], "yaw": -24.1, "pitch": 3.2,
+                    "roll": -1.8, "sharpness": 812.4, "eye_open": 0.29, "mouth_open": 0.02,
+                    "cluster_distance": 0.12, "reference_distance": null,
+                    "age_years": 31.4, "landmarks": null },
+  "set_age": null }
 ```
 
 The row shape is published in the wire schema as `ManifestRow`.
@@ -1011,6 +1052,11 @@ within the scan.
 `crop` (manifest 2.2) is the box baked into the exported file when the scan
 [cropped](#crops-watermarks-and-borders-without-touching-the-source) it, in
 the source's displayed pixels; `null` means the file is the source as it was.
+
+`primary_face` (manifest 2.3) is the primary face's measurements, from the
+[face-source](#face-sources-argus-mask) set, or `null` for an image with no
+face; its `landmarks` are `null` unless the export asked for them. `set_age`
+is the scan's [set age](#face-attributes-mivolo) when one was read.
 
 `GET /health` reports `manifest_version` alongside the package `version`, so a
 consumer can check the contract it is about to speak — and refuse an unknown

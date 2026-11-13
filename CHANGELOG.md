@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Face-source measurements and preset for argus-mask (#130).** Every face now
+  carries its head `roll`, its own `sharpness` (over the face box), `eye_open`
+  and `mouth_open` (from the 68 landmarks), and `cluster_distance` to its
+  identity's centroid. `FaceConfig.reference_paths` (`--face-reference`) names
+  images in the scan whose faces are the reference; each face then gets a
+  `reference_distance`, and `reference_skipped` on the summary says why none
+  was measured. Embeddings are not stored. The 5 keypoints and 68 landmarks are
+  kept in the scan cache only. `face_source` on export and select
+  (`--face-source`) is a preset over these measurements: one face of one
+  identity, frontal and level, large and sharp, eyes open, mouth closed, close
+  to the identity, and an adult. It ranks the kept images best first, and each
+  image it leaves out gets `face-source:<check>` as its keep reason. The CSV
+  report gains pitch, roll and the face-quality columns.
+- **Manifest 2.3.** Rows carry `primary_face` (box, pose, sharpness, eyes,
+  mouth, distances, age, and landmarks with `landmarks: true` / `--landmarks`)
+  and the scan's `set_age`. Additive, so a 2.x reader keeps working.
 - **The `concept` target category (#134).** A style or visual-concept LoRA set:
   face count never lowers its score, and clean, high-resolution images get the
   composition bonus. `TargetStyle` and `TargetCategory` now come from
