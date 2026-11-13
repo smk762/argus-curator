@@ -3225,7 +3225,8 @@
             "identity",
             "wardrobe",
             "pose_composition",
-            "setting"
+            "setting",
+            "concept"
           ],
           "title": "Target Category",
           "type": "string"

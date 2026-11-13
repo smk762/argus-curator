@@ -7,6 +7,8 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from argus_cortex.taxonomy import TARGET_CATEGORIES
+
 if TYPE_CHECKING:
     from pydantic import ValidationError
 
@@ -84,7 +86,7 @@ def scan(
     style: str = Option("photo", "--target-style", help="photo or anime"),
     target_backend: str = Option("sdxl", "--target-backend", help="Diffusion backend family"),
     checkpoint: str | None = Option(None, "--checkpoint", help="Target checkpoint"),
-    category: str = Option("identity", "--target-category", help="identity|wardrobe|pose_composition|setting"),
+    category: str = Option("identity", "--target-category", help="|".join(TARGET_CATEGORIES)),
     faces: bool = Option(False, "--faces", help="Run InsightFace detection + identity clustering"),
     faces_model: str = Option("buffalo_l", "--faces-model", help="InsightFace model name"),
     min_det_score: float = Option(0.5, "--min-det-score", help="Minimum face detection score"),

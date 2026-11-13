@@ -181,33 +181,31 @@ def _artifact_score(img: Image.Image) -> float:
 # ---------------------------------------------------------------------------
 
 
+# Score multiplier for (no face, two or more faces), per target category; one
+# face is always 1.0. Identity training wants exactly one prominent face; the
+# other categories are progressively more tolerant. ``concept`` (a style or
+# visual-concept LoRA) is about the look, not who is in frame, so face count
+# never counts against it. Every value of cortex's TARGET_CATEGORIES must have
+# a row (tests/test_scanner.py checks).
+_FACE_PENALTIES: dict[str, tuple[float, float]] = {
+    "identity": (0.5, 0.4),
+    "wardrobe": (0.75, 0.6),
+    "pose_composition": (0.85, 0.7),
+    "setting": (1.0, 0.85),
+    "concept": (1.0, 1.0),
+}
+
+
 def _face_penalty(face_count: int, category: TargetCategory) -> float:
     """Penalise images that have the wrong number of faces for the target.
 
-    Identity training wants exactly one prominent face; other categories are
-    progressively more tolerant. Ported from imogen's ``_subject_face_penalty``.
+    Ported from imogen's ``_subject_face_penalty``; see ``_FACE_PENALTIES``.
     """
-    if category == "identity":
-        if face_count == 0:
-            return 0.5
-        if face_count >= 2:
-            return 0.4
-        return 1.0
-    if category == "wardrobe":
-        if face_count == 0:
-            return 0.75
-        if face_count >= 2:
-            return 0.6
-        return 1.0
-    if category == "pose_composition":
-        if face_count == 0:
-            return 0.85
-        if face_count >= 2:
-            return 0.7
-        return 1.0
-    # setting
+    no_face, many = _FACE_PENALTIES[category]
+    if face_count == 0:
+        return no_face
     if face_count >= 2:
-        return 0.85
+        return many
     return 1.0
 
 
@@ -248,6 +246,14 @@ def _target_bonus(result: ImageResult, profile: TargetProfile, faces_known: bool
             bonus += 0.03
         if short_side >= int(1024 * 0.9):
             bonus += 0.03
+    elif category == "concept":
+        # A style set is learned from the pixels themselves: reward clean,
+        # high-resolution images and take no view on framing or faces.
+        short_side = min(result.width, result.height)
+        if result.artifact_score >= 0.85:
+            bonus += 0.06
+        if short_side >= int(1024 * 0.9):
+            bonus += 0.05
 
     if profile.target_style == "anime":
         if category in {"identity", "wardrobe"}:
