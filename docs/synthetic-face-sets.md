@@ -81,7 +81,7 @@ Curator doesn't decide what's a good portrait, but it narrows a batch of 16 to 3
 
 ```bash
 argus-curator scan candidates/ \
-    --mivolo --drop-no-face --min-age 18 --pose frontal \
+    --mivolo --face-source --blur-threshold 0 \
     --garments --exclude-garment glasses,hat,headband_hair_accessory \
     --keep-similar --carry-sidecars \
     --csv shortlist.csv --copy-to shortlist/
@@ -89,20 +89,21 @@ argus-curator scan candidates/ \
 
 | Flag | Why |
 |---|---|
-| `--mivolo` | Detects faces (InsightFace) and estimates age in years (MiVOLO). It also gives head pose: yaw, pitch and a pose bucket. |
-| `--drop-no-face` | A portrait without a detected face is unusable. |
-| `--min-age 18` | Exports only primary faces MiVOLO reads as 18 or over. |
-| `--pose frontal` | Exports only frontal faces, meaning `abs(yaw) <= 15°` (`frontal_max_yaw`). Pitch plays no part in the bucket: it's on each face in the `--json` summary, not in the CSV. Roll isn't measured, so check "head level" by eye. |
+| `--mivolo` | Detects faces (InsightFace) and estimates age in years (MiVOLO). It also gives head pose (yaw, pitch and roll), face sharpness, and how open the eyes and mouth are. |
+| `--face-source` | The face-source preset. It exports only images with one face, of the largest identity, with yaw and pitch within 15° and roll within 10°, a face box at least 256 px on its short side, a sharp face, eyes open, mouth closed, and a MiVOLO age of 18 or over. The export is ranked best first. Each image it leaves out gets `face-source:<check>` in the CSV's `keep_reason`. |
+| `--blur-threshold 0` | Turns off the whole-image blur filter, so the face's own sharpness decides (see below). |
 | `--garments --exclude-garment …` | Drops portraits where Fashionpedia sees glasses, a hat, or a headband or hair accessory. It doesn't see hands or hair over the face. |
 | `--keep-similar` | A seed sweep of one prompt gives near-duplicates. By default curator keeps only the best of each group, but here you want to compare them all. |
 | `--carry-sidecars` | Copies each image's `<id>.json` darkroom record into `shortlist/` with it. |
-| `--csv` | One row per image, with `primary_face_yaw`, `primary_face_age_years`, `sharpness`, `score` and `reject_reason`, for comparing them side by side. |
+| `--csv` | One row per image, for comparing them side by side: `primary_face_yaw` / `_pitch` / `_roll`, `primary_face_px`, `primary_face_sharpness`, `primary_face_eye_open`, `primary_face_mouth_open`, `primary_face_age_years`, `score`, `keep_reason` and `reject_reason`. |
 
 `--mivolo` and `--garments` need their converted models: run `argus-curator mivolo-convert` and `argus-curator garments-convert` once (see the [README](../README.md#installation)). Without them the scan refuses up front and names the missing model.
 
 With NudeNet configured (`ARGUS_CURATOR_NUDENET_URL`), the scan also scores exposure. A head-and-shoulders portrait should score near zero, so add `--drop-nsfw` to reject anything that doesn't.
 
-**Sharpness is measured over the whole image.** The guide's plain mid-grey background has little texture, so a portrait with a sharp face can still score under the default `--blur-threshold 100` and be rejected as blurry. If good portraits are missing from the shortlist, look for `blurry` in the CSV's `reject_reason` column and lower the threshold.
+**Use the face's sharpness, not the image's.** The scan's blur filter measures the whole image. The guide's plain mid-grey background has little texture, so a portrait with a sharp face can score under the default `--blur-threshold 100` and be rejected as blurry before its face is read. `--blur-threshold 0` turns that filter off, and `--face-source` checks the face box's own sharpness instead.
+
+The eye and mouth checks are measurements from InsightFace's 68 landmarks, not an expression classifier. A smile with closed lips still passes, so judge the expression yourself.
 
 Don't use `--detect-watermarks` here. It crops a watermark away, and the guide wants the chosen image unedited. Discard a portrait with a watermark or text instead, and regenerate.
 
@@ -131,13 +132,13 @@ Choose against the mask guide's table and checklist by eye. Then run the look-al
 
 Some splat routes train on several views. The mask guide gives two synthetic-only ways to make them. Either way, every view has to stay the same person.
 
-Curator can check that coarsely. Scan the views with faces on, and a view in a different face cluster from your frontal portrait has drifted:
+Curator measures how far each view is from the frontal portrait. Put the portrait in the folder with the views, and name it as the reference:
 
 ```bash
-argus-curator scan views/ --faces --cluster-eps 0.35 --csv views.csv
+argus-curator scan views/ --faces --face-reference portrait.png --csv views.csv
 ```
 
-Each face gets a `face_<n>` cluster, built by cosine distance between InsightFace embeddings. All the views should land in one cluster. The default `--cluster-eps 0.5` is meant for grouping one person across a varied dataset, so set it tighter for a drift check. The 0.35 above is a starting point, not a calibrated value. Curator reports cluster membership, not each view's distance from the frontal portrait, so a view that is drifting but still inside the threshold won't show up.
+Each face gets a `reference_distance`: the cosine distance between its InsightFace embedding and the portrait's. The CSV has it as `primary_face_reference_distance`, and so does each manifest row's `primary_face`. Sort the views by it: the portrait reads 0, and a view that has drifted reads higher than the rest. `--face-source` keeps only views within 0.4 of the reference. That's a starting point, not a calibrated value, so compare the views with each other rather than trusting it alone. The reference has to pass the scan's own filters, because a rejected image is never face-checked. If it doesn't, the summary's `reference_skipped` says so.
 
 Keep lighting and background identical across views. No tool here compares them.
 
@@ -161,17 +162,12 @@ These parts of the guide have no tool support yet:
 
 | Wanted | Today |
 |---|---|
-| Head level (roll) | Not measured. InsightFace returns roll, but curator drops it. |
-| Face large enough in pixels | Face bbox recorded, no filter on its size. |
-| Sharp face | Sharpness is measured over the whole image. |
-| Neutral expression, lips closed, eyes open | Lens captions only, no detector. |
+| Neutral expression | Eyes open and mouth closed are measured, but a closed-lip smile passes. Lens captions describe the expression. |
 | Even light, plain background | Lens captions only. |
-| Identity distance per view | Cluster membership only. |
 | Licence and look-alike check in the record | Added by hand. |
 
-These issues track the gaps:
+Head level, face size, face sharpness, eyes and mouth, and identity distance per view are measured since [argus-curator#130](https://github.com/smk762/argus-curator/issues/130). This issue tracks the rest:
 
-- **[argus-curator#130](https://github.com/smk762/argus-curator/issues/130):** roll, face size, face sharpness, eyes open and mouth closed (from landmarks), and identity distance per view.
 - **[argus-darkroom#33](https://github.com/smk762/argus-darkroom/issues/33):** licences in the record, a check for named real people in the prompt, and adding the look-alike check to a record afterwards.
 
 Lighting and background stay checks by eye.

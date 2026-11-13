@@ -122,6 +122,19 @@ def scan(
         None, "--garments-model", help="Converted garment-detector ONNX model (ARGUS_CURATOR_GARMENTS_MODEL)"
     ),
     face_clusters: str | None = Option(None, "--face-clusters", help="Comma-separated cluster ids to export"),
+    face_reference: list[str] = Option(
+        [],
+        "--face-reference",
+        help="An image in the scan (relative path) whose face is the identity reference; repeatable. "
+        "Each face then gets a reference_distance (implies --faces)",
+    ),
+    face_source: bool = Option(
+        False,
+        "--face-source",
+        help="Export only face-source images (one identity, frontal and level, large, sharp, eyes open, "
+        "mouth closed, adult; needs --mivolo), ranked best first",
+    ),
+    landmarks: bool = Option(False, "--landmarks", help="Write the primary face's landmarks into the manifest"),
     face_poses: str | None = Option(
         None, "--pose", help="Export only these primary-face poses (comma-separated: frontal,three_quarter,profile)"
     ),
@@ -298,6 +311,7 @@ def scan(
         CropConfig,
         ExportRequest,
         FaceConfig,
+        FaceSourceFilter,
         GarmentConfig,
         GuardConfig,
         NsfwConfig,
@@ -385,7 +399,11 @@ def scan(
         mivolo=mivolo,
         set_age=set_age,
         mivolo_body=mivolo_body,
+        reference_paths=face_reference,
     )
+    if face_source and not faces_cfg.mivolo:
+        typer.echo("Error: --face-source checks for an adult age, which needs --mivolo", err=True)
+        raise typer.Exit(2)
 
     prefilter_cfg = PrefilterConfig(drop_nsfw=drop_nsfw, drop_no_face=drop_no_face, drop_no_age=drop_no_age)
     nsfw_cfg = NsfwConfig(enabled=nsfw)
@@ -478,7 +496,9 @@ def scan(
             guard_rules=_csv_list(guard_rules),
             guard_policies=_csv_list(guard_policies),
             **({"nsfw_exposed_labels": _csv_list(nsfw_exposed_labels)} if nsfw_exposed_labels else {}),
+            face_source=FaceSourceFilter() if face_source else None,
             write_manifest=dest is not None,
+            landmarks=landmarks,
             write_xmp=xmp,
             face_names=names,
             carry_sidecars=carry_sidecars,
@@ -672,7 +692,9 @@ def scan(
             from argus_curator.export import write_report
             from argus_curator.selection import decide_selection
 
-            selected, keep_reason = decide_selection(summary.results, req, summary.config.diversity_weight)
+            selected, keep_reason = decide_selection(
+                summary.results, req, summary.config.diversity_weight, set_age=summary.set_age
+            )
             exported_paths = result.exported_paths if result is not None else {}
             write_report(summary.results, keep_reason, {r.rel_path for r in selected}, exported_paths, csv_out)
             typer.echo(f"CSV report written -> {csv_out}")

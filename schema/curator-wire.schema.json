@@ -397,6 +397,17 @@
           "default": null,
           "title": "Face Races"
         },
+        "face_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceSourceFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "garments": {
           "anyOf": [
             {
@@ -498,6 +509,11 @@
         "keep_similar": {
           "default": false,
           "title": "Keep Similar",
+          "type": "boolean"
+        },
+        "landmarks": {
+          "default": false,
+          "title": "Landmarks",
           "type": "boolean"
         },
         "max_age_years": {
@@ -796,7 +812,7 @@
           "title": "Manifest Path"
         },
         "manifest_version": {
-          "default": "2.2",
+          "default": "2.3",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -1179,6 +1195,13 @@
           "title": "Profile Min Yaw",
           "type": "number"
         },
+        "reference_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reference Paths",
+          "type": "array"
+        },
         "set_age": {
           "default": false,
           "title": "Set Age",
@@ -1225,6 +1248,18 @@
           "title": "Bbox",
           "type": "array"
         },
+        "cluster_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster Distance"
+        },
         "cluster_id": {
           "anyOf": [
             {
@@ -1245,6 +1280,30 @@
           "default": 0.0,
           "title": "Exposed Score",
           "type": "number"
+        },
+        "eye_open": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Eye Open"
+        },
+        "mouth_open": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mouth Open"
         },
         "nsfw_labels": {
           "additionalProperties": {
@@ -1321,6 +1380,42 @@
           "title": "Primary",
           "type": "boolean"
         },
+        "reference_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Distance"
+        },
+        "roll": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Roll"
+        },
+        "sharpness": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sharpness"
+        },
         "yaw": {
           "anyOf": [
             {
@@ -1341,13 +1436,200 @@
         "primary",
         "yaw",
         "pitch",
+        "roll",
         "pose",
+        "sharpness",
+        "eye_open",
+        "mouth_open",
+        "cluster_distance",
+        "reference_distance",
         "attributes",
         "person_index",
         "nsfw_labels",
         "exposed_score"
       ],
       "title": "FaceDetection",
+      "type": "object"
+    },
+    "FaceLandmarks": {
+      "description": "InsightFace's landmarks for one face, in the image's pixels.\n\n``kps`` are the detector's 5 keypoints (eyes, nose tip, mouth corners) as\n``[x, y]``; ``landmark_3d_68`` the 68 iBUG points as ``[x, y, z]``. Kept in\nthe scan cache only, and written to a manifest when an export asks\n(``ExportRequest.landmarks``): they are the largest per-face payload.",
+      "properties": {
+        "kps": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kps"
+        },
+        "landmark_3d_68": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Landmark 3D 68"
+        }
+      },
+      "required": [
+        "kps",
+        "landmark_3d_68"
+      ],
+      "title": "FaceLandmarks",
+      "type": "object"
+    },
+    "FaceSourceFilter": {
+      "description": "The face-source preset: images a head can be built from (argus-mask).\n\nEvery check reads the primary face; ``None`` turns a check off. The\ndefaults are the preset, so ``{}`` asks for all of it: one identity, one\nface, frontal and level, large and sharp, eyes open, mouth closed, close\nto the identity, and an adult age. An image that fails is kept out with\n``face-source:<check>`` as its keep reason, and the kept images are ranked\nbest first.",
+      "properties": {
+        "cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster"
+        },
+        "max_identity_distance": {
+          "anyOf": [
+            {
+              "maximum": 2.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.4,
+          "title": "Max Identity Distance"
+        },
+        "max_mouth_open": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.1,
+          "title": "Max Mouth Open"
+        },
+        "max_pitch": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 15.0,
+          "title": "Max Pitch"
+        },
+        "max_roll": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 10.0,
+          "title": "Max Roll"
+        },
+        "max_yaw": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 15.0,
+          "title": "Max Yaw"
+        },
+        "min_eye_open": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.18,
+          "title": "Min Eye Open"
+        },
+        "min_face_px": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 256,
+          "title": "Min Face Px"
+        },
+        "min_face_sharpness": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 100.0,
+          "title": "Min Face Sharpness"
+        },
+        "require_adult": {
+          "default": true,
+          "title": "Require Adult",
+          "type": "boolean"
+        },
+        "single_face": {
+          "default": true,
+          "title": "Single Face",
+          "type": "boolean"
+        }
+      },
+      "title": "FaceSourceFilter",
       "type": "object"
     },
     "GarmentConfig": {
@@ -1820,6 +2102,18 @@
           "default": null,
           "title": "Primary Face Cluster"
         },
+        "primary_face_pitch": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Face Pitch"
+        },
         "primary_face_pose": {
           "anyOf": [
             {
@@ -1836,6 +2130,18 @@
           ],
           "default": null,
           "title": "Primary Face Pose"
+        },
+        "primary_face_roll": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Face Roll"
         },
         "primary_face_yaw": {
           "anyOf": [
@@ -1955,6 +2261,8 @@
         "primary_face_cluster",
         "primary_face_pose",
         "primary_face_yaw",
+        "primary_face_pitch",
+        "primary_face_roll",
         "primary_face_attributes",
         "set_age",
         "scene",
@@ -1973,6 +2281,155 @@
         "content_rating"
       ],
       "title": "ImageResult",
+      "type": "object"
+    },
+    "ManifestFace": {
+      "description": "The primary face of a manifest row (manifest 2.3).",
+      "properties": {
+        "age_years": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Years"
+        },
+        "bbox": {
+          "description": "[x, y, w, h]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Bbox",
+          "type": "array"
+        },
+        "cluster_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster Distance"
+        },
+        "eye_open": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Eye Open"
+        },
+        "landmarks": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceLandmarks"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mouth_open": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mouth Open"
+        },
+        "pitch": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pitch"
+        },
+        "reference_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Distance"
+        },
+        "roll": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Roll"
+        },
+        "sharpness": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sharpness"
+        },
+        "yaw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Yaw"
+        }
+      },
+      "required": [
+        "bbox",
+        "yaw",
+        "pitch",
+        "roll",
+        "sharpness",
+        "eye_open",
+        "mouth_open",
+        "cluster_distance",
+        "reference_distance",
+        "age_years",
+        "landmarks"
+      ],
+      "title": "ManifestFace",
       "type": "object"
     },
     "ManifestRow": {
@@ -2002,9 +2459,20 @@
           "type": "string"
         },
         "manifest_version": {
-          "default": "2.2",
+          "default": "2.3",
           "title": "Manifest Version",
           "type": "string"
+        },
+        "primary_face": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ManifestFace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "primary_face_cluster": {
           "anyOf": [
@@ -2043,6 +2511,17 @@
           "title": "Score",
           "type": "number"
         },
+        "set_age": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SetAge"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "similar_group": {
           "title": "Similar Group",
           "type": "integer"
@@ -2062,7 +2541,9 @@
         "primary_face_pose",
         "score",
         "similar_group",
-        "crop"
+        "crop",
+        "primary_face",
+        "set_age"
       ],
       "title": "ManifestRow",
       "type": "object"
@@ -2494,6 +2975,18 @@
         "prefilter_config": {
           "$ref": "#/$defs/PrefilterConfig"
         },
+        "reference_skipped": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Skipped"
+        },
         "reject_reasons": {
           "additionalProperties": {
             "type": "integer"
@@ -2581,6 +3074,7 @@
         "face_clusters",
         "set_age",
         "set_age_skipped",
+        "reference_skipped",
         "results",
         "offset",
         "limit",
@@ -2833,6 +3327,17 @@
           ],
           "default": null,
           "title": "Face Races"
+        },
+        "face_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceSourceFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "garments": {
           "anyOf": [

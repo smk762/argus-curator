@@ -601,7 +601,8 @@ def scan_items(
 
     # Whether each opt-out check actually ran, read when a snapshot is saved.
     ran = {"nsfw": False, "erax": False, "guard": False}
-    # The set age given to the frames with no face, or why none was.
+    # The set age given to the frames with no face, or why none was, and why
+    # FaceConfig.reference_paths gave no reference distances.
     # Until the identities phase a saved snapshot says the age is still to come.
     set_age: dict[str, Any] = {
         "age": None,
@@ -647,6 +648,7 @@ def scan_items(
             face_clusters=face_clusters,
             set_age=set_age["age"],
             set_age_skipped=set_age["skipped"],
+            reference_skipped=set_age.get("reference_skipped"),
             results=[visible(r) for r in rows],
             returned=len(rows),
         )
@@ -917,6 +919,9 @@ def scan_items(
 
         emit("identities", 0, total)
         face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
+        set_age["reference_skipped"] = faces_mod.measure_reference(results, detected_faces, faces_cfg)
+        if set_age["reference_skipped"]:
+            logger.warning("reference_skipped", reason=set_age["reference_skipped"])
         if faces_cfg.set_age:
             set_age["age"], set_age["skipped"] = faces_mod.infer_set_age(results, faces_cfg)
             logger.info("set_age", years=set_age["age"].years if set_age["age"] else None, skipped=set_age["skipped"])
