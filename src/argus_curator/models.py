@@ -3,8 +3,8 @@
 The :class:`TargetProfile` is the shared moat between argus-curator and
 argus-lens: both services speak the same ``style / backend / checkpoint /
 category`` taxonomy, so a manifest emitted here is consumed by the captioner
-verbatim with no remapping. Keep this schema in lockstep with argus-lens (or,
-eventually, hoist it into a shared ``argus-core`` package).
+verbatim with no remapping. The style and category literals come from
+``argus_cortex.taxonomy``, the one copy the whole suite shares.
 """
 
 from __future__ import annotations
@@ -21,6 +21,12 @@ from argus_cortex.moderation import (  # re-exported: part of curator's wire con
 )
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import PolicyName
+from argus_cortex.taxonomy import (  # re-exported: the suite's one taxonomy, not a local copy
+    TARGET_CATEGORIES,  # noqa: F401
+    TARGET_STYLES,  # noqa: F401
+    TargetCategory,
+    TargetStyle,
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -33,8 +39,6 @@ from pydantic import (
     model_validator,
 )
 
-TargetStyle = Literal["photo", "anime"]
-TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
 ExportMode = Literal["copy", "symlink", "move"]
 
 # For models only ever sent, never received: a defaulted field is always in the

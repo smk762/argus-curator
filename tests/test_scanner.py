@@ -10,7 +10,7 @@ import pytest
 from PIL import Image, ImageDraw, ImageFilter
 
 from argus_curator import scan_folder
-from argus_curator.models import FaceConfig, ScanConfig, ScanSummary, TargetProfile
+from argus_curator.models import TARGET_CATEGORIES, FaceConfig, ScanConfig, ScanSummary, TargetProfile
 from argus_curator.scanner import CHUNK_SIZE, _sharpness, scan_items
 from argus_curator.store import ScanStore
 
@@ -412,3 +412,58 @@ def test_drop_results_regroups_when_the_representative_is_gone() -> None:
     assert summary.total == 2 and summary.duplicates == 1 and summary.similar_clusters == 1
     assert summary.face_clusters[0].size == 2
     assert summary.face_clusters[0].representative_rel_path in {"b.png", "c.png"}
+
+
+# ---------------------------------------------------------------------------
+# Target taxonomy (#134): the categories come from argus-cortex
+# ---------------------------------------------------------------------------
+
+
+def _scored(category: str, *, width: int = 1024, height: int = 1024, faces: int = 1, artifact: float = 0.9):
+    from argus_curator.models import ImageResult
+    from argus_curator.scanner import finalize_score
+
+    r = ImageResult(
+        rel_path="a.png",
+        abs_path="/a.png",
+        width=width,
+        height=height,
+        sharpness=500.0,
+        artifact_score=artifact,
+        passed=True,
+    )
+    r.face_count = faces
+    finalize_score(r, TargetProfile(target_category=category), ScanConfig(), faces_known=True)
+    return r
+
+
+def test_taxonomy_is_cortex_s() -> None:
+    from argus_cortex import taxonomy
+
+    from argus_curator import models
+
+    assert models.TargetCategory is taxonomy.TargetCategory
+    assert models.TARGET_CATEGORIES is taxonomy.TARGET_CATEGORIES
+
+
+@pytest.mark.parametrize("category", TARGET_CATEGORIES)
+def test_every_target_category_is_scored(category: str) -> None:
+    from argus_curator.scanner import _FACE_PENALTIES
+
+    assert category in _FACE_PENALTIES
+    for faces in (0, 1, 3):
+        r = _scored(category, faces=faces)
+        assert 0.0 < r.score <= 1.0
+        assert "target_bonus" in r.score_breakdown
+
+
+def test_concept_ignores_faces_and_rewards_clean_high_res() -> None:
+    from argus_curator.scanner import _FACE_PENALTIES
+
+    if "concept" not in TARGET_CATEGORIES:
+        pytest.skip("installed argus-cortex predates the concept category")
+    assert _scored("concept", faces=0).score == _scored("concept", faces=1).score == _scored("concept", faces=4).score
+    assert _FACE_PENALTIES["concept"] == (1.0, 1.0)
+    clean = _scored("concept")
+    noisy = _scored("concept", artifact=0.5, width=640, height=640)
+    assert clean.score_breakdown["target_bonus"] > noisy.score_breakdown["target_bonus"]

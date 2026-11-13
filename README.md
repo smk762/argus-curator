@@ -123,11 +123,14 @@ TargetProfile(
     target_style="photo",        # "photo" | "anime"
     target_backend="sdxl",       # "sdxl" | "flux-dev-1" | ...
     checkpoint=None,
-    target_category="identity",  # identity | wardrobe | pose_composition | setting
+    target_category="identity",  # identity | wardrobe | pose_composition | setting | concept
 )
 ```
 
 The curator uses it to weight scoring and label exports; argus-lens inherits it verbatim.
+The style and category values are argus-cortex's (`argus_cortex.taxonomy`), the one
+copy the whole suite shares. `concept` is a style or visual-concept LoRA: face count
+never lowers its score, and clean, high-resolution images get the composition bonus.
 
 ## Installation
 
@@ -1067,7 +1070,7 @@ for a one-click curate→caption run.
 ## How scoring works (per image)
 
 1. **Hard filters** — min short side, max aspect ratio, blur (Laplacian-edge variance floor, measured with the long side at 1024px so the threshold does not depend on the file's resolution).
-2. **Composite score** — target-aware weighted blend of sharpness / resolution / artifact, plus a small composition bonus that depends on `target_category` (e.g. identity rewards a single centred face; setting rewards wide framing).
+2. **Composite score** — target-aware weighted blend of sharpness / resolution / artifact, plus a small composition bonus that depends on `target_category` (e.g. identity rewards a single centred face; setting rewards wide framing; concept rewards clean, high-resolution images and ignores faces).
 3. **Face-count fit** — with `[faces]`, identity targets penalise 0 or 2+ faces; other categories are progressively more tolerant.
 4. **Near-duplicate dedup** — pHash clustering keeps the highest-scoring representative and *reports* the rest (never silently dropped).
 5. **Selection (at export)** — score threshold + optional diversity cap (`max_keep` / `diversity_weight`) + optional face-cluster filter. Every excluded image carries a `keep_reason`.

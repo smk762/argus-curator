@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Manifest 2.3.** Rows carry `primary_face` (box, pose, sharpness, eyes,
   mouth, distances, age, and landmarks with `landmarks: true` / `--landmarks`)
   and the scan's `set_age`. Additive, so a 2.x reader keeps working.
+- **The `concept` target category (#134).** A style or visual-concept LoRA set:
+  face count never lowers its score, and clean, high-resolution images get the
+  composition bonus. `TargetStyle` and `TargetCategory` now come from
+  `argus_cortex.taxonomy` instead of a local copy, so the categories can't drift
+  from the rest of the suite. **Requires `argus-cortex>=0.4.7`**, the first
+  release with `concept`.
 
 - **A guide to synthetic source portraits for argus-mask**
   ([docs/synthetic-face-sets.md](docs/synthetic-face-sets.md)). It follows
