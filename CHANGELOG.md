@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-14
+
 ### Added
 
 - **Face-source measurements and preset for argus-mask (#130).** Every face now
@@ -40,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Requires `argus-cortex>=0.5.0,<0.6`.** 0.5.0 adds `argus_cortex.provenance`
+  and `argus_cortex.consent`; curator uses neither yet, and nothing it does use
+  changed. The wire schema is unchanged.
 - **The wire schema says what the server always sends (#129).** In models that
   only go out (`ScanSummary`, `ImageResult`, `ExportResult`, `ManifestRow`,
   `SelectResult` and what they hold), a field with a default is now required,
@@ -889,7 +894,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/smk762/argus-curator/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/smk762/argus-curator/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/smk762/argus-curator/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/smk762/argus-curator/compare/v0.12.0...v0.13.0
