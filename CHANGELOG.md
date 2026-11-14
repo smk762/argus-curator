@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The under-18 rule now covers the whole frame by default.** `minor-exposed`
+  used to flag an image only when the exposure overlapped a young person's box
+  (or no box at all). It now flags any image where MiVOLO reads a face or body
+  as under 18 and the exposed score is at least 0.2, wherever the two are: the
+  same rule as argus-darkroom. **More images are excluded**, for example a
+  group photo with a child in it and an exposed adult. The rule stays a hard
+  exclusion that no request can override. Set
+  `ARGUS_CURATOR_MINOR_EXPOSED=overlap` (or `--minor-exposed overlap` on `scan`
+  and `serve`) to restore the old rule. An unknown value is refused (exit
+  status 2, and the server does not start), never a fallback. `GET /health`
+  reports the rule in use as `minor_exposed`. The wider rule also widens what
+  `POST /scan/{id}/delete` removes without `--allow-delete`, and what
+  `GET /image` refuses to serve.
+
 ## [0.15.1] - 2026-11-14
 
 ### Documentation

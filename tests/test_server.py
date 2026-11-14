@@ -41,6 +41,21 @@ def test_health(client: TestClient) -> None:
     body = resp.json()
     assert body["service"] == "argus-curator"
     assert isinstance(body["faces"], bool)
+    assert body["minor_exposed"] == "frame"
+
+
+def test_health_reports_the_overlap_rule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", "overlap")
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache")))
+    assert client.get("/health").json()["minor_exposed"] == "overlap"
+
+
+def test_unknown_minor_exposed_mode_refuses_to_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.selection import MinorExposedConfigError
+
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", "off")
+    with pytest.raises(MinorExposedConfigError):
+        create_app(cache_dir=str(tmp_path / "cache"))
 
 
 def test_health_declares_manifest_version(client: TestClient) -> None:

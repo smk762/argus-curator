@@ -203,7 +203,8 @@ def test_unmatched_body_gets_a_body_only_age(monkeypatch: pytest.MonkeyPatch) ->
     assert r.people_check == "body_ages_failed" and "body-only batch failed" in r.people_error
 
 
-def test_associate_nsfw_gives_each_detection_to_the_overlapping_person() -> None:
+def test_associate_nsfw_gives_each_detection_to_the_overlapping_person(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The box pairing below is the ``overlap`` rule; ``frame`` (the default) skips it."""
     from argus_cortex.moderation import NsfwDetection, NsfwResult
 
     from argus_curator.models import PersonDetection
@@ -228,8 +229,11 @@ def test_associate_nsfw_gives_each_detection_to_the_overlapping_person() -> None
     bodies.associate_nsfw([r])
     assert r.people[1].exposed_score == 0.8 and r.people[0].exposed_score == 0.0
     assert "FACE_FEMALE" in r.people[0].nsfw_labels
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", "overlap")
     # Exposed is on the adult; the younger person does not overlap it.
     assert minor_exposed(r) is False
+    # The frame rule (darkroom's) flags it anyway: a young age and an exposure share the frame.
+    assert minor_exposed(r, "frame") is True
     on_young = NsfwDetection(label="FEMALE_BREAST_EXPOSED", score=0.8, bbox=[20, 80, 40, 40])
     r.nsfw.detections.append(on_young)
     assert minor_exposed(r) is True

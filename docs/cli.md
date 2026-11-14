@@ -112,6 +112,7 @@ $ argus-curator scan [OPTIONS] {source}
 * `--drop-nsfw`: Reject images NudeNet reads as exposed (&gt;= 0.2) before scenes, garments and SingGuard
 * `--drop-no-face`: Reject images with no face before scenes, garments and SingGuard (needs --faces)
 * `--drop-no-age`: Reject images with no MiVOLO, body-only or set age before scenes, garments and SingGuard (needs --mivolo)
+* `--minor-exposed <str>`: Under-18 rule: frame (default; a young age and any exposure in the frame) or overlap (the exposure must also sit on a young person&#x27;s box). Or ARGUS_CURATOR_MINOR_EXPOSED
 * `--crops`: Crop each image that has a &lt;image&gt;.crop.json sidecar ({left, top, right, bottom}, displayed pixels) in memory before every check, and export it cropped (--copy-to only). Sources are never changed.
 * `--detect-watermarks`: Find watermarks with the detector (--watermark-url) and cut them away at the frame&#x27;s edges; implies --crops. A watermark no edge cut removes rejects the image (crop:overlay).
 * `--max-cut <float>`: Most of a side one edge cut may take (--detect-watermarks)  [default: 0.15]
@@ -151,6 +152,7 @@ $ argus-curator serve [OPTIONS]
 * `--export-root <str>`: Root that export destinations resolve under (ARGUS_CURATOR_EXPORT_ROOT)
 * `--allow-move`: Permit destructive mode=&quot;move&quot; exports (default: rejected)
 * `--allow-delete`: Let POST /scan/{id}/delete remove any scanned image (CURATOR_ALLOW_DELETE / CURATOR_DEVMODE; default: only under-18 exposed images)
+* `--minor-exposed <str>`: Under-18 rule: frame (default; a young age and any exposure in the frame) or overlap (the exposure must also sit on a young person&#x27;s box). Or ARGUS_CURATOR_MINOR_EXPOSED
 * `--help`: Show this message and exit.
 
 ## `argus-curator detectors`

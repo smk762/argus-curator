@@ -75,6 +75,7 @@ from argus_curator.selection import (
     garment_floor_problem,
     guard_filter_problem,
     minor_exposed,
+    minor_exposed_mode,
     nsfw_filter_problem,
 )
 from argus_curator.store import ScanStore
@@ -462,6 +463,9 @@ def create_app(
     default_export = export_root or os.environ.get("ARGUS_CURATOR_EXPORT_ROOT") or os.environ.get("CURATOR_EXPORT_PATH")
     if allow_move is None:
         allow_move = env_flag("CURATOR_ALLOW_MOVE")
+    # Fails the start on an unknown ARGUS_CURATOR_MINOR_EXPOSED, rather than a
+    # first selection or delete: never a silent fallback to another rule.
+    minor_rule = minor_exposed_mode()
     if allow_delete is None:
         # Two flags, either one enough: devmode is the broad "this is my own
         # box" switch, allow-delete the narrow one for a deployment.
@@ -508,6 +512,8 @@ def create_app(
             "source_root": str(Path(default_source).resolve()) if default_source else None,
             "export_root": str(Path(default_export).resolve()) if default_export else None,
             "allow_move": allow_move,
+            # The under-18 rule (ARGUS_CURATOR_MINOR_EXPOSED): "frame" or "overlap".
+            "minor_exposed": minor_rule,
             # A client asks, rather than sniffing the version: this server can
             # stop a running scan and purge the scan cache (0.6 and later).
             "scan_control": True,

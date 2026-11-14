@@ -201,3 +201,18 @@ def test_rejected_frames_do_not_count_as_failed_checks(dataset: Path, monkeypatc
     result = runner.invoke(app, ["scan", str(dataset), "--nudenet-url", "http://n:1"])
     assert result.exit_code == 0, result.output
     assert "NudeNet:" in result.output and "could not be checked" not in result.output
+
+
+def test_unknown_minor_exposed_mode_fails_before_scanning(dataset: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", "frame")  # restored after the flag overwrites it
+    result = runner.invoke(app, ["scan", str(dataset), "--minor-exposed", "loose"])
+    assert result.exit_code == 2, result.output
+    assert "ARGUS_CURATOR_MINOR_EXPOSED must be one of frame, overlap" in result.output
+    assert "Scanning" not in result.output
+
+
+def test_unknown_minor_exposed_env_fails_serve(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", "loose")
+    result = runner.invoke(app, ["serve"])
+    assert result.exit_code == 2, result.output
+    assert "must be one of frame, overlap" in result.output

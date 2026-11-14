@@ -33,6 +33,9 @@ services:
       - ARGUS_CURATOR_SINGGUARD_THINKING=${ARGUS_CURATOR_SINGGUARD_THINKING-cascade}
       # What the scan already knows, sent as recorded context. Empty sends the image alone.
       - ARGUS_CURATOR_SINGGUARD_CONTEXT=${ARGUS_CURATOR_SINGGUARD_CONTEXT-age,folder,caption,scene}
+      # Under-18 rule: frame (a young age and any exposure in the frame) or overlap
+      # (the exposure must sit on the young person's box). Anything else stops the start.
+      - ARGUS_CURATOR_MINOR_EXPOSED=${ARGUS_CURATOR_MINOR_EXPOSED:-frame}
       # Uncomment to permit destructive mode="move" exports.
       # - CURATOR_ALLOW_MOVE=1
       # Share the GPU with other argus services (argus-lens) one job at a time,
