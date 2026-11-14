@@ -154,10 +154,11 @@ def _sharpness(img: Image.Image) -> float:
     # PIL's 3x3 filter answers the 1px frame with a response that grows with
     # the image's brightness, so on a low-detail picture the border dominated
     # the variance and a bright blurred (even flat) frame passed as sharp
-    # (#147). Only the interior is measured; images under 3px have none.
-    if edges.shape[0] >= 3 and edges.shape[1] >= 3:
-        edges = edges[1:-1, 1:-1]
-    return float(edges.var())
+    # (#147). Only the interior is measured; an image under 3px has none, so
+    # it has no measurable edges either.
+    if edges.shape[0] < 3 or edges.shape[1] < 3:
+        return 0.0
+    return float(edges[1:-1, 1:-1].var())
 
 
 def _artifact_score(img: Image.Image) -> float:

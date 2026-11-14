@@ -93,9 +93,11 @@ def test_blurred_bright_photo_is_rejected() -> None:
 
 
 def test_sharpness_of_tiny_images() -> None:
-    # Under 3px there is no interior; the whole response is measured instead.
-    assert _sharpness(Image.new("RGB", (2, 2), (200, 200, 200))) >= 0.0
-    assert _sharpness(Image.new("RGB", (1, 5), (200, 200, 200))) >= 0.0
+    # Under 3px there is no interior to measure, whatever the pixels hold.
+    checker = Image.new("L", (2, 2))
+    checker.putdata([0, 255, 255, 0])
+    assert _sharpness(checker) == 0.0
+    assert _sharpness(Image.new("RGB", (1, 5), (200, 200, 200))) == 0.0
 
 
 def test_large_sharp_images_pass_the_blur_gate(tmp_path: Path) -> None:

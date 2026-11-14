@@ -51,6 +51,6 @@ smoke: build  ## Build wheel, install in throwaway venv, smoke-test import
 		"from argus_curator import scan_folder, __version__; print(f'argus-curator {__version__} OK')"
 	rm -rf $(TMPVENV)
 
-check: lint test build  ## Full local CI: lint + test + build
+check: lint test docs-check build  ## Full local CI: lint + test + docs-check + build
 	@echo ""
 	@echo "All checks passed."
