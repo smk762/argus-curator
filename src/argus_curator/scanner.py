@@ -141,15 +141,24 @@ def _sharpness(img: Image.Image) -> float:
     """Variance of the Laplacian edge response — high = sharp, low = blurry.
 
     Measured with the long side scaled to :data:`_SHARPNESS_SIDE` so the value
-    does not depend on the file's resolution.
+    does not depend on the file's resolution, over the interior only (the 1px
+    frame's edge response is an artefact of the filter), so a flat image of
+    any brightness scores 0.
     """
     gray = img.convert("L")
     w, h = gray.size
     if max(w, h) > _SHARPNESS_SIDE:
         scale = _SHARPNESS_SIDE / max(w, h)
         gray = gray.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.Resampling.LANCZOS)
-    edges = gray.filter(ImageFilter.FIND_EDGES)
-    return float(np.array(edges, dtype=np.float32).var())
+    edges = np.array(gray.filter(ImageFilter.FIND_EDGES), dtype=np.float32)
+    # PIL's 3x3 filter answers the 1px frame with a response that grows with
+    # the image's brightness, so on a low-detail picture the border dominated
+    # the variance and a bright blurred (even flat) frame passed as sharp
+    # (#147). Only the interior is measured; an image under 3px has none, so
+    # it has no measurable edges either.
+    if edges.shape[0] < 3 or edges.shape[1] < 3:
+        return 0.0
+    return float(edges[1:-1, 1:-1].var())
 
 
 def _artifact_score(img: Image.Image) -> float:

@@ -2,7 +2,7 @@
 DIST := dist
 UV := uv
 
-.PHONY: help install dev lint fmt test build clean smoke check schema
+.PHONY: help install dev lint fmt test build clean smoke check schema docs docs-check
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -29,6 +29,12 @@ test:  ## Run pytest
 schema:  ## Regenerate the committed wire-contract JSON Schema
 	$(UV) run --no-sync argus-curator schema
 
+docs:  ## Regenerate docs/cli.md from the Typer app
+	$(UV) run --no-sync typer argus_curator.cli utils docs --name argus-curator --title "argus-curator CLI reference" --output docs/cli.md
+
+docs-check: docs  ## Fail if docs/cli.md is out of date with the CLI
+	git diff --exit-code -- docs/cli.md
+
 build: clean  ## Build sdist + wheel into dist/
 	$(UV) build
 	@echo ""
@@ -45,6 +51,6 @@ smoke: build  ## Build wheel, install in throwaway venv, smoke-test import
 		"from argus_curator import scan_folder, __version__; print(f'argus-curator {__version__} OK')"
 	rm -rf $(TMPVENV)
 
-check: lint test build  ## Full local CI: lint + test + build
+check: lint test docs-check build  ## Full local CI: lint + test + docs-check + build
 	@echo ""
 	@echo "All checks passed."

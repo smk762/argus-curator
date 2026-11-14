@@ -97,7 +97,7 @@ argus-curator scan candidates/ \
 | `--carry-sidecars` | Copies each image's `<id>.json` darkroom record into `shortlist/` with it. |
 | `--csv` | One row per image, for comparing them side by side: `primary_face_yaw` / `_pitch` / `_roll`, `primary_face_px`, `primary_face_sharpness`, `primary_face_eye_open`, `primary_face_mouth_open`, `primary_face_age_years`, `score`, `keep_reason` and `reject_reason`. |
 
-`--mivolo` and `--garments` need their converted models: run `argus-curator mivolo-convert` and `argus-curator garments-convert` once (see the [README](../README.md#installation)). Without them the scan refuses up front and names the missing model.
+`--mivolo` and `--garments` need their converted models: run `argus-curator mivolo-convert` and `argus-curator garments-convert` once (see [Face attributes](face-attributes.md#installing-the-model) and [Garments](garments.md#installing-the-model)). Without them the scan refuses up front and names the missing model.
 
 With NudeNet configured (`ARGUS_CURATOR_NUDENET_URL`), the scan also scores exposure. A head-and-shoulders portrait should score near zero, so add `--drop-nsfw` to reject anything that doesn't.
 
@@ -135,10 +135,10 @@ Some splat routes train on several views. The mask guide gives two synthetic-onl
 Curator measures how far each view is from the frontal portrait. Put the portrait in the folder with the views, and name it as the reference:
 
 ```bash
-argus-curator scan views/ --faces --face-reference portrait.png --csv views.csv
+argus-curator scan views/ --faces --face-reference portrait.png --blur-threshold 0 --csv views.csv
 ```
 
-Each face gets a `reference_distance`: the cosine distance between its InsightFace embedding and the portrait's. The CSV has it as `primary_face_reference_distance`, and so does each manifest row's `primary_face`. Sort the views by it: the portrait reads 0, and a view that has drifted reads higher than the rest. `--face-source` keeps only views within 0.4 of the reference. That's a starting point, not a calibrated value, so compare the views with each other rather than trusting it alone. The reference has to pass the scan's own filters, because a rejected image is never face-checked. If it doesn't, the summary's `reference_skipped` says so.
+Each face gets a `reference_distance`: the cosine distance between its InsightFace embedding and the portrait's. The CSV has it as `primary_face_reference_distance`, and so does each manifest row's `primary_face`. Sort the views by it: the portrait reads 0, and a view that has drifted reads higher than the rest. `--face-source` keeps only views within 0.4 of the reference. That's a starting point, not a calibrated value, so compare the views with each other rather than trusting it alone. The reference has to pass the scan's own filters, because a rejected image is never face-checked. A portrait on a plain mid-grey background can score under the default `--blur-threshold 100` (see section 2), hence `--blur-threshold 0` above. If the reference is rejected, the summary's `reference_skipped` says so and every `reference_distance` stays empty.
 
 Keep lighting and background identical across views. No tool here compares them.
 

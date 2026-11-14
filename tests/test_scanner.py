@@ -58,9 +58,14 @@ def test_sharpness_does_not_depend_on_resolution() -> None:
     MiVOLO ages and the quality score were never computed for it. The same
     scene must measure about the same at any size at or above 1024px."""
     at_1024 = _sharpness(_scene(1024))
+    at_2048 = _sharpness(_scene(2048))
     at_4096 = _sharpness(_scene(4096))
     assert at_1024 > 100.0
-    assert abs(at_4096 - at_1024) / at_1024 < 0.15
+    # Every downscaled render measures alike. The native 1024px render keeps
+    # ImageDraw's aliased hard edges, which LANCZOS softens on larger ones, so
+    # it reads ~15% higher; the old 1px-border response (#147) masked that.
+    assert abs(at_4096 - at_2048) / at_2048 < 0.05
+    assert abs(at_4096 - at_1024) / at_1024 < 0.2
     # Below 1024 the image is measured as it is.
     assert _sharpness(_scene(768)) > at_1024
     # The same blur, scaled with the picture, measures the same too.
@@ -68,6 +73,31 @@ def test_sharpness_does_not_depend_on_resolution() -> None:
     blurred_4096 = _sharpness(_scene(4096).filter(ImageFilter.GaussianBlur(radius=120)))
     assert blurred_1024 < at_1024 / 3
     assert abs(blurred_4096 - blurred_1024) / blurred_1024 < 0.15
+
+
+@pytest.mark.parametrize("level", [0, 128, 230, 255])
+def test_flat_image_scores_zero_at_any_brightness(level: int) -> None:
+    """PIL's edge filter answers the 1px frame with a response that grows with
+    brightness; measured whole, a flat bright frame scored ~205 and passed the
+    blur gate (#147)."""
+    assert _sharpness(Image.new("RGB", (1024, 1024), (level,) * 3)) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_blurred_bright_photo_is_rejected() -> None:
+    """A bright-background scene blurred at r=10 scored ~194 before #147."""
+    threshold = ScanConfig().blur_threshold
+    sharp = _scene(1024)
+    assert _sharpness(sharp) > threshold * 5
+    for radius in (10, 25):
+        assert _sharpness(sharp.filter(ImageFilter.GaussianBlur(radius=radius))) < threshold / 10
+
+
+def test_sharpness_of_tiny_images() -> None:
+    # Under 3px there is no interior to measure, whatever the pixels hold.
+    checker = Image.new("L", (2, 2))
+    checker.putdata([0, 255, 255, 0])
+    assert _sharpness(checker) == 0.0
+    assert _sharpness(Image.new("RGB", (1, 5), (200, 200, 200))) == 0.0
 
 
 def test_large_sharp_images_pass_the_blur_gate(tmp_path: Path) -> None:

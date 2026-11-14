@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-14
+
+### Documentation
+
+- **The README is split into `docs/` (#138).** The README is now the overview
+  (what curator is, install, quick start, why not FiftyOne/fastdup, the shared
+  `TargetProfile`) with links to one page per feature, so Studio and other UIs
+  can import and deep-link them: moderation, scoring, HTTP API, Docker and the
+  GPU, face attributes, face sources, scene tags, garments, nudity, policy
+  check, prefilter, crops, sidecars and XMP.
+- **`docs/manifest.md`**: a reference for `manifest.jsonl`, with every 2.3
+  field, the changes in 1.0 to 2.3, the compatibility rule (refuse an unknown
+  major) and an example row.
+- **`docs/cli.md`**, generated from the Typer app (`make docs`; `make
+  docs-check` fails when it is stale). It covers `fairface-convert` and
+  `schema`, which the README never did.
+- FairFace (`--fairface`, `--race`, `fairface-convert`,
+  `ARGUS_CURATOR_FAIRFACE_MODEL`) is documented, as are
+  `ARGUS_CURATOR_WATERMARK_TIMEOUT` and `ARGUS_CURATOR_WATERMARK_WORKERS`. The
+  face-source page says that with a reference the identity comes from the
+  reference distance, and the synthetic-face guide's multi-view command adds
+  `--blur-threshold 0`.
+
+### Fixed
+
+- **The blur check measured the frame's brightness on low-detail images
+  (#147).** PIL's `FIND_EDGES` answers the 1 px image border with a response
+  that grows with brightness, and `_sharpness` took the variance over the whole
+  output, so a flat bright frame scored ~205 and a heavily blurred photo with a
+  bright background passed `blur_threshold`. Only the interior is measured now,
+  so a flat image of any brightness scores 0. **`sharpness` values change**
+  (the wire field on images and on faces, and `primary_face.sharpness` in the
+  manifest): blurred and flat images fall to near 0, and sharp ones drop by the
+  border's share (typically tens of points, more on bright images). The
+  `blur_threshold` (100) and `sharpness_ref` (800) defaults are unchanged.
+
 ## [0.15.0] - 2026-11-14
 
 ### Added
@@ -894,7 +930,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/smk762/argus-curator/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/smk762/argus-curator/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/smk762/argus-curator/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/smk762/argus-curator/compare/v0.13.0...v0.14.0
