@@ -103,6 +103,9 @@
           "title": "Enabled"
         }
       },
+      "required": [
+        "enabled"
+      ],
       "title": "EraxConfig",
       "type": "object"
     },
@@ -170,6 +173,10 @@
           "type": "object"
         }
       },
+      "required": [
+        "detections",
+        "labels"
+      ],
       "title": "EraxResult",
       "type": "object"
     },
@@ -390,6 +397,17 @@
           "default": null,
           "title": "Face Races"
         },
+        "face_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceSourceFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "garments": {
           "anyOf": [
             {
@@ -491,6 +509,11 @@
         "keep_similar": {
           "default": false,
           "title": "Keep Similar",
+          "type": "boolean"
+        },
+        "landmarks": {
+          "default": false,
+          "title": "Landmarks",
           "type": "boolean"
         },
         "max_age_years": {
@@ -789,11 +812,16 @@
           "title": "Manifest Path"
         },
         "manifest_version": {
-          "default": "2.2",
+          "default": "2.3",
           "title": "Manifest Version",
           "type": "string"
         },
         "mode": {
+          "enum": [
+            "copy",
+            "symlink",
+            "move"
+          ],
           "title": "Mode",
           "type": "string"
         },
@@ -837,10 +865,21 @@
         }
       },
       "required": [
+        "manifest_version",
+        "manifest_path",
         "copied",
         "skipped",
         "dest",
-        "mode"
+        "mode",
+        "selected_rel_paths",
+        "exported_paths",
+        "exported_abs_paths",
+        "captioned",
+        "xmp_written",
+        "sidecars_carried",
+        "sidecars_failed",
+        "cropped",
+        "run_stats_path"
       ],
       "title": "ExportResult",
       "type": "object"
@@ -1001,6 +1040,18 @@
           "title": "Race Conf"
         }
       },
+      "required": [
+        "race",
+        "race_conf",
+        "gender",
+        "gender_conf",
+        "gender_source",
+        "age",
+        "age_conf",
+        "age_years",
+        "age_source",
+        "age_body"
+      ],
       "title": "FaceAttributes",
       "type": "object"
     },
@@ -1028,6 +1079,8 @@
               "items": {
                 "type": "number"
               },
+              "maxItems": 4,
+              "minItems": 4,
               "type": "array"
             },
             {
@@ -1035,6 +1088,7 @@
             }
           ],
           "default": null,
+          "description": "[x, y, w, h]",
           "title": "Representative Bbox"
         },
         "representative_rel_path": {
@@ -1049,7 +1103,9 @@
       "required": [
         "cluster_id",
         "size",
-        "representative_rel_path"
+        "representative_rel_path",
+        "representative_bbox",
+        "attributes"
       ],
       "title": "FaceCluster",
       "type": "object"
@@ -1139,6 +1195,13 @@
           "title": "Profile Min Yaw",
           "type": "number"
         },
+        "reference_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reference Paths",
+          "type": "array"
+        },
         "set_age": {
           "default": false,
           "title": "Set Age",
@@ -1185,6 +1248,18 @@
           "title": "Bbox",
           "type": "array"
         },
+        "cluster_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster Distance"
+        },
         "cluster_id": {
           "anyOf": [
             {
@@ -1205,6 +1280,30 @@
           "default": 0.0,
           "title": "Exposed Score",
           "type": "number"
+        },
+        "eye_open": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Eye Open"
+        },
+        "mouth_open": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mouth Open"
         },
         "nsfw_labels": {
           "additionalProperties": {
@@ -1281,6 +1380,42 @@
           "title": "Primary",
           "type": "boolean"
         },
+        "reference_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Distance"
+        },
+        "roll": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Roll"
+        },
+        "sharpness": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sharpness"
+        },
         "yaw": {
           "anyOf": [
             {
@@ -1296,9 +1431,205 @@
       },
       "required": [
         "bbox",
-        "det_score"
+        "det_score",
+        "cluster_id",
+        "primary",
+        "yaw",
+        "pitch",
+        "roll",
+        "pose",
+        "sharpness",
+        "eye_open",
+        "mouth_open",
+        "cluster_distance",
+        "reference_distance",
+        "attributes",
+        "person_index",
+        "nsfw_labels",
+        "exposed_score"
       ],
       "title": "FaceDetection",
+      "type": "object"
+    },
+    "FaceLandmarks": {
+      "description": "InsightFace's landmarks for one face, in the image's pixels.\n\n``kps`` are the detector's 5 keypoints (eyes, nose tip, mouth corners) as\n``[x, y]``; ``landmark_3d_68`` the 68 iBUG points as ``[x, y, z]``. Kept in\nthe scan cache only, and written to a manifest when an export asks\n(``ExportRequest.landmarks``): they are the largest per-face payload.",
+      "properties": {
+        "kps": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kps"
+        },
+        "landmark_3d_68": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Landmark 3D 68"
+        }
+      },
+      "required": [
+        "kps",
+        "landmark_3d_68"
+      ],
+      "title": "FaceLandmarks",
+      "type": "object"
+    },
+    "FaceSourceFilter": {
+      "description": "The face-source preset: images a head can be built from (argus-mask).\n\nEvery check reads the primary face; ``None`` turns a check off. The\ndefaults are the preset, so ``{}`` asks for all of it: one identity, one\nface, frontal and level, large and sharp, eyes open, mouth closed, close\nto the identity, and an adult age. An image that fails is kept out with\n``face-source:<check>`` as its keep reason, and the kept images are ranked\nbest first.",
+      "properties": {
+        "cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster"
+        },
+        "max_identity_distance": {
+          "anyOf": [
+            {
+              "maximum": 2.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.4,
+          "title": "Max Identity Distance"
+        },
+        "max_mouth_open": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.1,
+          "title": "Max Mouth Open"
+        },
+        "max_pitch": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 15.0,
+          "title": "Max Pitch"
+        },
+        "max_roll": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 10.0,
+          "title": "Max Roll"
+        },
+        "max_yaw": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 15.0,
+          "title": "Max Yaw"
+        },
+        "min_eye_open": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.18,
+          "title": "Min Eye Open"
+        },
+        "min_face_px": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 256,
+          "title": "Min Face Px"
+        },
+        "min_face_sharpness": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 100.0,
+          "title": "Min Face Sharpness"
+        },
+        "require_adult": {
+          "default": true,
+          "title": "Require Adult",
+          "type": "boolean"
+        },
+        "single_face": {
+          "default": true,
+          "title": "Single Face",
+          "type": "boolean"
+        }
+      },
+      "title": "FaceSourceFilter",
       "type": "object"
     },
     "GarmentConfig": {
@@ -1389,6 +1720,7 @@
         "label",
         "conf",
         "bbox",
+        "touches_edge",
         "color"
       ],
       "title": "GarmentDetection",
@@ -1770,6 +2102,18 @@
           "default": null,
           "title": "Primary Face Cluster"
         },
+        "primary_face_pitch": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Face Pitch"
+        },
         "primary_face_pose": {
           "anyOf": [
             {
@@ -1786,6 +2130,18 @@
           ],
           "default": null,
           "title": "Primary Face Pose"
+        },
+        "primary_face_roll": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Face Roll"
         },
         "primary_face_yaw": {
           "anyOf": [
@@ -1883,9 +2239,197 @@
       "required": [
         "rel_path",
         "abs_path",
+        "score",
+        "passed",
+        "reject_reason",
+        "similar_group",
+        "group_size",
+        "is_representative",
+        "is_duplicate",
+        "duplicate_of",
+        "keep_reason",
+        "sharpness",
+        "artifact_score",
+        "width",
+        "height",
+        "faces",
+        "face_count",
+        "face_error",
+        "people",
+        "people_check",
+        "people_error",
+        "primary_face_cluster",
+        "primary_face_pose",
+        "primary_face_yaw",
+        "primary_face_pitch",
+        "primary_face_roll",
+        "primary_face_attributes",
+        "set_age",
+        "scene",
+        "garments",
+        "nsfw",
+        "erax",
+        "erax_filled",
+        "nudenet_failed",
+        "guard",
+        "guard_variants",
+        "crop",
+        "crop_source",
+        "watermarks",
+        "phash",
+        "score_breakdown",
         "content_rating"
       ],
       "title": "ImageResult",
+      "type": "object"
+    },
+    "ManifestFace": {
+      "description": "The primary face of a manifest row (manifest 2.3).",
+      "properties": {
+        "age_years": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Years"
+        },
+        "bbox": {
+          "description": "[x, y, w, h]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Bbox",
+          "type": "array"
+        },
+        "cluster_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster Distance"
+        },
+        "eye_open": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Eye Open"
+        },
+        "landmarks": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceLandmarks"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mouth_open": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mouth Open"
+        },
+        "pitch": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pitch"
+        },
+        "reference_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Distance"
+        },
+        "roll": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Roll"
+        },
+        "sharpness": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sharpness"
+        },
+        "yaw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Yaw"
+        }
+      },
+      "required": [
+        "bbox",
+        "yaw",
+        "pitch",
+        "roll",
+        "sharpness",
+        "eye_open",
+        "mouth_open",
+        "cluster_distance",
+        "reference_distance",
+        "age_years",
+        "landmarks"
+      ],
+      "title": "ManifestFace",
       "type": "object"
     },
     "ManifestRow": {
@@ -1915,9 +2459,20 @@
           "type": "string"
         },
         "manifest_version": {
-          "default": "2.2",
+          "default": "2.3",
           "title": "Manifest Version",
           "type": "string"
+        },
+        "primary_face": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ManifestFace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "primary_face_cluster": {
           "anyOf": [
@@ -1956,6 +2511,17 @@
           "title": "Score",
           "type": "number"
         },
+        "set_age": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SetAge"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "similar_group": {
           "title": "Similar Group",
           "type": "integer"
@@ -1965,13 +2531,19 @@
         }
       },
       "required": [
+        "manifest_version",
         "rel_path",
         "abs_path",
         "exported_path",
         "exported_abs_path",
         "target_profile",
+        "primary_face_cluster",
+        "primary_face_pose",
         "score",
-        "similar_group"
+        "similar_group",
+        "crop",
+        "primary_face",
+        "set_age"
       ],
       "title": "ManifestRow",
       "type": "object"
@@ -2199,7 +2771,13 @@
       },
       "required": [
         "bbox",
-        "det_score"
+        "det_score",
+        "face_index",
+        "age_years",
+        "age_source",
+        "age_body",
+        "nsfw_labels",
+        "exposed_score"
       ],
       "title": "PersonDetection",
       "type": "object"
@@ -2397,6 +2975,18 @@
         "prefilter_config": {
           "$ref": "#/$defs/PrefilterConfig"
         },
+        "reference_skipped": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Skipped"
+        },
         "reject_reasons": {
           "additionalProperties": {
             "type": "integer"
@@ -2468,11 +3058,27 @@
         "target_profile",
         "config",
         "faces_config",
+        "scenes_config",
+        "garments_config",
+        "nsfw_config",
+        "erax_config",
+        "guard_config",
+        "prefilter_config",
+        "crop_config",
         "total",
         "passed",
         "rejected",
         "duplicates",
-        "similar_clusters"
+        "similar_clusters",
+        "reject_reasons",
+        "face_clusters",
+        "set_age",
+        "set_age_skipped",
+        "reference_skipped",
+        "results",
+        "offset",
+        "limit",
+        "returned"
       ],
       "title": "ScanSummary",
       "type": "object"
@@ -2543,6 +3149,7 @@
         }
       },
       "required": [
+        "categories",
         "environment",
         "environment_conf"
       ],
@@ -2720,6 +3327,17 @@
           ],
           "default": null,
           "title": "Face Races"
+        },
+        "face_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaceSourceFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "garments": {
           "anyOf": [
@@ -3019,7 +3637,8 @@
       "required": [
         "scan_id",
         "total",
-        "kept"
+        "kept",
+        "rows"
       ],
       "title": "SelectResult",
       "type": "object"
@@ -3043,7 +3662,8 @@
       },
       "required": [
         "rel_path",
-        "abs_path"
+        "abs_path",
+        "keep_reason"
       ],
       "title": "SelectRow",
       "type": "object"
@@ -3110,7 +3730,8 @@
             "identity",
             "wardrobe",
             "pose_composition",
-            "setting"
+            "setting",
+            "concept"
           ],
           "title": "Target Category",
           "type": "string"
@@ -3132,9 +3753,12 @@
       "description": "One watermark the detector found: ``[x, y, w, h]`` in displayed pixels of the uncropped frame.",
       "properties": {
         "bbox": {
+          "description": "[x, y, w, h]",
           "items": {
             "type": "number"
           },
+          "maxItems": 4,
+          "minItems": 4,
           "title": "Bbox",
           "type": "array"
         },

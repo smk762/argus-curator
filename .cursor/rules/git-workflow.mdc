@@ -1,20 +1,19 @@
 ---
-description: Keep main releasable by doing work on dev in a worktree
+description: Keep main an ancestor of dev by doing all work on dev in a worktree
 alwaysApply: true
 ---
 
 # Git workflow
 
-`main` is the release branch. Do not commit on it, and do not push it.
+`dev` is the default branch and the base for every pull request. `main` is the release branch: never commit on it or push work to it, and open no pull request against it except the release PR from `dev`. It must never be ahead of `dev`, with one exception (below).
 
-`dev` is `main` plus updates that are not released yet. Before starting work, fetch and merge `origin/main` into `dev`.
+Do each change in a worktree branched from `origin/dev`, and bring it up to date by merging `origin/dev`, never `main`. Open a pull request into `dev`.
 
-Do each change in a worktree branched from `dev`. Open a pull request into `dev`. A release is a pull request from `dev` into `main`.
+A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected, the release is a reviewed pull request from `dev` into `main`, and merging it leaves a merge commit on `main` alone. That merge commit is the one exception to the rule: it leaves `main` one commit ahead of `dev` with an identical tree. Leave it there and don't merge `main` back into `dev`. Anything else on `main` that `dev` lacks is a mistake (`git diff origin/dev origin/main` must be empty). Once `main` carries such a commit it can't be fast-forwarded, so later releases are pull requests too.
 
 ```bash
 git fetch origin
-git switch dev && git merge origin/main
-git worktree add ../argus-curator-<topic> -b <topic> dev
+git worktree add ../argus-curator-<topic> -b <topic> origin/dev
 ```
 
 Do not force-push `main`. Do not commit secrets.

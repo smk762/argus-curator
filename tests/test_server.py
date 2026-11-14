@@ -1220,6 +1220,7 @@ def test_select_request_has_every_export_filter() -> None:
         "mode",
         "preserve_structure",
         "write_manifest",
+        "landmarks",
         "caption_url",
         "write_xmp",
         "face_names",

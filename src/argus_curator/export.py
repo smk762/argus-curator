@@ -23,8 +23,17 @@ from argus_cortex.moderation import rule_letter
 from argus_cortex.xmp import XmpData, XmpError, XmpRegion, XmpRegions, sidecar_path, write_xmp
 
 from argus_curator import crops
-from argus_curator.models import ExportRequest, ExportResult, FaceDetection, ImageResult, ManifestRow, ScanSummary
-from argus_curator.selection import decide_selection, hard_exclusion
+from argus_curator.models import (
+    ExportMode,
+    ExportRequest,
+    ExportResult,
+    FaceDetection,
+    ImageResult,
+    ManifestFace,
+    ManifestRow,
+    ScanSummary,
+)
+from argus_curator.selection import decide_selection, hard_exclusion, primary_face
 
 logger = structlog.get_logger()
 
@@ -131,7 +140,7 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_s
     return dests
 
 
-def _transfer_one(src: Path, dst: Path, mode: str) -> None:
+def _transfer_one(src: Path, dst: Path, mode: ExportMode) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if mode == "move":
         shutil.move(str(src), str(dst))
@@ -162,7 +171,7 @@ def _sidecar_users(results: list[ImageResult]) -> Counter[Path]:
     return users
 
 
-def _carry_sidecars(src: Path, dst: Path, mode: str, rel_path: str, waiting: Counter[Path]) -> tuple[int, int]:
+def _carry_sidecars(src: Path, dst: Path, mode: ExportMode, rel_path: str, waiting: Counter[Path]) -> tuple[int, int]:
     """Transfer the sidecars beside *src* to the matching names beside *dst*. Returns ``(carried, failed)``.
 
     Same mode and the same overwrite semantics as the image (:func:`_transfer_one`):
@@ -209,7 +218,9 @@ def write_manifest(
     path: Path,
     exported_paths: dict[str, str],
     exported_abs_paths: dict[str, str] | None = None,
-    mode: str = "copy",
+    mode: ExportMode = "copy",
+    *,
+    landmarks: bool = False,
 ) -> None:
     """Write the JSONL handoff manifest (one :class:`ManifestRow` per line).
 
@@ -226,6 +237,9 @@ def write_manifest(
     Writing the source there names a file that no longer exists, which is the
     whole of issue #9: argus-lens reads rows strictly by ``abs_path``, so a
     moved export produced a manifest it could not use at all.
+
+    Each row carries the primary face's measurements (``primary_face``), with
+    its landmarks only when *landmarks* asks, and the scan's set age.
     """
     abs_paths = exported_abs_paths or {}
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -243,12 +257,57 @@ def write_manifest(
                 score=round(r.score, 4),
                 similar_group=r.similar_group,
                 crop=r.crop,
+                primary_face=_manifest_face(r, landmarks),
+                set_age=summary.set_age,
             )
             f.write(row.model_dump_json() + "\n")
 
 
+def _manifest_face(r: ImageResult, landmarks: bool) -> ManifestFace | None:
+    face = primary_face(r)
+    if face is None:
+        return None
+    return ManifestFace(
+        bbox=face.bbox,
+        yaw=face.yaw,
+        pitch=face.pitch,
+        roll=face.roll,
+        sharpness=face.sharpness,
+        eye_open=face.eye_open,
+        mouth_open=face.mouth_open,
+        cluster_distance=face.cluster_distance,
+        reference_distance=face.reference_distance,
+        age_years=face.attributes.age_years if face.attributes is not None else None,
+        landmarks=face.landmarks if landmarks else None,
+    )
+
+
 def _blank(value: object) -> object:
     return "" if value is None else value
+
+
+def _face_columns(face: FaceDetection | None) -> dict[str, object]:
+    """The report's face-quality columns for the primary face (blank without one)."""
+    if face is None:
+        return dict.fromkeys(
+            (
+                "primary_face_px",
+                "primary_face_sharpness",
+                "primary_face_eye_open",
+                "primary_face_mouth_open",
+                "primary_face_cluster_distance",
+                "primary_face_reference_distance",
+            ),
+            "",
+        )
+    return {
+        "primary_face_px": round(min(face.bbox[2], face.bbox[3])),
+        "primary_face_sharpness": _blank(face.sharpness),
+        "primary_face_eye_open": _blank(face.eye_open),
+        "primary_face_mouth_open": _blank(face.mouth_open),
+        "primary_face_cluster_distance": _blank(face.cluster_distance),
+        "primary_face_reference_distance": _blank(face.reference_distance),
+    }
 
 
 def write_report(
@@ -283,6 +342,14 @@ def write_report(
         "primary_face_cluster",
         "primary_face_pose",
         "primary_face_yaw",
+        "primary_face_pitch",
+        "primary_face_roll",
+        "primary_face_px",
+        "primary_face_sharpness",
+        "primary_face_eye_open",
+        "primary_face_mouth_open",
+        "primary_face_cluster_distance",
+        "primary_face_reference_distance",
         "primary_face_race",
         "primary_face_race_conf",
         "primary_face_gender",
@@ -348,6 +415,9 @@ def write_report(
                     "primary_face_cluster": r.primary_face_cluster or "",
                     "primary_face_pose": r.primary_face_pose or "",
                     "primary_face_yaw": "" if r.primary_face_yaw is None else round(r.primary_face_yaw, 1),
+                    "primary_face_pitch": "" if r.primary_face_pitch is None else round(r.primary_face_pitch, 1),
+                    "primary_face_roll": "" if r.primary_face_roll is None else round(r.primary_face_roll, 1),
+                    **_face_columns(primary_face(r)),
                     **{f"primary_face_{k}": _blank(getattr(r.primary_face_attributes, k, None)) for k in attr_fields},
                     "people_count": len(r.people),
                     "body_ages": ";".join(
@@ -526,7 +596,7 @@ def export_selection(
         }
         selected = [r for r in results if keep_reason[r.rel_path] == ""]
     else:
-        selected, keep_reason = decide_selection(results, req, summary.config.diversity_weight)
+        selected, keep_reason = decide_selection(results, req, summary.config.diversity_weight, set_age=summary.set_age)
 
     selected_rel = {r.rel_path for r in selected}
     # A cropped image is written cropped; a link or a move would hand on the
@@ -602,7 +672,7 @@ def export_selection(
     manifest_path: Path | None = None
     if req.write_manifest:
         manifest_path = dest_root / MANIFEST_NAME
-        write_manifest(transferred, summary, manifest_path, exported, exported_abs, req.mode)
+        write_manifest(transferred, summary, manifest_path, exported, exported_abs, req.mode, landmarks=req.landmarks)
         write_report(results, keep_reason, selected_rel, exported, dest_root / REPORT_NAME)
 
     run_stats_path: Path | None = None

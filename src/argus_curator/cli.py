@@ -7,6 +7,8 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from argus_cortex.taxonomy import TARGET_CATEGORIES
+
 if TYPE_CHECKING:
     from pydantic import ValidationError
 
@@ -84,7 +86,7 @@ def scan(
     style: str = Option("photo", "--target-style", help="photo or anime"),
     target_backend: str = Option("sdxl", "--target-backend", help="Diffusion backend family"),
     checkpoint: str | None = Option(None, "--checkpoint", help="Target checkpoint"),
-    category: str = Option("identity", "--target-category", help="identity|wardrobe|pose_composition|setting"),
+    category: str = Option("identity", "--target-category", help="|".join(TARGET_CATEGORIES)),
     faces: bool = Option(False, "--faces", help="Run InsightFace detection + identity clustering"),
     faces_model: str = Option("buffalo_l", "--faces-model", help="InsightFace model name"),
     min_det_score: float = Option(0.5, "--min-det-score", help="Minimum face detection score"),
@@ -122,6 +124,19 @@ def scan(
         None, "--garments-model", help="Converted garment-detector ONNX model (ARGUS_CURATOR_GARMENTS_MODEL)"
     ),
     face_clusters: str | None = Option(None, "--face-clusters", help="Comma-separated cluster ids to export"),
+    face_reference: list[str] = Option(
+        [],
+        "--face-reference",
+        help="An image in the scan (relative path) whose face is the identity reference; repeatable. "
+        "Each face then gets a reference_distance (implies --faces)",
+    ),
+    face_source: bool = Option(
+        False,
+        "--face-source",
+        help="Export only face-source images (one identity, frontal and level, large, sharp, eyes open, "
+        "mouth closed, adult; needs --mivolo), ranked best first",
+    ),
+    landmarks: bool = Option(False, "--landmarks", help="Write the primary face's landmarks into the manifest"),
     face_poses: str | None = Option(
         None, "--pose", help="Export only these primary-face poses (comma-separated: frontal,three_quarter,profile)"
     ),
@@ -298,6 +313,7 @@ def scan(
         CropConfig,
         ExportRequest,
         FaceConfig,
+        FaceSourceFilter,
         GarmentConfig,
         GuardConfig,
         NsfwConfig,
@@ -385,7 +401,11 @@ def scan(
         mivolo=mivolo,
         set_age=set_age,
         mivolo_body=mivolo_body,
+        reference_paths=face_reference,
     )
+    if face_source and not faces_cfg.mivolo:
+        typer.echo("Error: --face-source checks for an adult age, which needs --mivolo", err=True)
+        raise typer.Exit(2)
 
     prefilter_cfg = PrefilterConfig(drop_nsfw=drop_nsfw, drop_no_face=drop_no_face, drop_no_age=drop_no_age)
     nsfw_cfg = NsfwConfig(enabled=nsfw)
@@ -478,7 +498,9 @@ def scan(
             guard_rules=_csv_list(guard_rules),
             guard_policies=_csv_list(guard_policies),
             **({"nsfw_exposed_labels": _csv_list(nsfw_exposed_labels)} if nsfw_exposed_labels else {}),
+            face_source=FaceSourceFilter() if face_source else None,
             write_manifest=dest is not None,
+            landmarks=landmarks,
             write_xmp=xmp,
             face_names=names,
             carry_sidecars=carry_sidecars,
@@ -664,6 +686,14 @@ def scan(
 
     if dest is not None or csv_out is not None:
         req = export_req.model_copy(update={"scan_id": summary.scan_id})
+        from argus_curator.selection import face_source_problem
+
+        # Only knowable once the scan ran: a --face-reference that gave no
+        # distances would let the identity check fall back to the largest
+        # cluster, so another person could pass as the reference's.
+        if (problem := face_source_problem(req, summary)) is not None:
+            typer.echo(f"Error: {problem}", err=True)
+            raise typer.Exit(2)
         # With no --copy-to/--move-to/--symlink-to there is nowhere to transfer
         # to: exporting would copy every file onto itself (SameFileError per
         # image) for a report-only run, so skip it and report no exported paths.
@@ -672,7 +702,9 @@ def scan(
             from argus_curator.export import write_report
             from argus_curator.selection import decide_selection
 
-            selected, keep_reason = decide_selection(summary.results, req, summary.config.diversity_weight)
+            selected, keep_reason = decide_selection(
+                summary.results, req, summary.config.diversity_weight, set_age=summary.set_age
+            )
             exported_paths = result.exported_paths if result is not None else {}
             write_report(summary.results, keep_reason, {r.rel_path for r in selected}, exported_paths, csv_out)
             typer.echo(f"CSV report written -> {csv_out}")

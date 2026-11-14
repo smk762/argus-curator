@@ -3,8 +3,8 @@
 The :class:`TargetProfile` is the shared moat between argus-curator and
 argus-lens: both services speak the same ``style / backend / checkpoint /
 category`` taxonomy, so a manifest emitted here is consumed by the captioner
-verbatim with no remapping. Keep this schema in lockstep with argus-lens (or,
-eventually, hoist it into a shared ``argus-core`` package).
+verbatim with no remapping. The style and category literals come from
+``argus_cortex.taxonomy``, the one copy the whole suite shares.
 """
 
 from __future__ import annotations
@@ -21,8 +21,15 @@ from argus_cortex.moderation import (  # re-exported: part of curator's wire con
 )
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import PolicyName
+from argus_cortex.taxonomy import (  # re-exported: the suite's one taxonomy, not a local copy
+    TARGET_CATEGORIES,  # noqa: F401
+    TARGET_STYLES,  # noqa: F401
+    TargetCategory,
+    TargetStyle,
+)
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     SerializationInfo,
     SerializerFunctionWrapHandler,
@@ -32,8 +39,13 @@ from pydantic import (
     model_validator,
 )
 
-TargetStyle = Literal["photo", "anime"]
-TargetCategory = Literal["identity", "wardrobe", "pose_composition", "setting"]
+ExportMode = Literal["copy", "symlink", "move"]
+
+# For models only ever sent, never received: a defaulted field is always in the
+# payload, so the wire schema lists it as required. A model a request also
+# carries must not use this, since a client may leave its defaulted fields out
+# (tests/test_schema.py checks which models carry it).
+RESPONSE_ONLY = ConfigDict(json_schema_serialization_defaults_required=True)
 
 # Head-pose bucket of the primary face, derived from InsightFace yaw. Lets the UI
 # pick a balanced subset by orientation (head-on / three-quarter / side profile).
@@ -102,7 +114,10 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # (argus-forge's MAJORS_REQUIRING_EXPORTED_PATH) is unaffected.
 # 2.2: rows carry crop, the box baked into the exported file (in the source's
 # displayed pixels), or null when the file is the source as it was. Additive.
-MANIFEST_VERSION = "2.2"
+# 2.3: rows carry primary_face (box, yaw / pitch / roll, face sharpness, eye and
+# mouth openness, identity distances, age, and landmarks when asked) and the
+# scan's set_age. Additive (#130).
+MANIFEST_VERSION = "2.3"
 
 # Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
 # written to disk verbatim, so a runaway payload must not fill the export root.
@@ -222,6 +237,15 @@ class FaceConfig(BaseModel):
     # for a face to be given a body.
     body_face_match: float = Field(0.0001, ge=0.0, le=1.0)
 
+    # Images in this scan (rel_paths) whose primary faces are the identity
+    # reference: each face's reference_distance is the cosine distance from the
+    # centroid of their embeddings. A frontal portrait for a multi-view set, or
+    # a consenting person's reference photos. Empty = no reference distance.
+    # A reference must pass the scan's filters: a rejected image is never
+    # face-checked. Embeddings are never stored: the distance is measured
+    # during the scan.
+    reference_paths: list[str] = Field(default_factory=list)
+
     @model_validator(mode="after")
     def _attributes_need_faces(self) -> FaceConfig:
         # Attributes are read off detected faces; asking for them without
@@ -229,7 +253,7 @@ class FaceConfig(BaseModel):
         # off MiVOLO ages.
         if self.set_age or self.mivolo_body:
             self.mivolo = True
-        if self.fairface or self.mivolo:
+        if self.fairface or self.mivolo or self.reference_paths:
             self.enabled = True
         return self
 
@@ -283,6 +307,8 @@ EraxLabel = Literal["anus", "make_love", "nipple", "penis", "vagina"]
 class EraxDetection(BaseModel):
     """One EraX-NSFW detection. ``bbox`` is ``[x, y, w, h]`` in source pixels."""
 
+    model_config = RESPONSE_ONLY
+
     label: EraxLabel
     score: float
     bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
@@ -290,6 +316,8 @@ class EraxDetection(BaseModel):
 
 class EraxResult(BaseModel):
     """EraX-NSFW's view of one image. Classes are EraX's own, not NudeNet's."""
+
+    model_config = RESPONSE_ONLY
 
     detections: list[EraxDetection] = Field(default_factory=list)
     labels: dict[EraxLabel, float] = Field(default_factory=dict)
@@ -301,6 +329,8 @@ class EraxConfig(BaseModel):
     The URL (ARGUS_CURATOR_ERAX_URL) is process configuration, like NudeNet.
     A finished scan records whether the check ran as True or False.
     """
+
+    model_config = RESPONSE_ONLY
 
     enabled: bool | None = None
 
@@ -375,9 +405,11 @@ class CropBox(BaseModel):
 class WatermarkDetection(BaseModel):
     """One watermark the detector found: ``[x, y, w, h]`` in displayed pixels of the uncropped frame."""
 
+    model_config = RESPONSE_ONLY
+
     label: str
     score: float
-    bbox: list[float]
+    bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
 
 
 class CropConfig(BaseModel):
@@ -425,6 +457,8 @@ class FaceAttributes(BaseModel):
     ``age`` is its derived bracket, and ``age_conf`` is ``None``.
     """
 
+    model_config = RESPONSE_ONLY
+
     race: FaceRace | None = None
     race_conf: float | None = None
     gender: FaceGender | None = None
@@ -449,6 +483,8 @@ class SetAge(BaseModel):
     such, and treats it as it treats a measured age where a wrong age would be
     the costlier mistake.
     """
+
+    model_config = RESPONSE_ONLY
 
     years: float
     # Read before the prefilter: an identity it emptied is gone from face_clusters but still named here.
@@ -476,8 +512,25 @@ class FaceReadings(BaseModel):
     mivolo_age: float | None = None
 
 
+class FaceLandmarks(BaseModel):
+    """InsightFace's landmarks for one face, in the image's pixels.
+
+    ``kps`` are the detector's 5 keypoints (eyes, nose tip, mouth corners) as
+    ``[x, y]``; ``landmark_3d_68`` the 68 iBUG points as ``[x, y, z]``. Kept in
+    the scan cache only, and written to a manifest when an export asks
+    (``ExportRequest.landmarks``): they are the largest per-face payload.
+    """
+
+    model_config = RESPONSE_ONLY
+
+    kps: list[list[float]] | None = None
+    landmark_3d_68: list[list[float]] | None = None
+
+
 class FaceDetection(BaseModel):
     """One detected face within an image."""
+
+    model_config = RESPONSE_ONLY
 
     bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
     det_score: float
@@ -487,9 +540,26 @@ class FaceDetection(BaseModel):
     # to one side; ``pose`` is the derived bucket (frontal / three_quarter / profile).
     yaw: float | None = None
     pitch: float | None = None
+    roll: float | None = None
     pose: FacePose | None = None
+    # Laplacian variance over the face box alone, in the units of
+    # ImageResult.sharpness: a sharp face on a plain background can sit in an
+    # image whose overall sharpness is low.
+    sharpness: float | None = None
+    # Eye aspect ratio (mean of both eyes) and inner-lip opening over mouth
+    # width, from the 68 landmarks. Measurements, not an expression classifier:
+    # open eyes read about 0.25-0.35 and a closed mouth about 0. None without
+    # the 3D-68 landmark model.
+    eye_open: float | None = None
+    mouth_open: float | None = None
+    # Cosine distance from this face's embedding to its identity's centroid,
+    # and to FaceConfig.reference_paths' centroid (None without a reference).
+    cluster_distance: float | None = None
+    reference_distance: float | None = None
     attributes: FaceAttributes | None = None
     readings: FaceReadings | None = Field(default=None, exclude=True)
+    # Scan cache only, like readings (see FaceLandmarks).
+    landmarks: FaceLandmarks | None = Field(default=None, exclude=True)
     # Index into ImageResult.people when FaceConfig.mivolo_body matched this face
     # to a person box; NudeNet detections assigned to that person live there.
     person_index: int | None = None
@@ -501,8 +571,11 @@ class FaceDetection(BaseModel):
     @model_serializer(mode="wrap")
     def _readings_for_the_store(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):
         data = handler(self)
-        if info.context == STORE_CONTEXT and self.readings is not None:
-            data["readings"] = self.readings.model_dump(mode=info.mode)
+        if info.context == STORE_CONTEXT:
+            if self.readings is not None:
+                data["readings"] = self.readings.model_dump(mode=info.mode)
+            if self.landmarks is not None:
+                data["landmarks"] = self.landmarks.model_dump(mode=info.mode)
         return data
 
 
@@ -517,6 +590,8 @@ class PersonDetection(BaseModel):
     are NudeNet detections whose box overlaps this person.
     """
 
+    model_config = RESPONSE_ONLY
+
     bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
     det_score: float
     face_index: int | None = None
@@ -528,6 +603,8 @@ class PersonDetection(BaseModel):
 
 
 class SceneLabel(BaseModel):
+    model_config = RESPONSE_ONLY
+
     label: str
     conf: float
 
@@ -540,6 +617,8 @@ class SceneTags(BaseModel):
     categories of the chosen environment, so it is always at least 0.5.
     """
 
+    model_config = RESPONSE_ONLY
+
     categories: list[SceneLabel] = Field(default_factory=list)
     environment: SceneEnvironment
     environment_conf: float
@@ -547,6 +626,8 @@ class SceneTags(BaseModel):
 
 class GarmentDetection(BaseModel):
     """One detected garment."""
+
+    model_config = RESPONSE_ONLY
 
     label: GarmentLabel
     conf: float
@@ -588,6 +669,8 @@ class ImageResult(BaseModel):
     ``rel_path`` is the path relative to the scanned root and is the stable key
     everywhere (it stays unique across sub-folders, unlike a bare basename).
     """
+
+    model_config = RESPONSE_ONLY
 
     rel_path: str
     abs_path: str
@@ -632,6 +715,8 @@ class ImageResult(BaseModel):
     # Orientation of the primary face (for pose-balanced subset selection).
     primary_face_pose: FacePose | None = None
     primary_face_yaw: float | None = None
+    primary_face_pitch: float | None = None
+    primary_face_roll: float | None = None
     # Attributes of the primary face (when FaceConfig.fairface / .mivolo ran).
     primary_face_attributes: FaceAttributes | None = None
     # Only on a passing frame with no face, when FaceConfig.set_age found one subject.
@@ -682,11 +767,13 @@ class ImageResult(BaseModel):
 class FaceCluster(BaseModel):
     """A clustered identity across the scanned dataset."""
 
+    model_config = RESPONSE_ONLY
+
     cluster_id: str
     # Size and representative leave out images the prefilter dropped, which can never be kept.
     size: int
     representative_rel_path: str
-    representative_bbox: list[float] | None = None
+    representative_bbox: list[float] | None = Field(None, min_length=4, max_length=4, description="[x, y, w, h]")
     # Pooled over every member face, dropped images included: per-head probabilities are averaged before
     # taking the top label, so one odd frame cannot flip an identity's label.
     attributes: FaceAttributes | None = None
@@ -694,6 +781,8 @@ class FaceCluster(BaseModel):
 
 class ScanSummary(BaseModel):
     """Full result of a scan — persisted on disk and paginated by the server."""
+
+    model_config = RESPONSE_ONLY
 
     scan_id: str
     folder: str
@@ -722,6 +811,9 @@ class ScanSummary(BaseModel):
     # face, or why none was (``set_age_skipped``). Both None when not asked.
     set_age: SetAge | None = None
     set_age_skipped: str | None = None
+    # Why FaceConfig.reference_paths gave no reference distances (no such image
+    # in the scan, or none with a face), else None.
+    reference_skipped: str | None = None
     results: list[ImageResult] = Field(default_factory=list)
 
     # Pagination metadata (server fills these when slicing ``results``)
@@ -760,6 +852,41 @@ class ScanRequest(BaseModel):
     crops: CropConfig = Field(default_factory=CropConfig)
 
 
+class FaceSourceFilter(BaseModel):
+    """The face-source preset: images a head can be built from (argus-mask).
+
+    Every check reads the primary face; ``None`` turns a check off. The
+    defaults are the preset, so ``{}`` asks for all of it: one identity, one
+    face, frontal and level, large and sharp, eyes open, mouth closed, close
+    to the identity, and an adult age. An image that fails is kept out with
+    ``face-source:<check>`` as its keep reason, and the kept images are ranked
+    best first.
+    """
+
+    # The identity to keep (a face cluster id). None = the scan's largest, or
+    # with FaceConfig.reference_paths any (the reference distance names it).
+    cluster: str | None = None
+    # Exactly one face in the frame.
+    single_face: bool = True
+    # Head pose limits, absolute degrees.
+    max_yaw: float | None = Field(15.0, ge=0.0)
+    max_pitch: float | None = Field(15.0, ge=0.0)
+    max_roll: float | None = Field(10.0, ge=0.0)
+    # Floor on the face box's short side, in pixels.
+    min_face_px: int | None = Field(256, ge=1)
+    # Floor on FaceDetection.sharpness.
+    min_face_sharpness: float | None = Field(100.0, ge=0.0)
+    # Floor on FaceDetection.eye_open, ceiling on FaceDetection.mouth_open.
+    min_eye_open: float | None = Field(0.18, ge=0.0)
+    max_mouth_open: float | None = Field(0.1, ge=0.0)
+    # Ceiling on the identity distance: reference_distance when the scan had
+    # FaceConfig.reference_paths, else cluster_distance.
+    max_identity_distance: float | None = Field(0.4, ge=0.0, le=2.0)
+    # A MiVOLO age of at least 18 on the face, and an adult set age when the
+    # scan read one. An image with no age is kept out.
+    require_adult: bool = True
+
+
 class ExportRequest(BaseModel):
     scan_id: str | None = None
     # Inline selection of rel_paths (alternative to scan_id-driven selection).
@@ -773,7 +900,7 @@ class ExportRequest(BaseModel):
     # --allow-move / CURATOR_ALLOW_MOVE=1. An image the scan cropped is written
     # cropped, which neither a link nor a move can do: selecting one refuses
     # any mode but "copy".
-    mode: Literal["copy", "symlink", "move"] = "copy"
+    mode: ExportMode = "copy"
     preserve_structure: bool = True
 
     min_score: float = 0.6
@@ -843,7 +970,13 @@ class ExportRequest(BaseModel):
     # missing: the union, so an export matches a "flagged by any" view.
     guard_policies: list[GuardPolicy] | None = Field(None, min_length=1)
 
+    # Optional: the face-source preset (FaceSourceFilter). Kept images are
+    # then ordered best first, in the manifest too.
+    face_source: FaceSourceFilter | None = None
+
     write_manifest: bool = True
+    # Write the primary face's landmarks (FaceLandmarks) into manifest rows.
+    landmarks: bool = False
     # Optionally POST the manifest straight to argus-lens /caption (M4 stretch).
     caption_url: str | None = None
     # Write an XMP sidecar beside each exported file (<file>.xmp): face regions,
@@ -935,6 +1068,26 @@ class ExportRequest(BaseModel):
         return value
 
 
+class ManifestFace(BaseModel):
+    """The primary face of a manifest row (manifest 2.3)."""
+
+    model_config = RESPONSE_ONLY
+
+    bbox: list[float] = Field(..., min_length=4, max_length=4, description="[x, y, w, h]")
+    yaw: float | None = None
+    pitch: float | None = None
+    roll: float | None = None
+    sharpness: float | None = None
+    eye_open: float | None = None
+    mouth_open: float | None = None
+    cluster_distance: float | None = None
+    reference_distance: float | None = None
+    # MiVOLO's age in years, when it ran.
+    age_years: float | None = None
+    # Only when the export asked (ExportRequest.landmarks).
+    landmarks: FaceLandmarks | None = None
+
+
 class ManifestRow(BaseModel):
     """One line of the JSONL handoff manifest (written by ``export.write_manifest``).
 
@@ -955,6 +1108,8 @@ class ManifestRow(BaseModel):
     original location within the scan.
     """
 
+    model_config = RESPONSE_ONLY
+
     manifest_version: str = MANIFEST_VERSION
     rel_path: str
     abs_path: str
@@ -968,9 +1123,15 @@ class ManifestRow(BaseModel):
     # The crop baked into the exported file (manifest 2.2), in the source's
     # displayed pixels. None = the file is the source as it was.
     crop: CropBox | None = None
+    # Manifest 2.3: the primary face's measurements (None = no face), and the
+    # scan's set age when FaceConfig.set_age read one.
+    primary_face: ManifestFace | None = None
+    set_age: SetAge | None = None
 
 
 class ExportResult(BaseModel):
+    model_config = RESPONSE_ONLY
+
     # Version of the manifest this curator writes, declared whether or not a
     # manifest was requested. Without it a client can only compat-detect by
     # sniffing which fields are present, which cannot distinguish "old server"
@@ -980,7 +1141,7 @@ class ExportResult(BaseModel):
     copied: int
     skipped: int
     dest: str
-    mode: str
+    mode: ExportMode
     # What the selection *chose*, before transfer. A file here can still be
     # missing from exported_paths — its source vanished, or the transfer failed
     # — so this is not a record of what landed. Use exported_paths for that.
@@ -1021,6 +1182,8 @@ class SelectRow(BaseModel):
     value is why ``decide_selection`` left it out — the same strings an export
     report would write, without copying anything.
     """
+
+    model_config = RESPONSE_ONLY
 
     rel_path: str
     abs_path: str
@@ -1066,6 +1229,8 @@ class SelectRequest(BaseModel):
     guard_rules: list[str] | None = None
     guard_policies: list[GuardPolicy] | None = Field(None, min_length=1)
 
+    face_source: FaceSourceFilter | None = None
+
     @model_validator(mode="after")
     def _valid_as_export(self) -> SelectRequest:
         # ExportRequest owns the cross-field rules (age order, known scenes,
@@ -1084,6 +1249,8 @@ class SelectRequest(BaseModel):
 
 class SelectResult(BaseModel):
     """What the current filter would keep, without writing the export root."""
+
+    model_config = RESPONSE_ONLY
 
     scan_id: str
     total: int

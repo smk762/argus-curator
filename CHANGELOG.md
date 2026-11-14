@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-14
+
+### Added
+
+- **Face-source measurements and preset for argus-mask (#130).** Every face now
+  carries its head `roll`, its own `sharpness` (over the face box), `eye_open`
+  and `mouth_open` (from the 68 landmarks), and `cluster_distance` to its
+  identity's centroid. `FaceConfig.reference_paths` (`--face-reference`) names
+  images in the scan whose faces are the reference; each face then gets a
+  `reference_distance`, and `reference_skipped` on the summary says why none
+  was measured. Embeddings are not stored. The 5 keypoints and 68 landmarks are
+  kept in the scan cache only. `face_source` on export and select
+  (`--face-source`) is a preset over these measurements: one face of one
+  identity, frontal and level, large and sharp, eyes open, mouth closed, close
+  to the identity, and an adult. It ranks the kept images best first, and each
+  image it leaves out gets `face-source:<check>` as its keep reason. The CSV
+  report gains pitch, roll and the face-quality columns.
+- **Manifest 2.3.** Rows carry `primary_face` (box, pose, sharpness, eyes,
+  mouth, distances, age, and landmarks with `landmarks: true` / `--landmarks`)
+  and the scan's `set_age`. Additive, so a 2.x reader keeps working.
+- **The `concept` target category (#134).** A style or visual-concept LoRA set:
+  face count never lowers its score, and clean, high-resolution images get the
+  composition bonus. `TargetStyle` and `TargetCategory` now come from
+  `argus_cortex.taxonomy` instead of a local copy, so the categories can't drift
+  from the rest of the suite. **Requires `argus-cortex>=0.4.7`**, the first
+  release with `concept`.
+
+- **A guide to synthetic source portraits for argus-mask**
+  ([docs/synthetic-face-sets.md](docs/synthetic-face-sets.md)). It follows
+  argus-mask's own guide step by step: generate with argus-darkroom, shortlist
+  with curator, read argus-lens captions, then hand off. It also lists what no
+  tool checks. Docs only.
+
+### Changed
+
+- **Requires `argus-cortex>=0.5.0,<0.6`.** 0.5.0 adds `argus_cortex.provenance`
+  and `argus_cortex.consent`; curator uses neither yet, and nothing it does use
+  changed. The wire schema is unchanged.
+- **The wire schema says what the server always sends (#129).** In models that
+  only go out (`ScanSummary`, `ImageResult`, `ExportResult`, `ManifestRow`,
+  `SelectResult` and what they hold), a field with a default is now required,
+  since every response carries it. Request models and the configs a request
+  also carries are unchanged, as a client may still leave those fields out.
+  `ExportResult.mode` is the `copy` / `symlink` / `move` enum rather than any
+  string, and `WatermarkDetection.bbox` and `FaceCluster.representative_bbox`
+  are 4 numbers, like the other boxes. The payloads themselves are unchanged,
+  and so is the manifest version. Cortex's `NsfwResult`, `NsfwDetection` and
+  `GuardResult` still list their defaulted fields as optional.
+
 ## [0.14.1] - 2026-11-06
 
 ### Changed
@@ -845,7 +894,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/smk762/argus-curator/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/smk762/argus-curator/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/smk762/argus-curator/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/smk762/argus-curator/compare/v0.12.0...v0.13.0

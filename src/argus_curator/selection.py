@@ -8,13 +8,23 @@ HITL surfaces can explain *why* it was left out.
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 import imagehash
 from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS, rule_matches
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
 from argus_curator.garments import outfit, outfit_similarity
-from argus_curator.models import ExportRequest, FaceAttributes, GuardResult, ImageResult, ScanSummary
+from argus_curator.models import (
+    ExportRequest,
+    FaceAttributes,
+    FaceDetection,
+    FaceSourceFilter,
+    GuardResult,
+    ImageResult,
+    ScanSummary,
+    SetAge,
+)
 from argus_curator.nsfw import exposed_score, is_exposed
 
 # A MiVOLO age under this, together with any reported exposed detection, is never kept.
@@ -331,6 +341,35 @@ def guard_filter_problem(req: ExportRequest, summary: ScanSummary) -> str | None
     return None
 
 
+def face_source_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """Why *req*'s face-source preset cannot be applied to *summary*, else ``None``.
+
+    Without these the preset would keep nothing, every image failing on a
+    measurement the scan never took.
+    """
+    fs = req.face_source
+    if fs is None:
+        return None
+    if not summary.faces_config.enabled:
+        return "the face-source preset needs a scan that ran face detection; rescan with faces on"
+    if fs.require_adult and not summary.faces_config.mivolo:
+        return (
+            "the face-source preset's adult check needs MiVOLO ages; rescan with faces.mivolo, "
+            "or set face_source.require_adult to false"
+        )
+    if fs.cluster is not None and fs.cluster not in {c.cluster_id for c in summary.face_clusters}:
+        return f"face_source.cluster {fs.cluster!r} is not an identity in this scan"
+    if fs.max_identity_distance is not None and summary.faces_config.reference_paths and summary.reference_skipped:
+        # The identity check would fall back to the cluster distance: another
+        # person's identity could pass as the reference's.
+        return (
+            f"the face-source identity check needs the scan's reference, which gave no distances "
+            f"({summary.reference_skipped}); rescan with a usable reference, "
+            "or set face_source.max_identity_distance to null"
+        )
+    return None
+
+
 def nsfw_filter_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
     """Why *req*'s NSFW filters cannot be applied to *summary*, else ``None``."""
     uses_nsfw = req.nsfw_threshold is not None or bool(req.nsfw_label_thresholds) or req.content_ratings is not None
@@ -357,6 +396,76 @@ def garment_floor_problem(req: ExportRequest, recorded_from: float) -> str | Non
     return None
 
 
+def primary_face(result: ImageResult) -> FaceDetection | None:
+    return next((f for f in result.faces if f.primary), None)
+
+
+def identity_distance(face: FaceDetection) -> float | None:
+    """The reference distance when the scan had a reference, else the distance to the face's identity."""
+    return face.reference_distance if face.reference_distance is not None else face.cluster_distance
+
+
+def _over(value: float | None, limit: float | None, *, absolute: bool = False) -> bool:
+    """True when a limit is set and *value* is missing or above it."""
+    if limit is None:
+        return False
+    if value is None:
+        return True
+    return (abs(value) if absolute else value) > limit
+
+
+def _under(value: float | None, floor: float | None) -> bool:
+    """True when a floor is set and *value* is missing or below it."""
+    return floor is not None and (value is None or value < floor)
+
+
+def _face_source_exclusion(
+    r: ImageResult, fs: FaceSourceFilter, cluster: str | None, set_age: SetAge | None
+) -> str | None:
+    """Why the face-source preset keeps *r* out (``face-source:<check>``), or None.
+
+    A measurement the scan does not have fails its check: a face source is
+    better missed than taken on trust.
+    """
+    face = primary_face(r)
+    if face is None:
+        return "face-source:no-face"
+    if fs.single_face and r.face_count != 1:
+        return "face-source:faces"
+    if cluster is not None and r.primary_face_cluster != cluster:
+        return "face-source:identity"
+    if _over(face.yaw, fs.max_yaw, absolute=True):
+        return "face-source:yaw"
+    if _over(face.pitch, fs.max_pitch, absolute=True):
+        return "face-source:pitch"
+    if _over(face.roll, fs.max_roll, absolute=True):
+        return "face-source:roll"
+    if _under(min(face.bbox[2], face.bbox[3]), fs.min_face_px):
+        return "face-source:face-size"
+    if _under(face.sharpness, fs.min_face_sharpness):
+        return "face-source:face-sharpness"
+    if _under(face.eye_open, fs.min_eye_open):
+        return "face-source:eyes"
+    if _over(face.mouth_open, fs.max_mouth_open):
+        return "face-source:mouth"
+    if _over(identity_distance(face), fs.max_identity_distance):
+        return "face-source:identity-distance"
+    if fs.require_adult:
+        years = _mivolo_years(face.attributes)
+        if years is None:
+            return "face-source:no-age"
+        if years < MINOR_AGE_YEARS or (set_age is not None and set_age.years < MINOR_AGE_YEARS):
+            return "face-source:age"
+    return None
+
+
+def _face_source_rank(r: ImageResult) -> tuple[float, float]:
+    """Best first: the curation score, then the closest identity match."""
+    face = primary_face(r)
+    distance = identity_distance(face) if face is not None else None
+    return (-r.score, distance if distance is not None else 2.0)
+
+
 def hard_exclusion(result: ImageResult) -> str | None:
     """Why no request can keep *result* (a named selection included), or ``None``.
 
@@ -376,6 +485,8 @@ def decide_selection(
     results: list[ImageResult],
     req: ExportRequest,
     diversity_weight: float,
+    *,
+    set_age: SetAge | None = None,
 ) -> tuple[list[ImageResult], dict[str, str]]:
     """Return ``(selected_results, keep_reason_by_rel)`` for an export request.
 
@@ -386,10 +497,23 @@ def decide_selection(
     An under-18 face with a reported exposed score is rejected first, whatever
     the request asked to keep. Any rejected image comes next: it is never kept,
     and its keep reason is its own ``reject_reason`` (``prefilter:nsfw`` and so on).
+
+    With ``req.face_source`` the preset runs last (*set_age* is the scan's, for
+    its adult check) and the selection comes back ranked best first.
     """
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
     pose_filter = set(req.face_poses) if req.face_poses else None
+    fs = req.face_source
+    fs_cluster = None
+    if fs is not None:
+        fs_cluster = fs.cluster
+        # With a reference the reference distance names the identity; the
+        # largest identity need not be the reference's, so it is no default.
+        referenced = any(f.reference_distance is not None for r in results for f in r.faces)
+        if fs_cluster is None and not referenced:
+            counts = Counter(r.primary_face_cluster for r in results if r.passed and r.primary_face_cluster)
+            fs_cluster = counts.most_common(1)[0][0] if counts else None
 
     eligible: list[ImageResult] = []
     for r in results:
@@ -415,6 +539,8 @@ def decide_selection(
             keep_reason[r.rel_path] = rating_reason
         elif (guard_reason := _guard_exclusion(r, req)) is not None:
             keep_reason[r.rel_path] = guard_reason
+        elif fs is not None and (fs_reason := _face_source_exclusion(r, fs, fs_cluster, set_age)) is not None:
+            keep_reason[r.rel_path] = fs_reason
         else:
             eligible.append(r)
 
@@ -433,6 +559,8 @@ def decide_selection(
             if r.rel_path not in chosen_set:
                 keep_reason[r.rel_path] = "diversity-trimmed"
 
+    if fs is not None:
+        chosen = sorted(chosen, key=_face_source_rank)
     for r in chosen:
         keep_reason[r.rel_path] = ""
     return chosen, keep_reason

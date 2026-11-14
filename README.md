@@ -123,11 +123,14 @@ TargetProfile(
     target_style="photo",        # "photo" | "anime"
     target_backend="sdxl",       # "sdxl" | "flux-dev-1" | ...
     checkpoint=None,
-    target_category="identity",  # identity | wardrobe | pose_composition | setting
+    target_category="identity",  # identity | wardrobe | pose_composition | setting | concept
 )
 ```
 
 The curator uses it to weight scoring and label exports; argus-lens inherits it verbatim.
+The style and category values are argus-cortex's (`argus_cortex.taxonomy`), the one
+copy the whole suite shares. `concept` is a style or visual-concept LoRA: face count
+never lowers its score, and clean, high-resolution images get the composition bonus.
 
 ## Installation
 
@@ -295,6 +298,42 @@ Deleting images re-reads the set age from the faces left, which can change it,
 remove it or give one to a frame that had none; a check that already ran is not
 run again.
 
+### Face sources (argus-mask)
+
+With faces on, every face also carries its head **roll** (beside yaw and
+pitch), its own **sharpness** (Laplacian variance over the face box, so a
+sharp face on a plain background isn't judged by the background), **eye_open**
+and **mouth_open** (the eye aspect ratio and the inner-lip gap over the mouth
+width, from InsightFace's 68 landmarks), and **cluster_distance**, the cosine
+distance from its identity's centroid. Name reference images in the scan and
+each face also gets a **reference_distance** from them:
+
+```bash
+argus-curator scan views/ --mivolo --face-reference portrait.png \
+    --face-source --blur-threshold 0 --csv views.csv --copy-to source/
+```
+
+`--face-source` (`face_source: {}` on `POST /export` and `/scan/{id}/select`)
+is a preset over those measurements: one face, of one identity (the largest,
+or `face_source.cluster`), with yaw and pitch within 15° and roll within 10°,
+a face box at least 256 px on its short side, face sharpness at least 100, eyes
+open (`eye_open >= 0.18`), mouth closed (`mouth_open <= 0.1`), an identity
+distance within 0.4 (to the reference when there is one, else to the
+identity's centroid), and a MiVOLO age of 18 or over (with an adult set age
+when the scan read one). Set any check to `null` to turn it off. An image
+that fails gets `face-source:<check>` as its keep reason, and the kept images
+come back ranked best first. A scan without face detection, or (for the age
+check) without MiVOLO, is refused with a 400 rather than keeping nothing.
+The measurements are not an expression classifier: a closed-lip smile passes.
+
+A reference must pass the scan's filters, as a rejected image is never
+face-checked; `reference_skipped` on the summary says why none was used.
+Embeddings are not stored, only the distances. The 5 keypoints and 68
+landmarks are kept in the scan cache (not served by `GET /scan/{id}`) and
+written into the manifest when an export asks (`--landmarks`,
+`landmarks: true`). [docs/synthetic-face-sets.md](docs/synthetic-face-sets.md)
+walks through a face-source shortlist end to end.
+
 ### Scene tags (Places365)
 
 `--scenes` (or `"scenes": {"enabled": true}` on the scan request) runs a
@@ -391,13 +430,13 @@ a detector for 18 body-part classes (`FEMALE_BREAST_EXPOSED`, `BUTTOCKS_COVERED`
 imports NudeNet, so it gains no dependency and stays MIT. NudeNet itself is
 AGPL-3.0, so running its server is a choice for whoever deploys it.
 
-Configure the server in the environment (or `.env`), never per request:
+Configure the server in the environment (or `.env`), never per request. Hosts below are placeholders; the real host/IP is in the local `.env` (see `.env.example`), so check it there:
 
 ```bash
-ARGUS_CURATOR_NUDENET_URL=http://192.168.1.50:8080   # its origin; /infer is appended
+ARGUS_CURATOR_NUDENET_URL=http://<LAN_HOST>:8080   # its origin; /infer is appended
 ARGUS_CURATOR_NUDENET_TIMEOUT=30                     # seconds per image (default 30)
 ARGUS_CURATOR_NUDENET_WORKERS=4                      # concurrent requests (default 4)
-ARGUS_CURATOR_ERAX_URL=http://192.168.1.50:8081      # optional; empty turns EraX off
+ARGUS_CURATOR_ERAX_URL=http://<LAN_HOST>:8081      # optional; empty turns EraX off
 ARGUS_CURATOR_ERAX_TIMEOUT=30
 ARGUS_CURATOR_ERAX_WORKERS=4
 ```
@@ -524,7 +563,7 @@ SingGuard server answers 400 to them. Curator then retries in `fast`, and once
 Configure it like NudeNet:
 
 ```bash
-ARGUS_CURATOR_SINGGUARD_URL=http://192.168.1.198:9150   # its origin; /api/guard/check is appended
+ARGUS_CURATOR_SINGGUARD_URL=http://<AGENT_HOST>:9150   # its origin; /api/guard/check is appended (real host in local .env)
 ARGUS_CURATOR_SINGGUARD_THINKING=cascade                 # or fast / fast-slow / slow
 ARGUS_CURATOR_SINGGUARD_POLICY_FILE=/etc/curator/policy.txt  # optional: replaces the default rules
 ARGUS_CURATOR_SINGGUARD_TIMEOUT=90                       # seconds per image (default 90)
@@ -972,10 +1011,15 @@ Export writes a JSONL manifest (one row per **exported** image — rows exist
 only for files whose transfer actually succeeded):
 
 ```jsonc
-{ "manifest_version": "2.2", "rel_path": "...", "abs_path": "...",
+{ "manifest_version": "2.3", "rel_path": "...", "abs_path": "...",
   "exported_path": "...", "exported_abs_path": "...", "target_profile": { ... },
   "primary_face_cluster": "face_2", "primary_face_pose": "three_quarter",
-  "score": 0.87, "similar_group": 3, "crop": null }
+  "score": 0.87, "similar_group": 3, "crop": null,
+  "primary_face": { "bbox": [412.0, 188.0, 301.5, 380.0], "yaw": -24.1, "pitch": 3.2,
+                    "roll": -1.8, "sharpness": 812.4, "eye_open": 0.29, "mouth_open": 0.02,
+                    "cluster_distance": 0.12, "reference_distance": null,
+                    "age_years": 31.4, "landmarks": null },
+  "set_age": null }
 ```
 
 The row shape is published in the wire schema as `ManifestRow`.
@@ -1009,6 +1053,11 @@ within the scan.
 [cropped](#crops-watermarks-and-borders-without-touching-the-source) it, in
 the source's displayed pixels; `null` means the file is the source as it was.
 
+`primary_face` (manifest 2.3) is the primary face's measurements, from the
+[face-source](#face-sources-argus-mask) set, or `null` for an image with no
+face; its `landmarks` are `null` unless the export asked for them. `set_age`
+is the scan's [set age](#face-attributes-mivolo) when one was read.
+
 `GET /health` reports `manifest_version` alongside the package `version`, so a
 consumer can check the contract it is about to speak — and refuse an unknown
 major — rather than inferring it from which fields a response happens to carry.
@@ -1021,7 +1070,7 @@ for a one-click curate→caption run.
 ## How scoring works (per image)
 
 1. **Hard filters** — min short side, max aspect ratio, blur (Laplacian-edge variance floor, measured with the long side at 1024px so the threshold does not depend on the file's resolution).
-2. **Composite score** — target-aware weighted blend of sharpness / resolution / artifact, plus a small composition bonus that depends on `target_category` (e.g. identity rewards a single centred face; setting rewards wide framing).
+2. **Composite score** — target-aware weighted blend of sharpness / resolution / artifact, plus a small composition bonus that depends on `target_category` (e.g. identity rewards a single centred face; setting rewards wide framing; concept rewards clean, high-resolution images and ignores faces).
 3. **Face-count fit** — with `[faces]`, identity targets penalise 0 or 2+ faces; other categories are progressively more tolerant.
 4. **Near-duplicate dedup** — pHash clustering keeps the highest-scoring representative and *reports* the rest (never silently dropped).
 5. **Selection (at export)** — score threshold + optional diversity cap (`max_keep` / `diversity_weight`) + optional face-cluster filter. Every excluded image carries a `keep_reason`.
@@ -1041,6 +1090,8 @@ start removes that scan, so a partial one is never listed as a result.
 - [**argus-quarry**](https://github.com/smk762/argus-quarry) — provenance-first acquisition of public-domain / CC0 portraits (the suite's input stage).
 - [**argus-lens**](https://github.com/smk762/argus-lens) — intent-aware, multi-model captioning (consumes the manifest this package exports).
 - [**argus-studio**](https://github.com/smk762/argus-studio) — the suite's Next.js web UI (its `/curate` view drives this server).
+- [**argus-darkroom**](https://github.com/smk762/argus-darkroom) — guarded image generation; its records carry with an export under `--carry-sidecars`.
+- [**argus-mask**](https://github.com/smk762/argus-mask) — a talking face. [docs/synthetic-face-sets.md](docs/synthetic-face-sets.md) shows how darkroom, curator and lens make its synthetic source portraits.
 
 ## License
 
