@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **The README is split into `docs/` (#138).** The README is now the overview
+  (what curator is, install, quick start, why not FiftyOne/fastdup, the shared
+  `TargetProfile`) with links to one page per feature, so Studio and other UIs
+  can import and deep-link them: moderation, scoring, HTTP API, Docker and the
+  GPU, face attributes, face sources, scene tags, garments, nudity, policy
+  check, prefilter, crops, sidecars and XMP.
+- **`docs/manifest.md`**: a reference for `manifest.jsonl`, with every 2.3
+  field, the changes in 1.0 to 2.3, the compatibility rule (refuse an unknown
+  major) and an example row.
+- **`docs/cli.md`**, generated from the Typer app (`make docs`; `make
+  docs-check` fails when it is stale). It covers `fairface-convert` and
+  `schema`, which the README never did.
+- FairFace (`--fairface`, `--race`, `fairface-convert`,
+  `ARGUS_CURATOR_FAIRFACE_MODEL`) is documented, as are
+  `ARGUS_CURATOR_WATERMARK_TIMEOUT` and `ARGUS_CURATOR_WATERMARK_WORKERS`. The
+  face-source page says that with a reference the identity comes from the
+  reference distance, and the synthetic-face guide's multi-view command adds
+  `--blur-threshold 0`.
+
 ### Fixed
 
 - **The blur check measured the frame's brightness on low-detail images
