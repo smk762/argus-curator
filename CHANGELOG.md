@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Requires `argus-cortex>=0.5.0,<0.6`.** 0.5.0 adds `argus_cortex.provenance`
+  and `argus_cortex.consent`; curator uses neither yet, and nothing it does use
+  changed. The wire schema is unchanged.
 - **The wire schema says what the server always sends (#129).** In models that
   only go out (`ScanSummary`, `ImageResult`, `ExportResult`, `ManifestRow`,
   `SelectResult` and what they hold), a field with a default is now required,
