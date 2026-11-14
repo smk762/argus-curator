@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The blur check measured the frame's brightness on low-detail images
+  (#147).** PIL's `FIND_EDGES` answers the 1 px image border with a response
+  that grows with brightness, and `_sharpness` took the variance over the whole
+  output, so a flat bright frame scored ~205 and a heavily blurred photo with a
+  bright background passed `blur_threshold`. Only the interior is measured now,
+  so a flat image of any brightness scores 0. **`sharpness` values change**
+  (the wire field on images and on faces, and `primary_face.sharpness` in the
+  manifest): blurred and flat images fall to near 0, and sharp ones drop by the
+  border's share (typically tens of points, more on bright images). The
+  `blur_threshold` (100) and `sharpness_ref` (800) defaults are unchanged.
+
 ## [0.15.0] - 2026-11-14
 
 ### Added
