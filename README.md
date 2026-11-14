@@ -1,4 +1,9 @@
-# Argus Curator
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/curator/argus-curator-lockup-dark.svg">
+    <img alt="Argus Curator" src="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/curator/argus-curator-lockup-light.svg" height="52">
+  </picture>
+</h1>
 
 [![PyPI](https://img.shields.io/pypi/v/argus-curator)](https://pypi.org/project/argus-curator/)
 [![Python](https://img.shields.io/pypi/pyversions/argus-curator)](https://pypi.org/project/argus-curator/)
