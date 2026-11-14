@@ -45,6 +45,33 @@ filters are available over HTTP (`POST /scan/folder`, `GET /scan/{scan_id}`,
 `POST /export`; see [HTTP API](http-api.md)), so curator can sit in front of an
 upload or moderation queue.
 
+## The under-18 rule (`minor-exposed`)
+
+One exclusion is not a filter you choose. When MiVOLO reads any face or body
+in the image as under 18 and NudeNet (or EraX) gives it an exposed score of at
+least 0.2, the image is never kept or exported, whatever the request says, a
+named `selection` included. Its keep reason is `minor-exposed`. The server also
+refuses to serve the original file (`GET /image`), and lets `POST
+/scan/{id}/delete` remove it without `--allow-delete`.
+
+Ages come from every face (MiVOLO, with or without the body) and from people
+found with no face (body-only MiVOLO). A FairFace age bracket does not count.
+Covered parts, faces, belly, feet and chest are not exposure.
+
+`ARGUS_CURATOR_MINOR_EXPOSED` (or `--minor-exposed` on `scan` and `serve`)
+picks how the age and the exposure have to meet:
+
+| Value | Flags the image when |
+|---|---|
+| `frame` (default) | a young age and an exposure are both in the frame. This is argus-darkroom's rule. |
+| `overlap` | as `frame`, and the exposure also overlaps a young person's box (person boxes, else face boxes), or overlaps no box at all. An exposure that overlaps only adults does not flag. It still flags any exposure when a young face has no person box, or a young age has no box to compare. |
+
+`frame` excludes more images: a group photo with a child in it and an exposed
+adult is excluded too. Set `overlap` to get the rule curator used up to
+0.15.1. Any other value is refused: `scan` and `serve` exit with status 2 and the
+server does not start, rather than falling back to either rule. `GET /health`
+reports the rule in use as `minor_exposed`.
+
 ## Limits: read before relying on it for moderation
 
 - **Content checks need their servers, and both miss things.** NudeNet

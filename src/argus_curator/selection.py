@@ -7,8 +7,10 @@ HITL surfaces can explain *why* it was left out.
 
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
+from typing import Literal, get_args
 
 import imagehash
 from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS, rule_matches
@@ -29,6 +31,39 @@ from argus_curator.nsfw import exposed_score, is_exposed
 
 # A MiVOLO age under this, together with any reported exposed detection, is never kept.
 MINOR_AGE_YEARS = 18.0
+
+# Which under-18 rule hard_exclusion applies (see minor_exposed). "frame", the
+# default and argus-darkroom's rule: a young age anywhere in the frame plus any
+# exposure. "overlap": curator's older rule, which also places the exposure on a
+# young person's box. Operator configuration only, never a request field.
+MINOR_EXPOSED_ENV = "ARGUS_CURATOR_MINOR_EXPOSED"
+MinorExposedMode = Literal["frame", "overlap"]
+MINOR_EXPOSED_MODES: tuple[str, ...] = get_args(MinorExposedMode)
+DEFAULT_MINOR_EXPOSED: MinorExposedMode = "frame"
+
+
+class MinorExposedConfigError(ValueError):
+    """``ARGUS_CURATOR_MINOR_EXPOSED`` (or ``--minor-exposed``) holds an unknown value."""
+
+
+def check_minor_exposed_mode(value: str) -> MinorExposedMode:
+    """*value* as a mode; raise :class:`MinorExposedConfigError` for anything else.
+
+    Never falls back: a typo must not quietly pick a rule.
+    """
+    mode = value.strip().lower()
+    if mode not in MINOR_EXPOSED_MODES:
+        raise MinorExposedConfigError(
+            f"{MINOR_EXPOSED_ENV} must be one of {', '.join(MINOR_EXPOSED_MODES)}, got {value!r}"
+        )
+    return mode  # type: ignore[return-value]
+
+
+def minor_exposed_mode() -> MinorExposedMode:
+    """The configured under-18 rule: ``ARGUS_CURATOR_MINOR_EXPOSED``, ``frame`` when unset or blank."""
+    raw = os.environ.get(MINOR_EXPOSED_ENV, "").strip()
+    return check_minor_exposed_mode(raw) if raw else DEFAULT_MINOR_EXPOSED
+
 
 _MAX_DIST = 64.0  # maximum 64-bit pHash Hamming distance
 
@@ -133,17 +168,22 @@ def _young_mivolo(years: float | None) -> bool:
     return years is not None and years < MINOR_AGE_YEARS
 
 
-def minor_exposed(result: ImageResult) -> bool:
-    """True when a MiVOLO age under 18 shares the frame with an exposed detection.
+def minor_exposed(result: ImageResult, mode: MinorExposedMode | None = None) -> bool:
+    """True when a MiVOLO age under 18 shares the frame with an exposed reading.
 
     0.2 is the lowest score NudeNet reports. Covered parts, faces, belly, feet,
     and chest do not count. Ages come from every face and from unmatched people
-    (body-only MiVOLO). With person boxes (else face boxes), an exposed
-    detection flags the image when it overlaps a young box or overlaps no box at
-    all; one that overlaps only adults does not. It fails closed: a young face
-    with no person box, or a young age with no box to place it, flags any
-    exposure.
+    (body-only MiVOLO); a FairFace bracket is not an age.
+
+    *mode* defaults to :func:`minor_exposed_mode`. Under ``frame`` (the
+    default, argus-darkroom's rule) a young age and an exposure anywhere in the
+    frame are enough. Under ``overlap``, with person boxes (else face boxes),
+    an exposed detection flags the image when it overlaps a young box or
+    overlaps no box at all; one that overlaps only adults does not. It fails
+    closed: a young face with no person box, or a young age with no box to
+    place it, flags any exposure.
     """
+    mode = minor_exposed_mode() if mode is None else check_minor_exposed_mode(mode)
     if result.nsfw is None or not is_exposed(result):
         return False
     face_years = [_mivolo_years(face.attributes) for face in result.faces]
@@ -151,6 +191,8 @@ def minor_exposed(result: ImageResult) -> bool:
     years.extend(person.age_years for person in result.people)
     if not any(_young_mivolo(age) for age in years):
         return False
+    if mode == "frame":
+        return True
     if result.people:
         if any(
             _young_mivolo(age) and face.person_index is None for face, age in zip(result.faces, face_years, strict=True)
@@ -469,7 +511,8 @@ def _face_source_rank(r: ImageResult) -> tuple[float, float]:
 def hard_exclusion(result: ImageResult) -> str | None:
     """Why no request can keep *result* (a named selection included), or ``None``.
 
-    An under-18 face with a reported exposed score first, then any rejected
+    An under-18 age with a reported exposed score first (under the configured
+    :func:`minor_exposed_mode`; no request field changes it), then any rejected
     image, by its own ``reject_reason``. A rejected frame gets no age reading,
     so the under-18 rule cannot speak for it; that covers a prefilter drop and
     a crop that could not be applied too.

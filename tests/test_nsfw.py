@@ -326,6 +326,99 @@ def test_under_18_with_a_reported_exposed_score_is_never_kept() -> None:
     assert why["group.jpg"] == "minor-exposed"
 
 
+def _young_face_beside_an_exposed_adult() -> ImageResult:
+    """A 15-year-old face apart from an adult whose box holds the only exposure."""
+    from argus_cortex.moderation import NsfwDetection, NsfwResult
+
+    from argus_curator.models import FaceAttributes, FaceDetection
+
+    young = FaceDetection(
+        bbox=[0, 0, 40, 40], det_score=0.9, primary=True, attributes=FaceAttributes(age_years=15.0, age_source="mivolo")
+    )
+    adult = FaceDetection(
+        bbox=[300, 300, 200, 200], det_score=0.9, attributes=FaceAttributes(age_years=34.0, age_source="mivolo")
+    )
+    return ImageResult(
+        rel_path="beside.jpg",
+        abs_path="/d/beside.jpg",
+        score=0.9,
+        passed=True,
+        faces=[young, adult],
+        primary_face_attributes=young.attributes,
+        nsfw=NsfwResult(
+            detections=[NsfwDetection(label="FEMALE_BREAST_EXPOSED", score=0.8, bbox=[350, 380, 60, 60])],
+            labels={"FEMALE_BREAST_EXPOSED": 0.8},
+            exposed_score=0.8,
+        ),
+    )
+
+
+def test_minor_exposed_defaults_to_the_frame_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.selection import minor_exposed, minor_exposed_mode
+
+    monkeypatch.delenv("ARGUS_CURATOR_MINOR_EXPOSED", raising=False)
+    assert minor_exposed_mode() == "frame"
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", "  ")
+    assert minor_exposed_mode() == "frame"
+    # The exposure is on the adult's box, nowhere near the young face: the frame rule flags it anyway.
+    assert minor_exposed(_young_face_beside_an_exposed_adult()) is True
+
+
+def test_overlap_rule_keeps_its_box_pairing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.selection import minor_exposed
+
+    image = _young_face_beside_an_exposed_adult()
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", "overlap")
+    assert minor_exposed(image) is False
+    assert minor_exposed(image, "frame") is True  # an explicit mode wins over the env
+    image.nsfw.detections[0].bbox = [5, 5, 20, 20]  # now on the young face
+    assert minor_exposed(image) is True
+
+
+@pytest.mark.parametrize("mode", ["frame", "overlap"])
+def test_minor_exposed_needs_a_young_mivolo_age_and_an_exposure(mode: str) -> None:
+    from argus_curator.models import FaceAttributes
+    from argus_curator.selection import minor_exposed
+
+    image = _young_face_beside_an_exposed_adult()
+    covered = image.model_copy(deep=True)
+    covered.nsfw = nsfw.to_result([{"class": "FEMALE_BREAST_COVERED", "score": 0.9, "box": [0, 0, 40, 40]}])
+    assert minor_exposed(covered, mode) is False
+    bracket = image.model_copy(deep=True)  # a FairFace bracket is not an age
+    bracket.faces[0].attributes = FaceAttributes(age="10-19", age_source="fairface")
+    bracket.primary_face_attributes = bracket.faces[0].attributes
+    assert minor_exposed(bracket, mode) is False
+
+
+def test_unknown_minor_exposed_mode_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.selection import MinorExposedConfigError, minor_exposed, minor_exposed_mode
+
+    image = _young_face_beside_an_exposed_adult()
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", "overlaps")
+    with pytest.raises(MinorExposedConfigError, match="frame, overlap"):
+        minor_exposed_mode()
+    with pytest.raises(MinorExposedConfigError):
+        minor_exposed(image)
+    with pytest.raises(MinorExposedConfigError):
+        decide_selection([image], ExportRequest(dest="/o", min_score=0.0), 0.0)
+    with pytest.raises(MinorExposedConfigError):
+        minor_exposed(image, "loose")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("mode", "kept"), [("frame", False), ("overlap", True)])
+def test_frame_rule_is_a_hard_exclusion(monkeypatch: pytest.MonkeyPatch, mode: str, kept: bool) -> None:
+    from argus_curator.selection import hard_exclusion
+
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", mode)
+    image = _young_face_beside_an_exposed_adult()
+    # The most permissive request: no NSFW filter, no score floor.
+    selected, why = decide_selection([image], ExportRequest(dest="/o", min_score=0.0), 0.0)
+    assert bool(selected) is kept
+    assert (hard_exclusion(image) is None) is kept
+    if not kept:
+        assert why["beside.jpg"] == "minor-exposed"
+
+
 def test_no_nsfw_filter_keeps_unchecked_images() -> None:
     selected, _ = decide_selection([_img("a.jpg", None)], ExportRequest(dest="/o", min_score=0.0), 0.0)
     assert [r.rel_path for r in selected] == ["a.jpg"]
