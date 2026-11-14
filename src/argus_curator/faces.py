@@ -536,7 +536,7 @@ def _detect_one(
             emb = getattr(face, "embedding", None)
             if emb is None:
                 continue
-            emb = emb / (np.linalg.norm(emb) + 1e-9)
+            emb = _unit(emb)
         area = bbox[2] * bbox[3]
         yaw, pitch, roll = _extract_pose(face)
         lmk68 = getattr(face, "landmark_3d_68", None)

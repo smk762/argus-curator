@@ -686,6 +686,14 @@ def scan(
 
     if dest is not None or csv_out is not None:
         req = export_req.model_copy(update={"scan_id": summary.scan_id})
+        from argus_curator.selection import face_source_problem
+
+        # Only knowable once the scan ran: a --face-reference that gave no
+        # distances would let the identity check fall back to the largest
+        # cluster, so another person could pass as the reference's.
+        if (problem := face_source_problem(req, summary)) is not None:
+            typer.echo(f"Error: {problem}", err=True)
+            raise typer.Exit(2)
         # With no --copy-to/--move-to/--symlink-to there is nowhere to transfer
         # to: exporting would copy every file onto itself (SameFileError per
         # image) for a report-only run, so skip it and report no exported paths.
