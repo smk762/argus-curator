@@ -5,11 +5,11 @@ alwaysApply: true
 
 # Git workflow
 
-`dev` is the default branch and the base for every pull request. `main` is the release branch: never commit on it, push work to it or open a pull request against it. It must never be ahead of `dev`.
+`dev` is the default branch and the base for every pull request. `main` is the release branch: never commit on it or push work to it, and open no pull request against it except the release PR from `dev`. It must never be ahead of `dev`, with one exception (below).
 
 Do each change in a worktree branched from `origin/dev`, and bring it up to date by merging `origin/dev`, never `main`. Open a pull request into `dev`.
 
-A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected and needs a pull request, merge the release PR, then immediately merge `main` back into `dev`.
+A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected, the release is a reviewed pull request from `dev` into `main`, and merging it leaves a merge commit on `main` alone. That merge commit is the one exception to the rule: it leaves `main` one commit ahead of `dev` with an identical tree. Leave it there and don't merge `main` back into `dev`. Anything else on `main` that `dev` lacks is a mistake (`git diff origin/dev origin/main` must be empty). Once `main` carries such a commit it can't be fast-forwarded, so later releases are pull requests too.
 
 ```bash
 git fetch origin
