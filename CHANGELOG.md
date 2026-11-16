@@ -43,8 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports the rule in use as `minor_exposed`. The wider rule also widens what
   `POST /scan/{id}/delete` removes without `--allow-delete`, and what
   `GET /image` refuses to serve.
-- **Requires `argus-cortex>=0.6.0,<0.7`** (#155). The `[gpu]` extra adds cortex's
-  `[remote,yaml]` extras for the broker client and `gpu-tenant.yaml`.
+- **Requires `argus-cortex>=0.6.0,<0.7`** (#155). The `[gpu]` and `[server]` extras
+  add cortex's `[remote,yaml]` extras for the broker client and `gpu-tenant.yaml`
+  (`/health` builds the GPU coordinator, so a CPU server set to `broker` needs them).
 - **A same-host write by DNS name is refused unless trusted.** Cortex 0.6's
   write-guard no longer trusts a browser write whose `Origin` matches the `Host`
   by name alone, because under DNS rebinding both carry the attacker's name. IP
