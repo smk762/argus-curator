@@ -23,43 +23,39 @@ argus-cortex's SUITE.md** (a PR to argus-cortex in the same release).
 
 Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
 
-## Layout
+## Must never happen
 
-`src/argus_curator/`:
+Each rule names what enforces it. A new rule nothing checks yet is marked **UNENFORCED** and links the issue that adds its check; it gets a check, not more prose. A rule about code shape (a banned import or API) can be a suite rule in argus-ci's catalogue (smk762/argus-ci#16) instead of a test here.
 
-- `models.py` — Pydantic v2 wire types (`TargetProfile`, `ScanConfig`/`FaceConfig`, `ScanSummary`/`ImageResult`, `ExportRequest`/`ExportResult`, `ManifestRow`). **This is the API contract**: `WIRE_MODELS` + `wire_schema()` back `argus-curator schema` and the committed `schema/curator-wire.schema.json`. `MANIFEST_VERSION` (currently `"2.3"`) versions the JSONL handoff and moves *independently* of the package version.
-- `scanner.py` — the training-suitability engine (ported from imogen). Phase-1 metrics (`_sharpness`, `_artifact_score`, pHash) + target-aware scoring (`_base_score`, `_target_bonus`, `_face_penalty`, `finalize_score`), near-duplicate clustering (`_mark_duplicates`/`_assign_clusters`), threaded orchestration in `scan_items`/`scan_folder`.
-- `prefilter.py` — opt-in `PrefilterConfig` rules (`prefilter:nsfw` / `no-face` / `no-age`) applied in `scan_items` right after identities; dropped rows become rejects that scenes, garments and SingGuard skip.
-- `selection.py` — score-threshold + optional diversity cap (`decide_selection`, `select_diverse`). Nothing is silently dropped: every excluded image gets a `keep_reason`.
-- `export.py` — structure-preserving transfer (copy/symlink/move), basename de-collision (`_plan_dest_paths`), `write_manifest`/`write_report`, optional `_post_manifest_to_lens` handoff.
-- `faces.py` — optional InsightFace detect/embed/cluster into `face_<n>` identities + head-pose bucketing (`classify_pose`). All heavy imports deferred; `import faces` is always safe.
-- `store.py` — `ScanStore`, a flat `<scan_id>.json` cache that makes paginated `GET /scan/{id}` and export-by-id possible. A `<scan_id>.running` marker sits beside a streamed scan's snapshots until it finishes; `create_app` drops any marked scan on start.
-- `cli.py` — Typer app (`scan`, `serve`, `detectors`, `schema`).
-- `server/app.py` — `create_app()`: routes + containment + `argus_cortex` write-guard. Optional `[server]` extra. `POST /faces` is memory-only (no source root); it is the age-check HTTP surface for darkroom.
+| Must never happen | Enforced by |
+|---|---|
+| A `WIRE_MODELS` change merged without regenerating `schema/curator-wire.schema.json` (`make schema`) | `tests/test_schema.py::test_committed_schema_is_current`; CI `argus-curator schema --check` |
+| `model_config = RESPONSE_ONLY` on a model a request carries (the `ScanRequest` configs, `TargetProfile`): a client may omit those defaults | `tests/test_schema.py::test_only_models_no_request_carries_list_their_defaults_as_required` |
+| A manifest row for a file whose transfer failed or was skipped | `tests/test_export.py::test_skipped_sources_are_excluded_from_manifest` |
+| A manifest path consumers must re-derive: `exported_path`/`exported_abs_path` are the de-collided on-disk paths, and under `mode="move"` `abs_path` is the destination (#9) | `tests/test_export.py::test_exported_abs_paths_survive_flattened_de_collision`, `::test_move_manifest_abs_path_points_at_the_moved_file` |
+| A breaking `ManifestRow` change without a `MANIFEST_VERSION` major bump, or any row change without a bump (argus-lens and argus-forge branch on it) | `tests/test_manifest_version.py::test_manifest_version_matches_the_recorded_row` against `schema/manifest-row.snapshot.json`; `make manifest-snapshot` refuses an unbumped or breaking change |
+| A request path escaping `source_root`/`export_root` (scan, thumb, image, upload, export) | `tests/test_server.py::test_*_traversal_blocked` |
+| A cached scan used from outside the source root: the store is data, so `summary.folder` is re-checked | `tests/test_server.py::test_*_rejects_scan_outside_source_root` |
+| `mode="move"` over HTTP without `--allow-move` / `CURATOR_ALLOW_MOVE=1` | `tests/test_server.py::test_export_move_rejected_by_default` |
+| Deleting a source file that isn't under-18 exposed without `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1` | `tests/test_server.py::test_delete_without_the_gate_takes_only_under_18_exposed` |
+| A cross-site write allowed because CORS is open: CORS grants anonymous reads only, and the cortex write-guard gates writes on `Origin` | `tests/test_server.py::test_cors_any_does_not_grant_cross_site_writes` |
+| A local copy of a shared argus-cortex helper (write-guard, `env_flag`, moderation clients, taxonomy, `TargetProfile`) | `tests/test_cortex_reuse.py::test_no_module_redefines_a_cortex_helper` (a module-level name cortex also defines fails unless `_ALLOWED` gives the reason) |
+| An under-18 frame with any reported exposed score kept, whatever the request says | `tests/test_nsfw.py::test_under_18_with_a_reported_exposed_score_is_never_kept`, `::test_frame_rule_is_a_hard_exclusion` |
+| A server that starts with an unknown `minor-exposed` mode (no fallback) | `tests/test_server.py::test_unknown_minor_exposed_mode_refuses_to_start` |
+| A prefiltered image kept or exported | `tests/test_server.py::test_prefiltered_images_are_never_kept_or_exported` |
+| Moderation filters applied to a scan that never ran the check | `tests/test_server.py::test_select_refuses_moderation_filters_on_unchecked_scan` |
+| XMP sidecars writing an age | `tests/test_xmp.py::test_xmp_data_names_only_named_clusters_and_never_writes_age` |
+| `POST /faces` (darkroom's age check) writing anything to disk | `tests/test_server.py::test_faces_returns_estimates_and_writes_nothing` |
+| A config error echoing a URL or path | `tests/test_server.py::test_malformed_nudenet_url_is_refused_without_echoing_it` |
+| Importing NudeNet (AGPL-3.0): it stays a separate server behind `NudeNetClient` | ruff `TID251` banned-api (`pyproject.toml`), run by `make lint` and CI |
 
-## Commands
+## Facts the code doesn't show
 
-```bash
-make dev       # uv venv + editable install with [dev,cli,server]
-make test      # pytest --tb=short -q
-make lint      # ruff check
-make fmt       # ruff format + --fix
-make schema    # regenerate schema/curator-wire.schema.json
-make check     # lint + test + build
-```
-
-Run a single test: `uv run --no-sync pytest tests/test_export.py::test_name -q`.
-
-## Conventions & gotchas
-
-- **The wire schema is checked in CI.** If you touch a `WIRE_MODELS` type in `models.py`, run `argus-curator schema` and commit `schema/curator-wire.schema.json` — `tests/test_schema.py` and CI's `argus-curator schema --check` post-test both fail on drift.
-- **Response-only models carry `model_config = RESPONSE_ONLY`**, so their defaulted fields are required in the schema (the server always sends them). Never put it on a model a request also carries (the `ScanRequest` configs, `TargetProfile`; `EraxConfig` is response-only): a client may omit those fields. `tests/test_schema.py` checks the set, and checks real `/scan`, `/select`, `/export` and manifest payloads carry every required field.
-- **`TargetProfile` is the shared moat.** It is consumed verbatim by argus-lens; keep the taxonomy (`target_style` / `target_backend` / `checkpoint` / `target_category`) in lockstep. Same for `ManifestRow` / `MANIFEST_VERSION` — bump the major only on a breaking row change; consumers (argus-forge, argus-lens) branch on it.
-- **Manifest fidelity is load-bearing.** Rows exist only for files whose transfer *succeeded*; `exported_path`/`exported_abs_path` are the de-collided on-disk locations consumers must use instead of re-deriving from `rel_path`. Under `mode="move"` the source is gone, so `abs_path` is written as the destination (issue #9). Don't regress these.
-- **Server containment — don't loosen it.** Request paths are untrusted: scan/thumb/upload resolve under `source_root`, exports under `export_root` (`_resolve_within` refuses traversal escapes; endpoints 400 when a root is unset). A cached `summary.folder` is re-checked against the source root (`_scan_root_or_400`) because the store is *data*. Destructive `mode="move"` is rejected unless `--allow-move` / `CURATOR_ALLOW_MOVE=1`. Deleting a scanned source file that is not under-18 exposed is rejected (403) unless `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1`. **The CLI is deliberately unconstrained** — it's your own shell.
-- **CORS is not a write boundary.** The `WriteGuard` + `cross_site_refuse` from **argus-cortex** gate cross-site writes on Origin; the wildcard grants anonymous *reads* only. Reuse the shared cortex helpers (write-guard, `env_flag`) rather than re-implementing.
-- **Versioning is git-tag-derived** (`hatch-vcs`). Never hand-edit a version; `src/argus_curator/_version.py` is generated (gitignored). Tag `vX.Y.Z` to release (PyPI via OIDC).
-- `structlog` for logging; Pydantic v2 everywhere; `pytest asyncio_mode = auto`. Ruff line-length 120, `ignore = E501,B008`.
+- **The CLI is deliberately unconstrained**: it's your own shell. Containment and the move/delete gates are the server's.
+- **`MANIFEST_VERSION` moves independently of the package version.** Bump the minor for an additive row change, the major for a breaking one, then `make manifest-snapshot`.
+- **`TargetProfile` and its taxonomy are argus-cortex's** (`argus_cortex.taxonomy`), re-exported from `models.py`. Every stage reads the profile verbatim, so change it in cortex, not here.
+- **Versioning is git-tag-derived** (`hatch-vcs`). Never hand-edit a version; `_version.py` is generated. Tag `vX.Y.Z` to release (PyPI via OIDC).
+- CI (argus-ci's reusable `python-ci.yml`) runs on pushes and PRs to `dev` and `main`: `ruff check`, `ruff format --check`, tests, build and `argus-curator schema --check`. `make check` covers most of that locally; also run `make fmt`.
 
 ## Branches
 

@@ -933,11 +933,9 @@ def schema(
     Run without flags to (re)write the committed schema; run with --check in CI
     to fail if the models have drifted from the committed artifact.
     """
-    import json
+    from argus_curator.models import render_wire_schema
 
-    from argus_curator.models import wire_schema
-
-    rendered = json.dumps(wire_schema(), indent=2, sort_keys=True) + "\n"
+    rendered = render_wire_schema()
 
     if check:
         existing = output.read_text(encoding="utf-8") if output.exists() else ""

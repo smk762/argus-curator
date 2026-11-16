@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-16
+
+### Added
+
+- **`MANIFEST_VERSION` is held to `ManifestRow`** (#168).
+  `schema/manifest-row.snapshot.json` records the row for the current version.
+  A test fails on a breaking change (a field removed, no longer always sent, or
+  retyped; an enum value lost) under the same major, and on any row change
+  without a version bump. `make manifest-snapshot` refreshes the record and
+  refuses both of those.
+- **A test refuses local copies of argus-cortex helpers** (#169). A curator
+  module that defines a name argus-cortex also defines fails, unless the test's
+  allow-list says why it isn't a copy.
+- **CI runs argus-ci's suite rules** (#167): new violations of the suite's
+  lint catalogue fail the build; existing ones are recorded in
+  `.suite-rules-baseline.json`, which may only shrink.
+
+### Changed
+
+- **Requires `argus-cortex>=0.7.0,<0.8`** (#156). 0.7.0 only adds features. It brings
+  `NudeNetClient.info()`, which reports the NudeNet model a server runs (`640m` /
+  `320n`). Curator needs that to re-tune `--nsfw-threshold` when it moves to the
+  shared 640m server.
+- **Importing NudeNet fails lint** (#165). NudeNet is AGPL-3.0 and stays a
+  separate server behind `NudeNetClient`; ruff's `TID251` banned-api now refuses
+  `import nudenet` in `src/` and `tests/`.
+- **`TargetProfile` is argus-cortex's** (#169). Curator kept its own copy of
+  `argus_cortex.taxonomy.TargetProfile`; it now re-exports cortex's. The fields,
+  types and defaults are identical, so the wire schema changes only in the
+  description text. `wire_schema()` and `argus-curator schema` build on
+  cortex's `argus_cortex.wire` helpers, so the output is byte-for-byte the same.
+- CLAUDE.md lists what must never happen and the test, CI job or lint that
+  enforces each rule (#165). Each rule has a check.
+
 ## [0.16.0] - 2026-11-16
 
 ### Added
@@ -977,7 +1011,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/smk762/argus-curator/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/smk762/argus-curator/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/smk762/argus-curator/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/smk762/argus-curator/compare/v0.14.1...v0.15.0
