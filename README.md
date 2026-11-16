@@ -154,7 +154,8 @@ argus-curator serve --cors --port 8101 --source-root /data/images --export-root 
 ```
 
 Scans and exports then run over HTTP (`POST /scan/folder`, `POST /export`);
-see the [HTTP API](docs/http-api.md).
+see the [HTTP API](docs/http-api.md). Each uploaded file is capped at
+`CURATOR_MAX_UPLOAD_MB` (default 50 MiB; a larger one gets 413).
 
 An image with a MiVOLO age under 18 and any exposed nudity score in the frame
 is never kept, whatever the request. `ARGUS_CURATOR_MINOR_EXPOSED=overlap`
@@ -195,7 +196,10 @@ Export writes `manifest.jsonl`, one row per exported image, carrying the
 shared `TargetProfile`, the real exported path, and the primary face's
 measurements. argus-lens batch-captions it with no remapping; set
 `caption_url` on the export request to POST it straight to lens for a
-one-click curate-then-caption run. The rows, their versions (currently 2.3)
+one-click curate-then-caption run. An internal lens (`http://lens:8100/caption`,
+`localhost`, a LAN address) must be listed in `CURATOR_CAPTION_ALLOWED_HOSTS`
+(comma-separated `host` or `host:port`; empty by default, so only public hosts
+are reached), or the export is refused with 400. The rows, their versions (currently 2.3)
 and the rule for consumers (refuse an unknown major) are in the
 [manifest reference](docs/manifest.md).
 

@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **argus-cortex 0.8** (ai-code-auditor#56). Every `argus-cortex` requirement,
+  extras included, is now `>=0.8,<0.9`, and curator adopts its shared `net` and
+  `limits` helpers.
+- **Uploads are capped (`CURATOR_MAX_UPLOAD_MB`, default 50).** `POST /upload`
+  and a multipart `POST /faces` read each file through `limits.read_upload`, and
+  a raw `POST /faces` body through `limits.read_body` (`POST /faces` keeps its
+  64 MiB ceiling). A larger file gets 413 (`POST /upload` saves none of the batch), a
+  malformed `Content-Length` 400. A `CURATOR_MAX_UPLOAD_MB` that is not a
+  positive number stops the server starting.
+- **The export's `caption_url` hand-off uses argus-cortex 0.8's `net.fetch`, and
+  internal hosts must be listed in `CURATOR_CAPTION_ALLOWED_HOSTS`**
+  (comma-separated `host` or `host:port`, the same shape as argus-lens's
+  `LENS_URL_ALLOWED_HOSTS`; empty by default). An export whose `caption_url`
+  names a host that resolves to a non-public address (an internal lens such as
+  `http://lens:8100/caption`, or `localhost`) and isn't listed is refused with
+  400 before anything is transferred. A POST is no longer sent on to a redirect,
+  and the `caption_handoff_failed` log names the host, not the URL. Deployments
+  that hand off to an internal lens need the variable set.
 - **0.2 is the recommended NudeNet exposure threshold** (#156). The new
   `DEFAULT_NSFW_THRESHOLD` (0.2, any exposure NudeNet reports, darkroom's
   default) replaces 0.5 in the CLI scan summary's exposed count, the

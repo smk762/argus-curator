@@ -20,7 +20,9 @@ what changed in each earlier version.
 - With `caption_url` set on the export request, curator also POSTs the file to
   that URL as a multipart upload (field `manifest`, type
   `application/x-ndjson`), for a one-click curate-then-caption run. The
-  response's `captioned` says whether that POST succeeded.
+  response's `captioned` says whether that POST succeeded. An internal host
+  must be listed in `CURATOR_CAPTION_ALLOWED_HOSTS` (see the
+  [HTTP API](http-api.md)).
 
 The file is UTF-8, one row per line, each row a complete JSON object. Rows
 exist only for files whose transfer succeeded: the manifest is a work list,

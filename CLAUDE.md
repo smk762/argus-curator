@@ -46,6 +46,8 @@ Each rule names what enforces it. A new rule nothing checks yet is marked **UNEN
 | Moderation filters applied to a scan that never ran the check | `tests/test_server.py::test_select_refuses_moderation_filters_on_unchecked_scan` |
 | XMP sidecars writing an age | `tests/test_xmp.py::test_xmp_data_names_only_named_clusters_and_never_writes_age` |
 | `POST /faces` (darkroom's age check) writing anything to disk | `tests/test_server.py::test_faces_returns_estimates_and_writes_nothing` |
+| An upload read past `CURATOR_MAX_UPLOAD_MB` (it goes through `argus_cortex.limits`) | `tests/test_paved_roads.py::test_upload_over_the_cap_is_413_and_saves_nothing`, `::test_faces_multipart_over_the_upload_cap_is_413` |
+| The `caption_url` hand-off reaching a non-public host not listed in `CURATOR_CAPTION_ALLOWED_HOSTS`, or logging the full URL (it goes through `argus_cortex.net.fetch`) | `tests/test_paved_roads.py::test_caption_handoff_to_a_private_address_is_refused_without_an_allow_list`, `::test_export_refuses_a_private_caption_url_up_front`, `::test_caption_handoff_logs_the_host_never_the_url` |
 | A config error echoing a URL or path | `tests/test_server.py::test_malformed_nudenet_url_is_refused_without_echoing_it` |
 | Importing NudeNet (AGPL-3.0): it stays a separate server behind `NudeNetClient` | ruff `TID251` banned-api (`pyproject.toml`), run by `make lint` and CI |
 
