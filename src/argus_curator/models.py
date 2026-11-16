@@ -148,6 +148,13 @@ TargetProfile = _CortexTargetProfile
 # lower this.
 MIN_SHORT_SIDE = 512
 
+# The exposed-score threshold to use when filtering nudity (#156): any exposure
+# NudeNet reports at all. It's NudeNet's reporting floor, and darkroom's default.
+# Conservative on purpose: on 640m, a 0.5 cutoff let through exposed images
+# scored 0.27-0.49, and no clean public-domain image scored 0.2 or more. Only a
+# default value: a request that sets no nsfw_threshold still filters nothing.
+DEFAULT_NSFW_THRESHOLD = MIN_REPORTED_SCORE
+
 _INCLUDE_REJECTED_IGNORED = "Ignored: a rejected image is never kept. Accepted so older clients still validate."
 
 

@@ -31,22 +31,33 @@ Ask a server which model it runs with argus-cortex's
 `NudeNetClient(url).info()` (`model`, `resolution`), and record it alongside any
 scores you tune against.
 
-How far apart they are, from 300 random images of an adult test set scored on
-both (2026-11-16, #156):
+### Choosing a threshold
+
+**Use 0.2**, any exposure NudeNet reports (`DEFAULT_NSFW_THRESHOLD`, the same
+default as argus-darkroom). It's conservative on purpose and can drop the odd
+image that isn't exposed; raise it per class with `--nsfw-label` if that bites.
+The CLI's scan summary counts exposed images at 0.2 unless `--nsfw-threshold`
+says otherwise. Curator never filters by default: a request that sets no
+threshold drops nothing for nudity.
+
+How 0.2 was chosen (2026-11-16, #156). 300 random images of an adult test set
+were scored on both models, and the 38 images where they disagreed at 0.5 were
+reviewed by hand:
 
 | | 320n | 640m |
 |---|---|---|
 | Median exposed score | 0.43 | 0.54 |
-| Dropped at the 0.5 default | 133 | 153 |
-| No exposed score (EraX fill-in candidates) | 127 | 119 |
+| Dropped at 0.5 | 133 | 153 |
+| Right on the 38 disagreements | 9 | 30 |
 
-640m is the stricter model: at 0.5 it drops nearly everything 320n drops, plus
-29 more images, mostly on `FEMALE_BREAST_EXPOSED`. Matching 320n's decisions
-would take about 0.59, which would bring back 320n's misses, so the default
-stays 0.5. 640m isn't stricter everywhere: 9 images 320n dropped score under
-0.5 on 640m, 3 of them 0. EraX fills in exactly that case (an exposed score of
-0), so run it beside 640m. These are unlabelled counts, not a measured error
-rate.
+- 640m was right on all 29 images only it dropped: 320n had missed them.
+- Of the 9 only 320n dropped, 8 were exposed. 640m scored them 0.27–0.49 (or 0,
+  where EraX fills in), so a 0.5 cutoff let them through. 0.35 would catch 7,
+  and 0.2 catches all 8.
+- On 300 random public-domain images from argus-quarry's pool, 640m scored none
+  at 0.2 or above, so the lower cutoff cost nothing on clean images there.
+
+Run EraX beside 640m: it fills in where NudeNet reports no exposure at all.
 
 ## Opt-out by default
 
@@ -70,8 +81,8 @@ report has `nsfw_exposed_score` and `nsfw_labels`.
 Filters drop an image when a score is **at or above** its threshold:
 
 ```bash
-# Total: drop anything whose exposed score is 0.5 or more
-argus-curator scan /data/inbox --nsfw-threshold 0.5 --copy-to /data/clean
+# Total: drop any image with a reported exposure (the recommended 0.2)
+argus-curator scan /data/inbox --nsfw-threshold 0.2 --copy-to /data/clean
 
 # Per class, alongside or instead of the total
 argus-curator scan /data/inbox \
