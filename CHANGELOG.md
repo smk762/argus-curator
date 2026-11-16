@@ -7,18 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **Importing NudeNet fails lint** (#165). NudeNet is AGPL-3.0 and stays a
-  separate server behind `NudeNetClient`; ruff's `TID251` banned-api now refuses
-  `import nudenet` in `src/` and `tests/`.
-- **`TargetProfile` is argus-cortex's** (#169). Curator kept its own copy of
-  `argus_cortex.taxonomy.TargetProfile`; it now re-exports cortex's. The fields,
-  types and defaults are identical, so the wire schema changes only in the
-  description text. `wire_schema()` and `argus-curator schema` build on
-  cortex's `argus_cortex.wire` helpers, so the output is byte-for-byte the same.
-- CLAUDE.md lists what must never happen and the test, CI job or lint that
-  enforces each rule (#165). Each rule has a check.
+## [0.17.0] - 2026-11-16
 
 ### Added
 
@@ -31,8 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A test refuses local copies of argus-cortex helpers** (#169). A curator
   module that defines a name argus-cortex also defines fails, unless the test's
   allow-list says why it isn't a copy.
-
-## [0.17.0] - 2026-11-16
+- **CI runs argus-ci's suite rules** (#167): new violations of the suite's
+  lint catalogue fail the build; existing ones are recorded in
+  `.suite-rules-baseline.json`, which may only shrink.
 
 ### Changed
 
@@ -40,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NudeNetClient.info()`, which reports the NudeNet model a server runs (`640m` /
   `320n`). Curator needs that to re-tune `--nsfw-threshold` when it moves to the
   shared 640m server.
+- **Importing NudeNet fails lint** (#165). NudeNet is AGPL-3.0 and stays a
+  separate server behind `NudeNetClient`; ruff's `TID251` banned-api now refuses
+  `import nudenet` in `src/` and `tests/`.
+- **`TargetProfile` is argus-cortex's** (#169). Curator kept its own copy of
+  `argus_cortex.taxonomy.TargetProfile`; it now re-exports cortex's. The fields,
+  types and defaults are identical, so the wire schema changes only in the
+  description text. `wire_schema()` and `argus-curator schema` build on
+  cortex's `argus_cortex.wire` helpers, so the output is byte-for-byte the same.
+- CLAUDE.md lists what must never happen and the test, CI job or lint that
+  enforces each rule (#165). Each rule has a check.
 
 ## [0.16.0] - 2026-11-16
 
