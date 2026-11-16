@@ -1,0 +1,15 @@
+{
+ "version": 1,
+ "tools": {
+  "ruff": "0.15.16",
+  "semgrep": "1.180.0"
+ },
+ "entries": [
+  {
+   "rule": "silent-except",
+   "path": "src/argus_curator/crops.py",
+   "text": "except Exception: # pragma: no cover - older Pillow",
+   "count": 1
+  }
+ ]
+}
