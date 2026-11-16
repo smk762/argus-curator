@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Requires `argus-cortex>=0.7.0,<0.8`** (#156). 0.7.0 only adds features. It brings
+  `NudeNetClient.info()`, which reports the NudeNet model a server runs (`640m` /
+  `320n`). Curator needs that to re-tune `--nsfw-threshold` when it moves to the
+  shared 640m server.
+
 ## [0.16.0] - 2026-11-16
 
 ### Added
