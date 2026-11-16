@@ -40,7 +40,6 @@ except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
 import structlog
-from argus_cortex.gpu import GpuLeaseRefused, GpuLeaseTimeout
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -67,7 +66,7 @@ from argus_curator.models import (
     SelectResult,
     SelectRow,
 )
-from argus_curator.runtime import ModelUnavailable, gpu_coordinator
+from argus_curator.runtime import GPU_UNAVAILABLE, ModelUnavailable, gpu_coordinator
 from argus_curator.scenes import scenes_available
 from argus_curator.selection import (
     decide_selection,
@@ -309,6 +308,16 @@ _FACES_CONCURRENCY = 2
 _FACES_LEASE_WAIT_S = 30.0
 
 
+def _env_list(name: str) -> list[str]:
+    """The comma-separated values of env var *name*, stripped; empty when unset."""
+    return [v.strip() for v in os.environ.get(name, "").split(",") if v.strip()]
+
+
+def _gpu_unavailable(exc: Exception) -> HTTPException:
+    """The 503 for a GPU lease that was not granted (timed out, or refused by the broker)."""
+    return HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"})
+
+
 def _faces_from_bytes(data: bytes, body: bool = False) -> dict[str, Any]:
     """MiVOLO estimates for every face in *data*. Writes nothing.
 
@@ -343,8 +352,8 @@ def _faces_from_bytes(data: bytes, body: bool = False) -> dict[str, Any]:
             strict=True,
             lease_wait_s=_FACES_LEASE_WAIT_S,
         )
-    except (GpuLeaseTimeout, GpuLeaseRefused) as exc:
-        raise HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"}) from exc
+    except GPU_UNAVAILABLE as exc:
+        raise _gpu_unavailable(exc) from exc
     except (FacesUnavailable, ModelUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -408,8 +417,8 @@ def create_app(
         version=__version__,
     )
 
-    if cors_origins is None and (env_origins := os.environ.get("CURATOR_CORS_ORIGINS")):
-        cors_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+    if cors_origins is None:
+        cors_origins = _env_list("CURATOR_CORS_ORIGINS") or None
 
     # A literal wildcard is only honoured by browsers without credentials; with
     # allow_credentials=True Starlette reflects any Origin back, which defeats
@@ -445,7 +454,7 @@ def create_app(
     # both Origin and Host. A server reached by a DNS name (a UI proxied onto
     # http://morpheus:8101) lists that name in CURATOR_TRUSTED_HOSTS.
     if trusted_hosts is None:
-        trusted_hosts = [h.strip() for h in os.environ.get("CURATOR_TRUSTED_HOSTS", "").split(",") if h.strip()]
+        trusted_hosts = _env_list("CURATOR_TRUSTED_HOSTS")
     app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins, trusted_hosts))
 
     if cors or cors_origins or cors_allow_any:
@@ -793,8 +802,8 @@ def create_app(
             return summary
         except scanner.ScanCancelled as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except (GpuLeaseTimeout, GpuLeaseRefused) as exc:
-            raise HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"}) from exc
+        except GPU_UNAVAILABLE as exc:
+            raise _gpu_unavailable(exc) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
         finally:
@@ -865,7 +874,7 @@ def create_app(
             except scanner.ScanCancelled:
                 drop_snapshots()
                 events.put(("cancelled", {"scan_id": scan_id}))
-            except (GpuLeaseTimeout, GpuLeaseRefused) as exc:
+            except GPU_UNAVAILABLE as exc:
                 drop_snapshots()
                 events.put(("error", {"detail": f"GPU busy: {exc}", "retry_after": 5}))
             except Exception as exc:  # surface as a stream error, not a 500
@@ -1017,7 +1026,7 @@ def create_app(
         missing = [path for path in paths if path not in by_path]
         if missing:
             raise HTTPException(status_code=404, detail=f"not in scan: {missing[0]}")
-        if not allow_delete and not all(minor_exposed(by_path[path]) for path in paths):
+        if not allow_delete and not all(minor_exposed(by_path[path], minor_rule) for path in paths):
             raise HTTPException(
                 status_code=403,
                 detail=(
@@ -1099,7 +1108,7 @@ def create_app(
         if scan_id:
             summary = store.load(scan_id)
             match = next((r for r in summary.results if r.rel_path == path), None) if summary else None
-            if match is not None and minor_exposed(match):
+            if match is not None and minor_exposed(match, minor_rule):
                 raise HTTPException(status_code=403, detail="This image stays blurred.")
         target = _image_file(path, scan_id)
         return FileResponse(target, media_type=_IMAGE_TYPES[target.suffix.lower()])

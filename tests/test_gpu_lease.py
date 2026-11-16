@@ -119,6 +119,17 @@ def test_wait_s_caps_a_broker_lease_and_its_fallback(tmp_path: Path) -> None:
     assert broker.timeout_s == 600 and broker.fallback is fallback  # the shared coordinator is untouched
 
 
+def test_capped_broker_is_built_once_per_cap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """POST /faces reuses one capped copy, so it keeps its broker registration between calls."""
+    fallback = LeaseCoordinator(lock_path=str(tmp_path / "gpu.lock"), timeout_s=300, probe=lambda d: None)
+    broker = BrokerCoordinator("http://iris:8120", tenant="argus-curator", fallback=fallback, timeout_s=600)
+    monkeypatch.setattr(runtime, "_coordinator", broker)
+    monkeypatch.setattr(runtime, "_capped_cache", {})
+    first = runtime._capped_coordinator(30)
+    assert first is not broker and runtime._capped_coordinator(30) is first
+    assert runtime._capped(broker, 900) is broker  # a cap above both waits changes nothing
+
+
 def test_coordinator_comes_from_the_environment_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(runtime, "_coordinator", None)
     monkeypatch.setenv("ARGUS_GPU_COORDINATOR", "lease")

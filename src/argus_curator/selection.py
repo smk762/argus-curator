@@ -183,7 +183,6 @@ def minor_exposed(result: ImageResult, mode: MinorExposedMode | None = None) -> 
     closed: a young face with no person box, or a young age with no box to
     place it, flags any exposure.
     """
-    mode = minor_exposed_mode() if mode is None else check_minor_exposed_mode(mode)
     if result.nsfw is None or not is_exposed(result):
         return False
     face_years = [_mivolo_years(face.attributes) for face in result.faces]
@@ -191,6 +190,9 @@ def minor_exposed(result: ImageResult, mode: MinorExposedMode | None = None) -> 
     years.extend(person.age_years for person in result.people)
     if not any(_young_mivolo(age) for age in years):
         return False
+    # Resolved only for a young, exposed frame: the per-image selection loops
+    # do not read the environment for every other row.
+    mode = minor_exposed_mode() if mode is None else check_minor_exposed_mode(mode)
     if mode == "frame":
         return True
     if result.people:

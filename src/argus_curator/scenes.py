@@ -23,12 +23,12 @@ from pathlib import Path
 
 import numpy as np
 import structlog
-from argus_cortex.gpu import GpuLeaseRefused, GpuLeaseTimeout
 from PIL import Image
 
 from argus_curator._places365_labels import CATEGORIES, OUTDOOR
 from argus_curator.models import ImageResult, SceneConfig, SceneLabel, SceneTags
 from argus_curator.runtime import (
+    GPU_UNAVAILABLE,
     IMAGENET_MEAN,
     IMAGENET_STD,
     MODEL_DIR,
@@ -152,7 +152,7 @@ def tag_images(
             try:
                 with gpu_lease(cfg.device, "scenes"):
                     probs = predict(session, [im for _r, im in batch])
-            except (GpuLeaseTimeout, GpuLeaseRefused):
+            except GPU_UNAVAILABLE:
                 raise  # no GPU slot is not a bad batch: fail the scan, do not skip the images
             except Exception as exc:
                 logger.warning("scene_batch_failed", first=batch[0][0].rel_path, error=str(exc))
