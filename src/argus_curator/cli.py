@@ -224,7 +224,9 @@ def scan(
         help="Watermark detector origin, e.g. http://watermark:8080 (ARGUS_CURATOR_WATERMARK_URL)",
     ),
     nsfw_threshold: float | None = Option(
-        None, "--nsfw-threshold", help="Drop images whose exposed-nudity score is at or above this (0.2..1)"
+        None,
+        "--nsfw-threshold",
+        help="Drop images whose exposed-nudity score is at or above this (0.2..1; 0.2, any reported exposure, is recommended)",
     ),
     nsfw_label_thresholds: str | None = Option(
         None,
@@ -332,6 +334,7 @@ def scan(
 
     from argus_curator.export import export_selection
     from argus_curator.models import (
+        DEFAULT_NSFW_THRESHOLD,
         CropConfig,
         ExportRequest,
         FaceConfig,
@@ -649,7 +652,7 @@ def scan(
         scored = [r for r in summary.results if r.nsfw is not None]
         checked = [r for r in scored if not r.nudenet_failed]
         # Count against the threshold the export will apply, over its classes.
-        at = export_req.nsfw_threshold if export_req.nsfw_threshold is not None else 0.5
+        at = export_req.nsfw_threshold if export_req.nsfw_threshold is not None else DEFAULT_NSFW_THRESHOLD
         exposed = sum(1 for r in scored if nsfw_mod.exposed_score(r.nsfw.labels, export_req.nsfw_exposed_labels) >= at)
         # A rejected frame is not sent, so its missing score is no failure.
         unchecked = sum(1 for r in summary.results if r.passed and (r.nsfw is None or r.nudenet_failed))

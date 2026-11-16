@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **0.2 is the recommended NudeNet exposure threshold** (#156). The new
+  `DEFAULT_NSFW_THRESHOLD` (0.2, any exposure NudeNet reports, darkroom's
+  default) replaces 0.5 in the CLI scan summary's exposed count, the
+  `--nsfw-threshold` help and `docs/nudity.md`. On 640m a 0.5 cutoff let
+  through exposed images scored 0.27–0.49, and in a hand review 640m was right
+  on 30 of the 38 images it and 320n disagreed on. Curator still filters
+  nothing unless a request sets a threshold.
+
 ### Fixed
 
 - **`ARGUS_CURATOR_ERAX_URL` and `ARGUS_CURATOR_WATERMARK_URL` reach the
