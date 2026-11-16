@@ -64,6 +64,11 @@ services:
       # DNS names a browser UI reaches curator by (comma-separated), whose
       # same-host writes the write-guard allows. IPs and localhost need none.
       - CURATOR_TRUSTED_HOSTS=${CURATOR_TRUSTED_HOSTS-}
+      # Largest single uploaded file in MiB (POST /upload, a multipart POST /faces); empty = 50.
+      - CURATOR_MAX_UPLOAD_MB=${CURATOR_MAX_UPLOAD_MB-}
+      # Internal hosts an export's caption_url may name (host or host:port, comma-separated),
+      # e.g. lens:8100. Empty: only hosts with public addresses are reached.
+      - CURATOR_CAPTION_ALLOWED_HOSTS=${CURATOR_CAPTION_ALLOWED_HOSTS-}
     volumes:
       # Dataset mount the curator scans and serves /thumb from.
       - ${CURATOR_SOURCE_PATH:-./data}:/data/images

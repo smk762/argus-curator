@@ -11,12 +11,14 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import shutil
 import unicodedata
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 import structlog
 from argus_cortex.moderation import rule_letter
@@ -43,6 +45,8 @@ ProgressFn = Callable[[dict[str, Any]], None]
 MANIFEST_NAME = "manifest.jsonl"
 REPORT_NAME = "curation_report.csv"
 RUN_STATS_NAME = "run_stats.json"
+# Internal hosts the export's caption_url hand-off may reach (see caption_allowed_hosts).
+CAPTION_HOSTS_ENV = "CURATOR_CAPTION_ALLOWED_HOSTS"
 
 # The XMP namings, the one to merge into first (see _source_sidecar).
 _XMP_NAMES: tuple[Callable[[Path], Path], ...] = (
@@ -547,25 +551,61 @@ def write_source_sidecars(results: list[ImageResult], face_names: dict[str, str]
     return written
 
 
+def caption_allowed_hosts() -> list[str]:
+    """``CURATOR_CAPTION_ALLOWED_HOSTS``: the internal hosts a ``caption_url`` may name.
+
+    Comma-separated ``host`` or ``host:port`` entries (an internal lens such as
+    ``lens:8100``). Empty by default, so only hosts resolving to public addresses
+    are reached. Read on every call, so a test or a restart picks up a change.
+    """
+    return [v.strip() for v in os.environ.get(CAPTION_HOSTS_ENV, "").split(",") if v.strip()]
+
+
+def caption_host(caption_url: str) -> str:
+    """The host of *caption_url* for logs and messages: never the full URL, which may carry credentials."""
+    try:
+        return urlsplit(caption_url).hostname or "?"
+    except ValueError:
+        return "?"
+
+
 def _post_manifest_to_lens(manifest_path: Path, caption_url: str) -> bool:
-    """Optionally POST the manifest to argus-lens for a one-click curate->caption run."""
+    """Optionally POST the manifest to argus-lens for a one-click curate->caption run.
+
+    Sent through :func:`argus_cortex.net.fetch`, which reaches a non-public
+    address only for a host in ``CURATOR_CAPTION_ALLOWED_HOSTS`` and never
+    re-sends the POST to a redirect. Any refusal or failure is logged (host
+    only) and returns False: the export itself has already succeeded.
+    """
     try:
         import httpx
+        from argus_cortex.net import fetch
     except Exception:
         logger.warning("caption_handoff_skipped", reason="httpx not installed")
         return False
+    host = caption_host(caption_url)
     try:
-        with manifest_path.open("rb") as f:
-            resp = httpx.post(
-                caption_url,
-                files={"manifest": (MANIFEST_NAME, f, "application/x-ndjson")},
-                timeout=30.0,
-            )
-        resp.raise_for_status()
-        return True
+        # httpx encodes the multipart body; fetch sends it.
+        encoded = httpx.Request(
+            "POST",
+            "http://encode.invalid/",
+            files={"manifest": (MANIFEST_NAME, manifest_path.read_bytes(), "application/x-ndjson")},
+        )
+        reply = fetch(
+            caption_url,
+            method="POST",
+            content=encoded.read(),
+            headers={"Content-Type": encoded.headers["Content-Type"]},
+            allow_hosts=caption_allowed_hosts(),
+            timeout=30.0,
+        )
     except Exception as exc:
-        logger.warning("caption_handoff_failed", url=caption_url, error=str(exc))
+        logger.warning("caption_handoff_failed", host=host, error=str(exc))
         return False
+    if not reply.ok:
+        logger.warning("caption_handoff_failed", host=host, error=f"{host} answered {reply.status}")
+        return False
+    return True
 
 
 def export_selection(

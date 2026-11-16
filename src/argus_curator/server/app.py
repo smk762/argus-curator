@@ -33,6 +33,8 @@ try:
     # behind its own [server] extra, so a stale cortex fails here too and must get the
     # same actionable message rather than a bare ModuleNotFoundError naming a package
     # the user never installed directly.
+    from argus_cortex.limits import BadInput, TooLarge, read_body, read_upload
+    from argus_cortex.net import UrlRefused, check_url
     from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
     from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
     from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -308,6 +310,28 @@ _FACES_CONCURRENCY = 2
 _FACES_LEASE_WAIT_S = 30.0
 
 
+# Largest single uploaded file (POST /upload, a multipart POST /faces), in MiB.
+_MAX_UPLOAD_ENV = "CURATOR_MAX_UPLOAD_MB"
+_MAX_UPLOAD_MB_DEFAULT = 50
+
+
+def _max_upload_bytes() -> int:
+    """The per-file upload cap from ``CURATOR_MAX_UPLOAD_MB`` (default 50), in bytes.
+
+    A value that is not a positive number fails the start rather than falling back.
+    """
+    raw = os.environ.get(_MAX_UPLOAD_ENV, "").strip()
+    if not raw:
+        return _MAX_UPLOAD_MB_DEFAULT * 1024 * 1024
+    try:
+        mb = float(raw)
+    except ValueError:
+        mb = 0.0
+    if not mb > 0 or mb == float("inf"):
+        raise ValueError(f"{_MAX_UPLOAD_ENV} must be a positive number of MiB")
+    return int(mb * 1024 * 1024)
+
+
 def _env_list(name: str) -> list[str]:
     """The comma-separated values of env var *name*, stripped; empty when unset."""
     return [v.strip() for v in os.environ.get(name, "").split(",") if v.strip()]
@@ -485,6 +509,7 @@ def create_app(
     # Fails the start on an unknown ARGUS_CURATOR_MINOR_EXPOSED, rather than a
     # first selection or delete: never a silent fallback to another rule.
     minor_rule = minor_exposed_mode()
+    max_upload = _max_upload_bytes()
     if allow_delete is None:
         # Two flags, either one enough: devmode is the broad "this is my own
         # box" switch, allow-delete the narrow one for a deployment.
@@ -596,28 +621,29 @@ def create_app(
                 faces_in_flight -= 1
 
     async def _faces(request: Request, body: bool) -> dict[str, Any]:
-        too_large = HTTPException(status_code=413, detail=f"image larger than {_FACES_MAX_BYTES} bytes")
+        # The upload cap applies here too; _FACES_MAX_BYTES stays the route's ceiling.
+        cap = min(_FACES_MAX_BYTES, max_upload)
         try:
-            declared = int(request.headers.get("content-length") or 0)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="bad Content-Length") from None
-        if declared > _FACES_MAX_BYTES:
-            raise too_large
-        content_type = (request.headers.get("content-type") or "").lower()
-        if content_type.startswith("multipart/"):
-            # The context manager closes the parsed parts (and any spooled temp file).
-            async with request.form() as form:
-                upload = next((v for v in form.values() if hasattr(v, "read")), None)
-                if upload is None:
-                    raise HTTPException(status_code=400, detail="no image")
-                data = await upload.read()  # type: ignore[union-attr]
-        else:
-            buf = bytearray()
-            async for chunk in request.stream():
-                buf += chunk
-                if len(buf) > _FACES_MAX_BYTES:
-                    raise too_large
-            data = bytes(buf)
+            content_type = (request.headers.get("content-type") or "").lower()
+            if content_type.startswith("multipart/"):
+                # Refused by its declared length before parsing; the file is then read up to the cap.
+                declared = (request.headers.get("content-length") or "").strip()
+                if declared and not (declared.isascii() and declared.isdigit()):
+                    raise BadInput("Content-Length is not a number")
+                if declared and int(declared) > cap:
+                    raise TooLarge("image", cap)
+                # The context manager closes the parsed parts (and any spooled temp file).
+                async with request.form() as form:
+                    upload = next((v for v in form.values() if hasattr(v, "read")), None)
+                    if upload is None:
+                        raise HTTPException(status_code=400, detail="no image")
+                    data = await read_upload(upload, cap, what="image")
+            else:
+                data = await read_body(request, cap, what="image")
+        except TooLarge as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from None
+        except BadInput as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
         return await asyncio.to_thread(_faces_from_bytes, data, body)
 
     @app.get("/guard/policies")
@@ -1129,6 +1155,15 @@ def create_app(
         rel = "" if rel == "." else rel
         await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
 
+        # Refused before anything is saved when the parser already knows a file is over the cap;
+        # read_upload below is the guard for any it doesn't.
+        for item in files:
+            if isinstance(item.size, int) and item.size > max_upload:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{Path(item.filename or '').name or 'upload'} is larger than {max_upload} bytes",
+                )
+
         saved = 0
         skipped: list[str] = []
         errors: list[dict[str, str]] = []
@@ -1145,7 +1180,12 @@ def create_app(
                 skipped.append(name)
                 continue
             try:
-                data = await item.read()
+                data = await read_upload(item, max_upload, what=name)
+            except TooLarge as exc:
+                raise HTTPException(status_code=413, detail=str(exc)) from None
+            except BadInput as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            try:
                 await asyncio.to_thread(dest.write_bytes, data)
                 saved += 1
             except OSError as exc:
@@ -1199,6 +1239,24 @@ def create_app(
         dest = _resolve_within(root, req.dest)
         return summary, req.model_copy(update={"dest": str(dest)})
 
+    async def _check_caption_url(req: ExportRequest) -> None:
+        """Refuse (400) a ``caption_url`` the hand-off would refuse, before the export runs.
+
+        The same check :func:`argus_cortex.net.fetch` makes when the manifest is
+        sent (which checks again then): a host that resolves to a non-public
+        address must be listed in ``CURATOR_CAPTION_ALLOWED_HOSTS``. The detail
+        names the host only, never the URL.
+        """
+        if not (req.caption_url and req.write_manifest):
+            return
+        try:
+            await asyncio.to_thread(check_url, req.caption_url, allow_hosts=export.caption_allowed_hosts())
+        except UrlRefused as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"caption_url refused: {exc} (an internal host must be listed in {export.CAPTION_HOSTS_ENV})",
+            ) from None
+
     def _drop_moved(summary: ScanSummary, moved: list[str]) -> None:
         """After a move export, drop the moved images from the cached scan, as delete does.
 
@@ -1238,6 +1296,7 @@ def create_app(
     @app.post("/export", response_model=ExportResult)
     async def run_export(req: ExportRequest) -> ExportResult:
         summary, req = _validate_export(req)
+        await _check_caption_url(req)
         try:
             return await asyncio.to_thread(_export_and_drop, summary, req)
         except Exception as exc:
@@ -1252,6 +1311,7 @@ def create_app(
         ExportResult, or ``event: error``.
         """
         summary, req = _validate_export(req)
+        await _check_caption_url(req)
 
         events: queue.Queue[tuple[str, Any]] = queue.Queue()
         _DONE = "__done__"
