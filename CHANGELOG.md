@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Importing NudeNet fails lint** (#165). NudeNet is AGPL-3.0 and stays a
+  separate server behind `NudeNetClient`; ruff's `TID251` banned-api now refuses
+  `import nudenet` in `src/` and `tests/`.
+- CLAUDE.md lists what must never happen and the test, CI job or lint that
+  enforces each rule. The two unenforced rules link to #168 and #169 (#165).
+
 ## [0.17.0] - 2026-11-16
 
 ### Changed
