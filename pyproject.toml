@@ -135,5 +135,10 @@ target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "TID251"]
 ignore = ["E501", "B008"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# NudeNet is AGPL-3.0: it runs as a separate server (argus-retina) and curator only talks to it over HTTP,
+# through argus_cortex.moderation.NudeNetClient. Importing it would pull AGPL code into this package.
+"nudenet".msg = "NudeNet is AGPL-3.0; call the NudeNet server through argus_cortex.moderation.NudeNetClient instead."
