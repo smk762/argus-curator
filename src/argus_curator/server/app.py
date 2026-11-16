@@ -388,6 +388,7 @@ def create_app(
     export_root: str | None = None,
     allow_move: bool | None = None,
     allow_delete: bool | None = None,
+    trusted_hosts: list[str] | None = None,
 ) -> FastAPI:
     """Create the curator FastAPI application.
 
@@ -398,6 +399,12 @@ def create_app(
     rejected unless *allow_move* is enabled. ``POST /scan/{id}/delete`` takes
     any image in the scan only with *allow_delete* (``CURATOR_ALLOW_DELETE=1``
     or ``CURATOR_DEVMODE=1``); without it, only an under-18 exposed image.
+
+    A browser page served from this server's own host:port may write when that
+    host is an IP literal or ``localhost``. A server reached by a DNS name
+    (``http://morpheus:8101``) must name it in *trusted_hosts* (or
+    ``CURATOR_TRUSTED_HOSTS``, comma-separated host names, no port): a bare
+    hostname match is what DNS rebinding forges.
     """
     app = FastAPI(
         title="Argus Curator",
@@ -407,6 +414,8 @@ def create_app(
 
     if cors_origins is None and (env_origins := os.environ.get("CURATOR_CORS_ORIGINS")):
         cors_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+    if trusted_hosts is None:
+        trusted_hosts = [h.strip() for h in os.environ.get("CURATOR_TRUSTED_HOSTS", "").split(",") if h.strip()]
 
     # A literal wildcard is only honoured by browsers without credentials; with
     # allow_credentials=True Starlette reflects any Origin back, which defeats
@@ -436,7 +445,8 @@ def create_app(
     # but the guard refuses the write: the page gets a readable 403 rather than
     # an opaque CORS error. For a non-allow-listed origin CORS correctly adds
     # nothing — it must not advertise itself to an origin it does not trust.
-    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins))
+    # A same-host Origin by DNS name passes only when it is in trusted_hosts.
+    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins, trusted_hosts))
 
     if cors or cors_origins or cors_allow_any:
         from fastapi.middleware.cors import CORSMiddleware

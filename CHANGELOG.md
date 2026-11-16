@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Requires `argus-cortex>=0.6,<0.7`** (part of #155). The `[gpu]` extra adds
+  cortex's `[remote]` (the argus-iris broker client, for
+  `ARGUS_GPU_COORDINATOR=broker`) and `[yaml]` (a tenant manifest). Consumers
+  that pin curator, such as argus-darkroom's `[age]` extra, can now move to
+  cortex 0.6. Cortex 0.6 changes two things curator users may notice:
+  - **A same-host write by DNS name is refused** (DNS rebinding). A page served
+    from curator's own host:port may write only when that host is an IP
+    address or `localhost`, or is listed in the new `CURATOR_TRUSTED_HOSTS`
+    (comma-separated host names, no port; `create_app(trusted_hosts=...)`).
+    Compose passes it through.
+  - SingGuard refuses a multi-frame image (animated GIF/WebP/APNG, multi-page
+    TIFF) instead of judging its first frame. A scan records that image's
+    guard check as failed, as for any other failed check.
+  The wire schema is unchanged.
+
 - **The under-18 rule now covers the whole frame by default.** `minor-exposed`
   used to flag an image only when the exposure overlapped a young person's box
   (or no box at all). It now flags any image where MiVOLO reads a face or body

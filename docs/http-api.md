@@ -36,7 +36,10 @@ browsers deliver with no preflight — so state-changing requests are additional
 gated on `Origin`: it must be absent (curl, the CLI, server-to-server),
 same-origin, or on the allow-list, else 403. `--cors-any` therefore permits
 anonymous reads from anywhere but no cross-site writes; name an origin with
-`--cors-origin` to let it write.
+`--cors-origin` to let it write. Same-origin counts only when the host is an IP
+address or `localhost`: a server reached by a DNS name (`http://morpheus:8101`)
+must list that name in `CURATOR_TRUSTED_HOSTS` (comma-separated host names, no
+port), because a bare hostname match is what DNS rebinding forges.
 
 ## Routes
 

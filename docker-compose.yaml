@@ -15,6 +15,10 @@ services:
       - HF_HOME=/root/.cache/huggingface
       # Browser origins allowed to call the API (defaults to localhost:3000).
       # - CURATOR_CORS_ORIGINS=https://studio.example.com
+      # Host names (no port) curator is reached by, e.g. morpheus. A page served
+      # from curator's own host:port may write only when that host is an IP,
+      # localhost, or listed here (DNS rebinding guard).
+      - CURATOR_TRUSTED_HOSTS=${CURATOR_TRUSTED_HOSTS:-}
       # Face-attribute ONNX models (see `argus-curator fairface-convert` / `mivolo-convert`).
       - ARGUS_CURATOR_FAIRFACE_MODEL=/root/.cache/argus_curator/models/fairface_res34_race7.onnx
       - ARGUS_CURATOR_MIVOLO_MODEL=/root/.cache/argus_curator/models/mivolo_v2_d1_384.onnx

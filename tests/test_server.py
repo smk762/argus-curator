@@ -1003,9 +1003,26 @@ def test_upload_from_allowlisted_origin_works(tmp_path: Path) -> None:
     assert (root / "uploads" / "evil.png").is_file()
 
 
-def test_upload_from_same_origin_works(upload_setup: tuple[TestClient, Path]) -> None:
-    """A UI proxied onto this host is same-origin and needs no allow-list entry."""
-    client, root = upload_setup
+def test_upload_from_same_origin_by_ip_or_localhost_works(tmp_path: Path) -> None:
+    """A UI proxied onto this host, reached by IP or localhost, needs no allow-list entry."""
+    root = tmp_path / "mount"
+    root.mkdir()
+    app = create_app(cache_dir=str(tmp_path / "cache"), source_root=str(root))
+    for host in ("127.0.0.1:8101", "localhost:8101"):
+        client = TestClient(app, base_url=f"http://{host}")
+        resp = _upload(client, headers={"Origin": f"http://{host}"})
+        assert resp.status_code == 200, host  # type: ignore[attr-defined]
+
+
+def test_upload_from_same_host_by_dns_name_needs_trusted_hosts(tmp_path: Path, monkeypatch) -> None:
+    """A bare hostname match is what DNS rebinding forges (argus-cortex 0.6): it must be named."""
+    root = tmp_path / "mount"
+    root.mkdir()
+    refused = TestClient(create_app(cache_dir=str(tmp_path / "cache"), source_root=str(root)))
+    assert _upload(refused, headers={"Origin": "http://testserver"}).status_code == 403  # type: ignore[attr-defined]
+
+    monkeypatch.setenv("CURATOR_TRUSTED_HOSTS", " testserver , morpheus ")
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache"), source_root=str(root)))
     resp = _upload(client, headers={"Origin": "http://testserver"})
     assert resp.status_code == 200  # type: ignore[attr-defined]
     assert (root / "uploads" / "evil.png").is_file()
