@@ -615,7 +615,9 @@ def scan_items(
         return [results_by_rel[rel] for rel, _, _ in items if rel in results_by_rel]
 
     # Whether each opt-out check actually ran, read when a snapshot is saved.
-    ran = {"nsfw": False, "erax": False, "guard": False}
+    ran = {"nsfw": False, "erax": False, "guard": False, "guard_fell_back": False}
+    # The SingGuard mode the scan asks for, recorded with its guard_config.
+    guard_mode = guard_mod.thinking() if guard_mod.resolve_enabled(guard_cfg) else None
     # The set age given to the frames with no face, or why none was, and why
     # FaceConfig.reference_paths gave no reference distances.
     # Until the identities phase a saved snapshot says the age is still to come.
@@ -652,7 +654,13 @@ def scan_items(
             garments_config=garment_cfg,
             nsfw_config=NsfwConfig(enabled=nsfw_ran),
             erax_config=EraxConfig(enabled=erax_ran),
-            guard_config=guard_cfg.model_copy(update={"enabled": guard_ran}),
+            guard_config=guard_cfg.model_copy(
+                update={
+                    "enabled": guard_ran,
+                    "thinking": guard_mode if guard_ran else None,
+                    "fell_back": ran["guard_fell_back"] if guard_ran else None,
+                }
+            ),
             prefilter_config=prefilter_cfg,
             crop_config=crop_cfg,
             total=total,
@@ -1001,6 +1009,7 @@ def scan_items(
             guard_cfg,
             progress=(lambda phase_done, phase_total: emit("guard", phase_done, phase_total)) if progress else None,
             on_done=on_guard,
+            on_fall_back=lambda: ran.__setitem__("guard_fell_back", True),
         )
     finally:
         finish("guard")

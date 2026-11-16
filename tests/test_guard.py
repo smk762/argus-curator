@@ -71,6 +71,8 @@ def _png(red: int, size: tuple[int, int] = (64, 48)) -> bytes:
 
 class _SingGuard(BaseHTTPRequestHandler):
     seen: list[dict] = []
+    # Modes this server answers 400 to, as a stock SingGuard server does slow and cascade.
+    refuse: frozenset[str] = frozenset()
 
     def log_message(self, *args) -> None:  # keep test output quiet
         pass
@@ -83,6 +85,10 @@ class _SingGuard(BaseHTTPRequestHandler):
             {"path": self.path, "size": image.size, **{k: v for k, v in body.items() if k != "image_base64"}}
         )
         policy = body.get("policy") or ""
+        if body.get("thinking") in type(self).refuse:
+            self.send_response(400)
+            self.end_headers()
+            return
         # The cautious policy's check of the cat fails, so one variant verdict goes missing.
         if red == _FAIL or (red == 10 and policy == guard.ADULT_CAUTIOUS_POLICY):
             self.send_response(500)
@@ -102,6 +108,7 @@ class _SingGuard(BaseHTTPRequestHandler):
 @pytest.fixture
 def singguard(monkeypatch: pytest.MonkeyPatch) -> Iterator[type[_SingGuard]]:
     _SingGuard.seen = []
+    _SingGuard.refuse = frozenset()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _SingGuard)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -568,6 +575,31 @@ def test_scan_runs_singguard_when_configured(singguard: type[_SingGuard]) -> Non
     )
     assert opted_out.guard_config.enabled is False
     assert all(r.guard is None for r in opted_out.results)
+    assert opted_out.guard_config.thinking is None and opted_out.guard_config.fell_back is None
+
+
+@pytest.mark.parametrize("mode", ["cascade", "fast"])
+def test_a_scan_records_the_mode_it_asked_for(
+    singguard: type[_SingGuard], monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Cascade reports every unescalated verdict as fast, so only guard_config tells the scans apart."""
+    monkeypatch.setenv(guard.THINKING_ENV, mode)
+    items = [("b.png", "/d/b", _png(10, (600, 600)))]
+    sent = GuardConfig(thinking="slow", fell_back=True)  # a request's values are replaced, never used
+    summary = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), guard_cfg=sent)
+    assert summary.guard_config.thinking == mode and summary.guard_config.fell_back is False
+    assert {s["thinking"] for s in singguard.seen} == {mode}
+
+
+def test_a_scan_that_fell_back_still_records_the_mode_it_asked_for(
+    singguard: type[_SingGuard], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(guard.THINKING_ENV, "cascade")
+    singguard.refuse = frozenset({"cascade", "slow"})
+    items = [("a.png", "/d/a", _png(20, (600, 600))), ("b.png", "/d/b", _png(10, (600, 600)))]
+    summary = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig())
+    assert summary.guard_config.thinking == "cascade" and summary.guard_config.fell_back is True
+    assert {r.guard.thinking for r in summary.results} == {"fast"}  # what judged each frame
 
 
 # ---------------------------------------------------------------------------

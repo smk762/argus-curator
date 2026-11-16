@@ -40,7 +40,7 @@ except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
 import structlog
-from argus_cortex.gpu import GpuLeaseTimeout
+from argus_cortex.gpu import GpuLeaseRefused, GpuLeaseTimeout
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -343,7 +343,7 @@ def _faces_from_bytes(data: bytes, body: bool = False) -> dict[str, Any]:
             strict=True,
             lease_wait_s=_FACES_LEASE_WAIT_S,
         )
-    except GpuLeaseTimeout as exc:
+    except (GpuLeaseTimeout, GpuLeaseRefused) as exc:
         raise HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"}) from exc
     except (FacesUnavailable, ModelUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -383,6 +383,7 @@ def create_app(
     cors: bool = False,
     cors_origins: list[str] | None = None,
     cors_allow_any: bool = False,
+    trusted_hosts: list[str] | None = None,
     cache_dir: str | None = None,
     source_root: str | None = None,
     export_root: str | None = None,
@@ -398,6 +399,8 @@ def create_app(
     rejected unless *allow_move* is enabled. ``POST /scan/{id}/delete`` takes
     any image in the scan only with *allow_delete* (``CURATOR_ALLOW_DELETE=1``
     or ``CURATOR_DEVMODE=1``); without it, only an under-18 exposed image.
+    *trusted_hosts* (``CURATOR_TRUSTED_HOSTS``) names the DNS names a same-host
+    browser write may come through; an IP literal or ``localhost`` needs none.
     """
     app = FastAPI(
         title="Argus Curator",
@@ -436,7 +439,14 @@ def create_app(
     # but the guard refuses the write: the page gets a readable 403 rather than
     # an opaque CORS error. For a non-allow-listed origin CORS correctly adds
     # nothing — it must not advertise itself to an origin it does not trust.
-    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins))
+    #
+    # A same-host write passes by bare hostname only for an IP literal or
+    # localhost: under DNS rebinding the browser sends the attacker's name as
+    # both Origin and Host. A server reached by a DNS name (a UI proxied onto
+    # http://morpheus:8101) lists that name in CURATOR_TRUSTED_HOSTS.
+    if trusted_hosts is None:
+        trusted_hosts = [h.strip() for h in os.environ.get("CURATOR_TRUSTED_HOSTS", "").split(",") if h.strip()]
+    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins, trusted_hosts))
 
     if cors or cors_origins or cors_allow_any:
         from fastapi.middleware.cors import CORSMiddleware
@@ -783,7 +793,7 @@ def create_app(
             return summary
         except scanner.ScanCancelled as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except GpuLeaseTimeout as exc:
+        except (GpuLeaseTimeout, GpuLeaseRefused) as exc:
             raise HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"}) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
@@ -855,7 +865,7 @@ def create_app(
             except scanner.ScanCancelled:
                 drop_snapshots()
                 events.put(("cancelled", {"scan_id": scan_id}))
-            except GpuLeaseTimeout as exc:
+            except (GpuLeaseTimeout, GpuLeaseRefused) as exc:
                 drop_snapshots()
                 events.put(("error", {"detail": f"GPU busy: {exc}", "retry_after": 5}))
             except Exception as exc:  # surface as a stream error, not a 500

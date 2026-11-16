@@ -662,7 +662,9 @@ def scan(
         unchecked = sum(1 for r in summary.results if r.passed and r.guard is None)
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
         unsafe = sum(1 for g in judged if not g.safe)
-        typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{tail}")
+        gc = summary.guard_config
+        mode = f", {gc.thinking}" + (" (refused, ran fast)" if gc.fell_back else "") if gc.thinking else ""
+        typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{mode}{tail}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
@@ -758,6 +760,12 @@ def serve(
     cors_any: bool = Option(
         False, "--cors-any", help="Allow ANY origin, credential-less (public demos only; implies CORS)"
     ),
+    trusted_host: list[str] = Option(
+        [],
+        "--trusted-host",
+        help="DNS name this server is reached by, whose same-host writes are allowed (repeatable; or "
+        "CURATOR_TRUSTED_HOSTS). IP literals and localhost need none.",
+    ),
     source_root: str | None = Option(
         None, "--source-root", help="Root that scan/thumb/upload paths resolve under (ARGUS_CURATOR_SCAN_ROOT)"
     ),
@@ -792,6 +800,7 @@ def serve(
         cors=cors,
         cors_origins=cors_origin or None,
         cors_allow_any=cors_any,
+        trusted_hosts=trusted_host or None,
         source_root=source_root,
         export_root=export_root,
         allow_move=allow_move or None,  # None -> fall back to CURATOR_ALLOW_MOVE

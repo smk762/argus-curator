@@ -118,6 +118,17 @@ Each image records `guard.safe`, the rules that fired, the explanation, the
 model and the policy: `default`, `adult`, or `custom-<sha256 prefix>` of the
 file. The CSV report has `guard_safe` and `guard_rules`.
 
+Each verdict's `guard.thinking` names the mode that judged it. The scan records
+the mode it asked for in `guard_config.thinking`, from
+`ARGUS_CURATOR_SINGGUARD_THINKING`. Under `cascade`, every frame that was not
+escalated reports `fast`, so a cascade scan that flagged nothing has only `fast`
+verdicts, like a `fast` scan. `guard_config.thinking` tells the two apart. When
+the server refuses `cascade` or `slow` and the checks drop to `fast`,
+`guard_config.thinking` still names the mode asked for and
+`guard_config.fell_back` is `true`. Both are `null` when SingGuard did not run,
+and in scans cached by older versions. A request cannot set either: the scan replaces
+whatever a request sends.
+
 ```bash
 # Drop anything judged unsafe
 argus-curator scan /data/inbox --guard-unsafe --copy-to /data/clean

@@ -148,6 +148,7 @@ $ argus-curator serve [OPTIONS]
 * `--cors`: Enable CORS for the localhost dev frontend (:3000)
 * `--cors-origin <list[str]>`: Allowed CORS origin (repeatable; implies CORS; or CURATOR_CORS_ORIGINS)
 * `--cors-any`: Allow ANY origin, credential-less (public demos only; implies CORS)
+* `--trusted-host <list[str]>`: DNS name this server is reached by, whose same-host writes are allowed (repeatable; or CURATOR_TRUSTED_HOSTS). IP literals and localhost need none.
 * `--source-root <str>`: Root that scan/thumb/upload paths resolve under (ARGUS_CURATOR_SCAN_ROOT)
 * `--export-root <str>`: Root that export destinations resolve under (ARGUS_CURATOR_EXPORT_ROOT)
 * `--allow-move`: Permit destructive mode=&quot;move&quot; exports (default: rejected)

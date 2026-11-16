@@ -38,6 +38,13 @@ same-origin, or on the allow-list, else 403. `--cors-any` therefore permits
 anonymous reads from anywhere but no cross-site writes; name an origin with
 `--cors-origin` to let it write.
 
+Same-origin passes on its own only when the server is reached by an IP address
+or `localhost`. Under DNS rebinding a browser sends the attacker's DNS name as
+both `Origin` and `Host`, so a matching name proves nothing. A UI proxied onto
+this server under a DNS name (`http://morpheus:8101`) must list that name with
+`--trusted-host morpheus` (`CURATOR_TRUSTED_HOSTS=morpheus`, comma-separated,
+no port), or its writes get 403.
+
 ## Routes
 
 | Route | Description |
