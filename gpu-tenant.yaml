@@ -1,0 +1,37 @@
+# argus-curator's GPU use, for the argus-iris broker (argus_cortex.gpu_wire.TenantManifest,
+# validated against cortex's gpu-tenant-schema.json by tests/test_gpu_tenant.py).
+#
+# Read when ARGUS_GPU_COORDINATOR=broker and ARGUS_GPU_TENANT_MANIFEST names this file
+# (/app/gpu-tenant.yaml in the image). Each kind is a model curator runs in its own
+# process (runtime.gpu_lease passes the model as the kind). vram_mb is the load ask
+# plus one image's run ask from runtime.VRAM_MB, and model_mb the load ask: the
+# weights that stay loaded between leases.
+#
+# Scans take the kinds' batch priority; POST /faces (darkroom's age check) asks for
+# interactive. No kind is preemptible: a lease covers one image or one batch.
+#
+# No residents: curator has no /admin/unload route yet, so the broker cannot free
+# its models.
+tenant_version: "1.0"
+tenant: argus-curator
+description: Dataset curation for LoRA training sets (faces, scenes, garments on CUDA).
+repo: smk762/argus-curator
+# In-process work runs on the GPU of the host curator runs on. Change this if
+# curator is deployed on another node.
+node: morpheus
+kinds:
+  - kind: faces
+    description: InsightFace buffalo_l with MiVOLO and FairFace, plus the body detector.
+    vram_mb: 2012
+    model_mb: 1500
+    priority: batch
+  - kind: scenes
+    description: Places365 scene tags, up to 16 images per batch.
+    vram_mb: 912
+    model_mb: 400
+    priority: batch
+  - kind: garments
+    description: Fashionpedia garment detector.
+    vram_mb: 1112
+    model_mb: 600
+    priority: batch

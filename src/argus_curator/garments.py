@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 import structlog
-from argus_cortex.gpu import GpuLeaseTimeout
+from argus_cortex.gpu import GpuLeaseRefused, GpuLeaseTimeout
 from PIL import Image
 
 from argus_curator.models import GARMENT_LABELS, GarmentConfig, GarmentDetection, ImageResult
@@ -187,7 +187,7 @@ def detect_images(
         try:
             with gpu_lease(cfg.device, "garments"):
                 r.garments = detect(session, Image.open(io.BytesIO(data_by_rel[r.rel_path])), cfg.min_conf)
-        except GpuLeaseTimeout:
+        except (GpuLeaseTimeout, GpuLeaseRefused):
             raise  # no GPU slot is not a bad image: fail the scan, do not skip it
         except Exception as exc:
             logger.warning("garment_detect_failed", rel_path=r.rel_path, error=str(exc))

@@ -1741,6 +1741,18 @@
           "default": null,
           "title": "Enabled"
         },
+        "fell_back": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fell Back"
+        },
         "policy": {
           "default": "default",
           "enum": [
@@ -1752,6 +1764,24 @@
           ],
           "title": "Policy",
           "type": "string"
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "enum": [
+                "fast",
+                "fast-slow",
+                "slow",
+                "cascade"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking"
         },
         "variants": {
           "items": {

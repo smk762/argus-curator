@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 from argus_cortex.gpu import GpuLeaseTimeout, LeaseCoordinator, NullCoordinator
+from argus_cortex.gpu_broker import BrokerCoordinator
+from argus_cortex.gpu_wire import load_tenant_manifest
 from test_attributes import _App, _Face, _png
 
 from argus_curator import faces, garments, runtime, scenes
@@ -22,10 +24,12 @@ class _Recorder:
 
     def __init__(self) -> None:
         self.leases: list[tuple[str, int]] = []
+        self.options: list[dict[str, object]] = []
 
     @contextlib.contextmanager
-    def lease(self, *, caller: str, min_vram_mb: int):  # noqa: ANN201
+    def lease(self, *, caller: str, min_vram_mb: int, **options: object):  # noqa: ANN201
         self.leases.append((caller, min_vram_mb))
+        self.options.append(options)
         yield
 
 
@@ -85,6 +89,36 @@ def test_lease_asks_for_the_model_footprint(on_cuda: _Recorder) -> None:
     ]
 
 
+def test_lease_names_the_kind_and_asks_interactive_only_when_someone_waits(on_cuda: _Recorder) -> None:
+    with runtime.gpu_lease("cuda", "faces", wait_s=30), runtime.gpu_lease("cuda", "scenes"):
+        pass
+    assert on_cuda.options == [
+        {"kind": "faces", "priority": "interactive"},
+        {"kind": "scenes", "priority": None},  # the kind's own from gpu-tenant.yaml: batch
+    ]
+
+
+def test_gpu_tenant_manifest_declares_every_leased_model() -> None:
+    """gpu-tenant.yaml validates as cortex's TenantManifest and covers every kind gpu_lease names."""
+    manifest = load_tenant_manifest(Path(__file__).parent.parent / "gpu-tenant.yaml")
+    assert manifest.tenant == "argus-curator"
+    leased = {"faces", "scenes", "garments"}  # bodies run inside the faces lease
+    assert {k.kind for k in manifest.kinds} == leased
+    for model in leased:
+        kind = manifest.kind_for(model)
+        assert kind is not None and kind.model_mb == runtime.VRAM_MB[model]["load"]
+        assert kind.vram_mb == runtime.VRAM_MB[model]["load"] + runtime.VRAM_MB[model]["run"]
+
+
+def test_wait_s_caps_a_broker_lease_and_its_fallback(tmp_path: Path) -> None:
+    fallback = LeaseCoordinator(lock_path=str(tmp_path / "gpu.lock"), timeout_s=300, probe=lambda d: None)
+    broker = BrokerCoordinator("http://iris:8120", tenant="argus-curator", fallback=fallback, timeout_s=600)
+    capped = runtime._capped(broker, 30)
+    assert isinstance(capped, BrokerCoordinator) and capped is not broker
+    assert capped.timeout_s == 30 and capped.fallback.timeout_s == 30  # type: ignore[attr-defined]
+    assert broker.timeout_s == 600 and broker.fallback is fallback  # the shared coordinator is untouched
+
+
 def test_coordinator_comes_from_the_environment_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(runtime, "_coordinator", None)
     monkeypatch.setenv("ARGUS_GPU_COORDINATOR", "lease")
@@ -137,7 +171,7 @@ def test_a_lease_timeout_fails_a_scan_rather_than_skipping_faces(monkeypatch: py
 
     class _Busy(_Recorder):
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):  # noqa: ANN201
+        def lease(self, *, caller: str, min_vram_mb: int, **_options: object):  # noqa: ANN201
             if caller.endswith(":run"):
                 raise GpuLeaseTimeout("busy")
             yield
@@ -155,7 +189,7 @@ def test_a_load_lease_timeout_fails_a_scan_rather_than_skipping_faces(monkeypatc
 
     class _BusyLoad(_Recorder):
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):  # noqa: ANN201
+        def lease(self, *, caller: str, min_vram_mb: int, **_options: object):  # noqa: ANN201
             if caller.endswith(":load"):
                 raise GpuLeaseTimeout("busy")
             yield
@@ -175,7 +209,7 @@ def test_scene_lease_timeout_fails_the_scan_rather_than_skipping_a_batch(
 
     class _BusyRun(_Recorder):
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):  # noqa: ANN201
+        def lease(self, *, caller: str, min_vram_mb: int, **_options: object):  # noqa: ANN201
             if caller.endswith(":run"):
                 raise GpuLeaseTimeout("busy")
             yield
@@ -194,7 +228,7 @@ def test_garment_lease_timeout_fails_the_scan_rather_than_skipping_an_image(
 
     class _BusyRun(_Recorder):
         @contextlib.contextmanager
-        def lease(self, *, caller: str, min_vram_mb: int):  # noqa: ANN201
+        def lease(self, *, caller: str, min_vram_mb: int, **_options: object):  # noqa: ANN201
             if caller.endswith(":run"):
                 raise GpuLeaseTimeout("busy")
             yield

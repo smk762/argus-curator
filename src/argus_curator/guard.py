@@ -174,7 +174,15 @@ class FallbackClient:
     ``thinking: "fast"``, so a scan records the mode that actually judged it.
     """
 
-    def __init__(self, url: str, timeout: float, mode: str, policy_text: str | None) -> None:
+    def __init__(
+        self,
+        url: str,
+        timeout: float,
+        mode: str,
+        policy_text: str | None,
+        on_fall_back: Callable[[], None] | None = None,
+    ) -> None:
+        self.on_fall_back = on_fall_back
         self.primary = SingGuardClient(url, timeout=timeout, thinking=mode, policy=policy_text)
         self.fallback = (
             SingGuardClient(url, timeout=timeout, thinking=FALLBACK_THINKING, policy=policy_text)
@@ -204,6 +212,8 @@ class FallbackClient:
                 if not self.fell_back:
                     self.fell_back = True
                     logger.warning("singguard_mode_unsupported", asked=self.primary.thinking, using=FALLBACK_THINKING)
+                    if self.on_fall_back is not None:
+                        self.on_fall_back()
             return result
 
     def _fallback_check(self, data: bytes, text: str) -> GuardResult:
@@ -211,17 +221,20 @@ class FallbackClient:
         return result if result.thinking else result.model_copy(update={"thinking": FALLBACK_THINKING})
 
 
-def client(name: GuardPolicy = "default", *, mode: str | None = None) -> FallbackClient | None:
+def client(
+    name: GuardPolicy = "default", *, mode: str | None = None, on_fall_back: Callable[[], None] | None = None
+) -> FallbackClient | None:
     """A client for the configured server and policy *name*, or ``None`` when SingGuard is not configured.
 
     *mode* overrides :func:`thinking` for one client: cascade sends most frames
     in ``cascade``, and every exposed frame (:func:`force_slow`) in ``slow``.
+    *on_fall_back* is called once if the server refuses the mode and checks drop to ``fast``.
     """
     url = endpoint()
     if url is None:
         return None
     _recorded, text = policy(name)
-    return FallbackClient(url, float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT), mode or thinking(), text)
+    return FallbackClient(url, float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT), mode or thinking(), text, on_fall_back)
 
 
 def force_slow(result: ImageResult, mode: str) -> bool:
@@ -251,6 +264,7 @@ def check_images(
     cfg: GuardConfig,
     progress: Callable[[int, int], None] | None = None,
     on_done: Callable[..., None] | None = None,
+    on_fall_back: Callable[[], None] | None = None,
 ) -> bool:
     """Set ``guard`` on every image (see :func:`remote.check_all`); return whether
     the check ran at all.
@@ -259,16 +273,20 @@ def check_images(
     one pass per policy, and ``guard_variants`` holds every verdict by policy
     name, the official one included. Progress counts images times policies.
     Which images to judge is the caller's choice: every row in *results* is.
+    *on_fall_back* is called when the server refuses the configured mode (see
+    :class:`FallbackClient`), so the scan can record it in ``guard_config.fell_back``.
     """
     if not resolve_enabled(cfg):
         return False
     names = [cfg.policy, *cfg.variants]
-    clients = {name: client(name) for name in names}
+    clients = {name: client(name, on_fall_back=on_fall_back) for name in names}
     if clients[cfg.policy] is None:
         raise ModelUnavailable(f"SingGuard check requested but {URL_ENV} is not set")
     mode = thinking()
     # Cascade's fast pass is a screen. An exposed frame skips it and is judged slow.
-    slow_clients = {name: client(name, mode="slow") for name in names} if mode == "cascade" else {}
+    slow_clients = (
+        {name: client(name, mode="slow", on_fall_back=on_fall_back) for name in names} if mode == "cascade" else {}
+    )
     by_rel = {r.rel_path: r for r in results}
     workers = int(float_env(WORKERS_ENV, DEFAULT_WORKERS))
     has_data = {rel for rel, _abs, data in items if data is not None}

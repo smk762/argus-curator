@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The SingGuard mode a scan asked for is recorded (#152).** `guard_config.thinking`
+  holds the mode from `ARGUS_CURATOR_SINGGUARD_THINKING`, and
+  `guard_config.fell_back` is `true` when the server refused it and the checks ran
+  in `fast`. Each verdict's `thinking` still says which mode judged it. Both are
+  `null` when SingGuard did not run, and in older scans. A request's values are
+  replaced. The CLI summary's SingGuard line shows the mode. Wire schema updated.
+- **The argus-iris GPU broker (#155).** With `ARGUS_GPU_COORDINATOR=broker` and
+  `ARGUS_GPU_BROKER_URL`, curator asks iris for each GPU lease, as a kind
+  declared in the new `gpu-tenant.yaml` (`faces`, `scenes`, `garments`).
+  Scans ask `batch` priority, `POST /faces` asks `interactive`, and `POST /faces`'s 30 s wait cap now
+  covers the broker and its fallback. A lease iris refuses (`GpuLeaseRefused`)
+  gets the same 503 as a timeout. Compose and `.env.example` carry the
+  `ARGUS_GPU_BROKER_*` settings. Until iris ships leases, every lease falls back to
+  `ARGUS_GPU_BROKER_FALLBACK` (`lease`). See `docs/gpu.md`.
+- **`--trusted-host` / `CURATOR_TRUSTED_HOSTS`** on `serve`: DNS names whose
+  same-host browser writes the write-guard allows (see below).
+
 ### Changed
+
+- **Requires `argus-cortex>=0.6.0,<0.7`** (#155). The `[gpu]` extra adds cortex's
+  `[remote,yaml]` extras for the broker client and `gpu-tenant.yaml`.
+- **A same-host write by DNS name is refused unless trusted.** Cortex 0.6's
+  write-guard no longer trusts a browser write whose `Origin` matches the `Host`
+  by name alone, because under DNS rebinding both carry the attacker's name. IP
+  addresses and `localhost` still pass. A UI proxied onto curator under a DNS name
+  (`http://morpheus:8101`) now gets 403 on writes until that name is in
+  `CURATOR_TRUSTED_HOSTS` (or `--trusted-host`). Origins on the
+  `--cors-origin` allow-list are unaffected.
 
 - **The under-18 rule now covers the whole frame by default.** `minor-exposed`
   used to flag an image only when the exposure overlapped a young person's box
