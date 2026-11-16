@@ -28,6 +28,13 @@ services:
       # leave the bundled one stopped, or set it empty (ARGUS_CURATOR_NUDENET_URL=)
       # to switch the check off.
       - ARGUS_CURATOR_NUDENET_URL=${ARGUS_CURATOR_NUDENET_URL-http://nudenet:8080}
+      # EraX-NSFW, a second nudity opinion that fills in where NudeNet finds no
+      # exposure (argus-retina's argus-retina-erax, e.g. http://<LAN_HOST>:8131).
+      # Off unless .env sets a URL: no server is bundled.
+      - ARGUS_CURATOR_ERAX_URL=${ARGUS_CURATOR_ERAX_URL-}
+      # Watermark detector for --detect-watermarks / crops (argus-retina-watermark,
+      # e.g. http://<LAN_HOST>:8132). Off unless .env sets a URL.
+      - ARGUS_CURATOR_WATERMARK_URL=${ARGUS_CURATOR_WATERMARK_URL-}
       # SingGuard policy check, off unless .env sets a URL (no server is bundled:
       # it runs a vision language model). Opt-out once set, like NudeNet.
       - ARGUS_CURATOR_SINGGUARD_URL=${ARGUS_CURATOR_SINGGUARD_URL-}

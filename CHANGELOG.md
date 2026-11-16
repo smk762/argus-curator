@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ARGUS_CURATOR_ERAX_URL` and `ARGUS_CURATOR_WATERMARK_URL` reach the
+  container** (#156). The compose passed neither into `argus-curator`, so
+  setting them in `.env` did nothing and EraX and the watermark detector stayed
+  off. Both stay off unless `.env` sets a URL (argus-retina's :8131 and :8132).
+
 ### Changed
 
 - **The bundled NudeNet is argus-retina's 640m image** (#156). `docker compose`
