@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The bundled NudeNet is argus-retina's 640m image** (#156). `docker compose`
+  ran the upstream `ghcr.io/notai-tech/nudenet` (320n); the `nudenet` service is
+  now `ghcr.io/smk762/argus-retina-nudenet:0.1.0`, pinned by digest, the same
+  image as the suite's shared server. NudeNet stays on by default. **640m scores
+  higher than 320n**: on a 300-image sample, the 0.5 default dropped 153 images
+  instead of 133. The default stays 0.5; see `docs/nudity.md`. `.env.example`
+  and the docs point at retina's shared ports (NudeNet :8130, EraX :8131,
+  watermark :8132).
+
 ## [0.17.0] - 2026-11-16
 
 ### Added

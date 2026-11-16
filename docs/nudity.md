@@ -11,17 +11,42 @@ AGPL-3.0, so running its server is a choice for whoever deploys it.
 Configure the server in the environment (or `.env`), never per request. `<LAN_HOST>` is a placeholder for the host that runs the server:
 
 ```bash
-ARGUS_CURATOR_NUDENET_URL=http://<LAN_HOST>:8080   # its origin; /infer is appended
+ARGUS_CURATOR_NUDENET_URL=http://<LAN_HOST>:8130   # its origin; /infer is appended
 ARGUS_CURATOR_NUDENET_TIMEOUT=30                     # seconds per image (default 30)
 ARGUS_CURATOR_NUDENET_WORKERS=4                      # concurrent requests (default 4)
-ARGUS_CURATOR_ERAX_URL=http://<LAN_HOST>:8081      # optional; empty turns EraX off
+ARGUS_CURATOR_ERAX_URL=http://<LAN_HOST>:8131      # optional; empty turns EraX off
 ARGUS_CURATOR_ERAX_TIMEOUT=30
 ARGUS_CURATOR_ERAX_WORKERS=4
 ```
 
-Any host speaking NudeNet's `/infer` API works, including the official
-`ghcr.io/notai-tech/nudenet` image (320n) or a 640m sidecar. `docker compose up`
-in argus-cull starts a 640m server and uses it unless `.env` says otherwise.
+Use the suite's shared server, [argus-retina](https://github.com/smk762/argus-retina)'s
+`ghcr.io/smk762/argus-retina-nudenet` (NudeNet's **640m** model; EraX on :8131).
+`docker compose up` here starts that same image as the bundled `nudenet`
+service, and uses it unless `.env` points elsewhere.
+
+Any host speaking NudeNet's `/infer` API works, but the model matters: **320n
+(the upstream `ghcr.io/notai-tech/nudenet` image) scores the same image
+differently from 640m, so a threshold tuned on one doesn't carry to the other.**
+Ask a server which model it runs with argus-cortex's
+`NudeNetClient(url).info()` (`model`, `resolution`), and record it alongside any
+scores you tune against.
+
+How far apart they are, from 300 random images of an adult test set scored on
+both (2026-11-16, #156):
+
+| | 320n | 640m |
+|---|---|---|
+| Median exposed score | 0.43 | 0.54 |
+| Dropped at the 0.5 default | 133 | 153 |
+| No exposed score (EraX fill-in candidates) | 127 | 119 |
+
+640m is the stricter model: at 0.5 it drops nearly everything 320n drops, plus
+29 more images, mostly on `FEMALE_BREAST_EXPOSED`. Matching 320n's decisions
+would take about 0.59, which would bring back 320n's misses, so the default
+stays 0.5. 640m isn't stricter everywhere: 9 images 320n dropped score under
+0.5 on 640m, 3 of them 0. EraX fills in exactly that case (an exposed score of
+0), so run it beside 640m. These are unlabelled counts, not a measured error
+rate.
 
 ## Opt-out by default
 
