@@ -38,6 +38,8 @@ _CONFIG_ENV = (
     "ARGUS_CURATOR_WATERMARK_URL",
     "ARGUS_CURATOR_WATERMARK_TIMEOUT",
     "ARGUS_CURATOR_WATERMARK_WORKERS",
+    # The under-18 rule; tests pick a mode explicitly where it matters.
+    "ARGUS_CURATOR_MINOR_EXPOSED",
 )
 
 

@@ -16,7 +16,7 @@ images that passed the hard filters. A dropped image stays in the results as
 a reject with `reject_reason` `prefilter:nsfw`, `prefilter:no-face` or
 `prefilter:no-age` (the first that applies, in that order); hard rejects keep
 their own reason. A hard reject gets no face or age reading, so the under-18
-rule could not speak for it, and it is not sent to NudeNet, EraX or SingGuard
+rule ([`minor-exposed`](moderation.md#the-under-18-rule-minor-exposed)) could not speak for it, and it is not sent to NudeNet, EraX or SingGuard
 either; `min_short_side` cannot go below 512 for the same reason. A dropped
 image has been through faces, NudeNet and EraX, since the rules read them, but
 not SingGuard. No rejected image, dropped or hard, is kept or exported, whatever

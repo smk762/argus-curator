@@ -156,6 +156,11 @@ argus-curator serve --cors --port 8101 --source-root /data/images --export-root 
 Scans and exports then run over HTTP (`POST /scan/folder`, `POST /export`);
 see the [HTTP API](docs/http-api.md).
 
+An image with a MiVOLO age under 18 and any exposed nudity score in the frame
+is never kept, whatever the request. `ARGUS_CURATOR_MINOR_EXPOSED=overlap`
+narrows that to exposure on the young person's box; see
+[the under-18 rule](docs/moderation.md#the-under-18-rule-minor-exposed).
+
 ## Documentation
 
 **Using curator**

@@ -20,7 +20,8 @@ CLI also writes to, so its folder is re-checked rather than trusted (the same
 check applies to `/thumb?scan_id=`). The destructive `mode: "move"` is
 rejected unless the server is started with `--allow-move`
 (`CURATOR_ALLOW_MOVE=1`). Likewise `POST /scan/{id}/delete` removes only
-images MiVOLO reads as under 18 with an exposed score unless the server is
+images MiVOLO reads as under 18 with an exposed score (the
+[under-18 rule](moderation.md#the-under-18-rule-minor-exposed)) unless the server is
 started with `--allow-delete` (`CURATOR_ALLOW_DELETE=1`, or `CURATOR_DEVMODE=1`),
 which lets it delete any scanned image. `--cors` allows only the localhost dev
 frontend (:3000); allow-list other origins with `--cors-origin <origin>`
@@ -37,11 +38,18 @@ same-origin, or on the allow-list, else 403. `--cors-any` therefore permits
 anonymous reads from anywhere but no cross-site writes; name an origin with
 `--cors-origin` to let it write.
 
+Same-origin passes on its own only when the server is reached by an IP address
+or `localhost`. Under DNS rebinding a browser sends the attacker's DNS name as
+both `Origin` and `Host`, so a matching name proves nothing. A UI proxied onto
+this server under a DNS name (`http://morpheus:8101`) must list that name with
+`--trusted-host morpheus` (`CURATOR_TRUSTED_HOSTS=morpheus`, comma-separated,
+no port), or its writes get 403.
+
 ## Routes
 
 | Route | Description |
 |---|---|
-| `GET  /health` | Liveness. `faces` is true when `POST /faces` can run (InsightFace and MiVOLO). |
+| `GET  /health` | Liveness. `faces` is true when `POST /faces` can run (InsightFace and MiVOLO). `minor_exposed` is the under-18 rule in use, `frame` or `overlap` (`ARGUS_CURATOR_MINOR_EXPOSED`). |
 | `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, bodies, places365, garments, nudenet, erax, watermark, singguard, … }` |
 | `POST /faces` | One image in memory (raw bytes or multipart). `{ source: mivolo, faces: [{ age_estimate_years, bbox }] }`. Writes nothing. |
 | `GET  /guard/policies` | Each SingGuard policy a scan can name: `{ singguard, policies: [{ name, recorded, source, text, error }] }` |

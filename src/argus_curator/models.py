@@ -357,6 +357,14 @@ class GuardConfig(BaseModel):
     # Extra policies to judge every image under too, for comparison: one more
     # SingGuard pass per image each. Results land in ImageResult.guard_variants.
     variants: list[GuardPolicy] = Field(default_factory=list)
+    # Recorded by the scan, never chosen by a request (a value sent is replaced):
+    # the SingGuard mode the scan asked for (ARGUS_CURATOR_SINGGUARD_THINKING),
+    # and whether the server refused it so checks dropped to "fast". Each
+    # verdict's own GuardResult.thinking says which mode judged it; under
+    # cascade that is "fast" for every frame not escalated, so only this field
+    # tells a cascade scan from a fast one. None until the check has run.
+    thinking: Literal["fast", "fast-slow", "slow", "cascade"] | None = None
+    fell_back: bool | None = None
 
     @model_validator(mode="after")
     def _variants_distinct(self) -> GuardConfig:

@@ -53,8 +53,10 @@ detector, the one model of the `cheetah_l` pack (30 MB; fetched to
 - Person boxes land on `results[].people` (bbox, the matched `face_index`, the
   age). A person with no face still gets a body-only MiVOLO age (absent face
   channels). NudeNet detections are assigned to the overlapping person, else
-  face, so `minor-exposed` can tell a younger person from an adult in the
-  same frame.
+  face. With `ARGUS_CURATOR_MINOR_EXPOSED=overlap`, `minor-exposed` uses that
+  to tell a younger person from an adult in the same frame; the default
+  `frame` rule flags the whole frame (see
+  [the under-18 rule](moderation.md#the-under-18-rule-minor-exposed)).
 
 `scripts/age_eval.py labels.csv` compares the two modes on images of known
 age: mean and median error, share within 5 years, and how many subjects under

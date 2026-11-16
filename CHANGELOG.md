@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-16
+
+### Added
+
+- **The SingGuard mode a scan asked for is recorded (#152).** `guard_config.thinking`
+  holds the mode from `ARGUS_CURATOR_SINGGUARD_THINKING`, and
+  `guard_config.fell_back` is `true` when the server refused it and the checks ran
+  in `fast`. Each verdict's `thinking` still says which mode judged it. Both are
+  `null` when SingGuard did not run, and in older scans. A request's values are
+  replaced. The CLI summary's SingGuard line shows the mode. Wire schema updated.
+- **The argus-iris GPU broker (#155).** With `ARGUS_GPU_COORDINATOR=broker` and
+  `ARGUS_GPU_BROKER_URL`, curator asks iris for each GPU lease, as a kind
+  declared in the new `gpu-tenant.yaml` (`faces`, `scenes`, `garments`).
+  Scans ask `batch` priority, `POST /faces` asks `interactive`, and `POST /faces`'s 30 s wait cap now
+  covers the broker and its fallback. A lease iris refuses (`GpuLeaseRefused`)
+  gets the same 503 as a timeout. Compose and `.env.example` carry the
+  `ARGUS_GPU_BROKER_*` settings. Until iris ships leases, every lease falls back to
+  `ARGUS_GPU_BROKER_FALLBACK` (`lease`). See `docs/gpu.md`.
+- **`--trusted-host` / `CURATOR_TRUSTED_HOSTS`** on `serve`: DNS names whose
+  same-host browser writes the write-guard allows (see below).
+
+### Changed
+
+- **The under-18 rule now covers the whole frame by default.** `minor-exposed`
+  used to flag an image only when the exposure overlapped a young person's box
+  (or no box at all). It now flags any image where MiVOLO reads a face or body
+  as under 18 and the exposed score is at least 0.2, wherever the two are: the
+  same rule as argus-darkroom. **More images are excluded**, for example a
+  group photo with a child in it and an exposed adult. The rule stays a hard
+  exclusion that no request can override. Set
+  `ARGUS_CURATOR_MINOR_EXPOSED=overlap` (or `--minor-exposed overlap` on `scan`
+  and `serve`) to restore the old rule. An unknown value is refused (exit
+  status 2, and the server does not start), never a fallback. `GET /health`
+  reports the rule in use as `minor_exposed`. The wider rule also widens what
+  `POST /scan/{id}/delete` removes without `--allow-delete`, and what
+  `GET /image` refuses to serve.
+- **Requires `argus-cortex>=0.6.0,<0.7`** (#155). The `[gpu]` extra adds cortex's
+  `[remote,yaml]` extras for the broker client and `gpu-tenant.yaml`.
+- **A same-host write by DNS name is refused unless trusted.** Cortex 0.6's
+  write-guard no longer trusts a browser write whose `Origin` matches the `Host`
+  by name alone, because under DNS rebinding both carry the attacker's name. IP
+  addresses and `localhost` still pass. A UI proxied onto curator under a DNS name
+  (`http://morpheus:8101`) now gets 403 on writes until that name is in
+  `CURATOR_TRUSTED_HOSTS` (or `--trusted-host`). Origins on the
+  `--cors-origin` allow-list are unaffected.
+
 ## [0.15.1] - 2026-11-14
 
 ### Documentation
@@ -930,7 +976,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/smk762/argus-curator/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/smk762/argus-curator/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/smk762/argus-curator/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/smk762/argus-curator/compare/v0.14.0...v0.14.1

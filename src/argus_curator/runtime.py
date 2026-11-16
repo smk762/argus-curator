@@ -9,12 +9,13 @@ never a request field: a model path is a file the server would load.
 from __future__ import annotations
 
 import contextlib
+import copy
 import os
 import threading
 from pathlib import Path
 
 import numpy as np
-from argus_cortex.gpu import GpuCoordinator, LeaseCoordinator, coordinator_from_env
+from argus_cortex.gpu import GpuCoordinator, GpuLeaseRefused, GpuLeaseTimeout, LeaseCoordinator, coordinator_from_env
 
 MODEL_DIR = Path.home() / ".cache" / "argus_curator" / "models"
 
@@ -110,8 +111,16 @@ VRAM_MB: dict[str, dict[str, int]] = {
     "bodies": {"load": 300, "run": 256},  # a Cheetah pack's person detector alone
 }
 
+# What gpu_lease raises when no GPU slot was granted: not a bad image, so a
+# phase lets it through and fails the scan (or the request) instead.
+GPU_UNAVAILABLE: tuple[type[Exception], ...] = (GpuLeaseTimeout, GpuLeaseRefused)
+
 _coordinator_lock = threading.Lock()
 _coordinator: GpuCoordinator | None = None
+# wait_s -> (the shared coordinator, its capped copy). Built once per cap, so a
+# broker copy keeps its registration and its "unreachable" warning state
+# across calls instead of re-registering (and re-warning) on every POST /faces.
+_capped_cache: dict[float, tuple[GpuCoordinator, GpuCoordinator]] = {}
 
 
 def gpu_coordinator() -> GpuCoordinator:
@@ -123,29 +132,63 @@ def gpu_coordinator() -> GpuCoordinator:
         return _coordinator
 
 
-def gpu_lease(
-    device: str, model: str, phase: str = "run", *, wait_s: float | None = None
-) -> contextlib.AbstractContextManager[None]:
-    """Hold the host's GPU lease while curator runs *model* on CUDA; a no-op on CPU.
-
-    Every argus process on the host shares the lease (``ARGUS_GPU_LEASE_PATH`` on
-    a shared volume), and it waits for ``VRAM_MB[model][phase]`` free across the
-    card, so ComfyUI or Ollama on the same GPU are counted. *wait_s* caps the wait
-    below the configured timeout, for a caller someone is waiting on (``POST
-    /faces``). Raises :class:`argus_cortex.gpu.GpuLeaseTimeout`.
-    """
-    if "CUDAExecutionProvider" not in providers(device):
-        return contextlib.nullcontext()
-    coordinator = gpu_coordinator()
-    if wait_s is not None and isinstance(coordinator, LeaseCoordinator) and wait_s < coordinator.timeout_s:
-        coordinator = LeaseCoordinator(
+def _capped(coordinator: GpuCoordinator, wait_s: float) -> GpuCoordinator:
+    """*coordinator* with its wait for a GPU slot cut to *wait_s*, when that is shorter."""
+    if isinstance(coordinator, LeaseCoordinator) and wait_s < coordinator.timeout_s:
+        return LeaseCoordinator(
             lock_path=coordinator.lock_path,
             timeout_s=wait_s,
             poll_s=coordinator.poll_s,
             device=coordinator.device,
             probe=coordinator.probe,
         )
-    return coordinator.lease(caller=f"argus-curator:{model}:{phase}", min_vram_mb=VRAM_MB[model][phase])
+    if coordinator.name == "broker":
+        # The broker client's wait and the local lease it falls back to are both capped.
+        fallback = _capped(coordinator.fallback, wait_s)  # type: ignore[attr-defined]
+        if wait_s >= coordinator.timeout_s and fallback is coordinator.fallback:  # type: ignore[attr-defined]
+            return coordinator
+        capped = copy.copy(coordinator)
+        capped.timeout_s = min(capped.timeout_s, wait_s)  # type: ignore[attr-defined]
+        capped.fallback = fallback  # type: ignore[attr-defined]
+        return capped
+    return coordinator
+
+
+def _capped_coordinator(wait_s: float) -> GpuCoordinator:
+    """The shared coordinator capped to *wait_s* (:func:`_capped`), built once per cap."""
+    coordinator = gpu_coordinator()
+    with _coordinator_lock:
+        hit = _capped_cache.get(wait_s)
+        if hit is None or hit[0] is not coordinator:
+            hit = (coordinator, _capped(coordinator, wait_s))
+            _capped_cache[wait_s] = hit
+        return hit[1]
+
+
+def gpu_lease(
+    device: str, model: str, phase: str = "run", *, wait_s: float | None = None
+) -> contextlib.AbstractContextManager[object]:
+    """Hold the host's GPU lease while curator runs *model* on CUDA; a no-op on CPU.
+
+    Every argus process on the host shares the lease (``ARGUS_GPU_LEASE_PATH`` on
+    a shared volume), and it waits for ``VRAM_MB[model][phase]`` free across the
+    card, so ComfyUI or Ollama on the same GPU are counted. With
+    ``ARGUS_GPU_COORDINATOR=broker`` the lease comes from argus-iris instead, as
+    the work kind *model* that ``gpu-tenant.yaml`` declares. *wait_s* caps the
+    wait below the configured timeout, for a caller someone is waiting on (``POST
+    /faces``), and asks the broker for ``interactive`` priority; a scan takes the
+    kind's own (``batch``). Raises :class:`argus_cortex.gpu.GpuLeaseTimeout`, or
+    :class:`argus_cortex.gpu.GpuLeaseRefused` when the broker refuses the lease.
+    """
+    if "CUDAExecutionProvider" not in providers(device):
+        return contextlib.nullcontext()
+    coordinator = gpu_coordinator() if wait_s is None else _capped_coordinator(wait_s)
+    return coordinator.lease(
+        caller=f"argus-curator:{model}:{phase}",
+        min_vram_mb=VRAM_MB[model][phase],
+        kind=model,
+        priority="interactive" if wait_s is not None else None,
+    )
 
 
 def load_session(path: Path, providers: list[str], *, missing_hint: str, extra: str = "faces"):

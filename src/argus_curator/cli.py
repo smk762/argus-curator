@@ -59,6 +59,27 @@ def _label_thresholds(value: str | None) -> dict[str, float] | None:
     return out
 
 
+_MINOR_EXPOSED_HELP = (
+    "Under-18 rule: frame (default; a young age and any exposure in the frame) or overlap "
+    "(the exposure must also sit on a young person's box). Or ARGUS_CURATOR_MINOR_EXPOSED"
+)
+
+
+def _apply_minor_exposed(value: str | None) -> None:
+    """Set ``ARGUS_CURATOR_MINOR_EXPOSED`` from *value*, then check it; exit 2 on an unknown mode."""
+    import os
+
+    from argus_curator.selection import MINOR_EXPOSED_ENV, MinorExposedConfigError, minor_exposed_mode
+
+    if value is not None:
+        os.environ[MINOR_EXPOSED_ENV] = value
+    try:
+        minor_exposed_mode()
+    except MinorExposedConfigError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+
 def _invalid(exc: ValidationError) -> typer.Exit:
     """Print each field of a pydantic ``ValidationError``; the exit to raise after it."""
     for err in exc.errors():
@@ -258,6 +279,7 @@ def scan(
         "--drop-no-age",
         help="Reject images with no MiVOLO, body-only or set age before scenes, garments and SingGuard (needs --mivolo)",
     ),
+    minor_exposed: str | None = Option(None, "--minor-exposed", help=_MINOR_EXPOSED_HELP),
     crops: bool = Option(
         False,
         "--crops",
@@ -326,6 +348,7 @@ def scan(
     from argus_curator.scanner import scan_folder as _scan
     from argus_curator.store import ScanStore
 
+    _apply_minor_exposed(minor_exposed)
     if not source.is_dir():
         typer.echo(f"Error: not a directory: {source}", err=True)
         raise typer.Exit(1)
@@ -639,7 +662,9 @@ def scan(
         unchecked = sum(1 for r in summary.results if r.passed and r.guard is None)
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
         unsafe = sum(1 for g in judged if not g.safe)
-        typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{tail}")
+        gc = summary.guard_config
+        mode = f", {gc.thinking}" + (" (refused, ran fast)" if gc.fell_back else "") if gc.thinking else ""
+        typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{mode}{tail}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
@@ -735,6 +760,12 @@ def serve(
     cors_any: bool = Option(
         False, "--cors-any", help="Allow ANY origin, credential-less (public demos only; implies CORS)"
     ),
+    trusted_host: list[str] = Option(
+        [],
+        "--trusted-host",
+        help="DNS name this server is reached by, whose same-host writes are allowed (repeatable; or "
+        "CURATOR_TRUSTED_HOSTS). IP literals and localhost need none.",
+    ),
     source_root: str | None = Option(
         None, "--source-root", help="Root that scan/thumb/upload paths resolve under (ARGUS_CURATOR_SCAN_ROOT)"
     ),
@@ -748,6 +779,7 @@ def serve(
         help="Let POST /scan/{id}/delete remove any scanned image (CURATOR_ALLOW_DELETE / CURATOR_DEVMODE; "
         "default: only under-18 exposed images)",
     ),
+    minor_exposed: str | None = Option(None, "--minor-exposed", help=_MINOR_EXPOSED_HELP),
 ) -> None:
     """Start the argus-curator micro-server (FastAPI) on :8101.
 
@@ -761,12 +793,14 @@ def serve(
         typer.echo("Server requires: pip install argus-curator[server]", err=True)
         raise typer.Exit(1) from _exc
 
+    _apply_minor_exposed(minor_exposed)
     from argus_curator.server import create_app
 
     application = create_app(
         cors=cors,
         cors_origins=cors_origin or None,
         cors_allow_any=cors_any,
+        trusted_hosts=trusted_host or None,
         source_root=source_root,
         export_root=export_root,
         allow_move=allow_move or None,  # None -> fall back to CURATOR_ALLOW_MOVE

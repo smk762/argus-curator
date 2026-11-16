@@ -41,6 +41,21 @@ def test_health(client: TestClient) -> None:
     body = resp.json()
     assert body["service"] == "argus-curator"
     assert isinstance(body["faces"], bool)
+    assert body["minor_exposed"] == "frame"
+
+
+def test_health_reports_the_overlap_rule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", "overlap")
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache")))
+    assert client.get("/health").json()["minor_exposed"] == "overlap"
+
+
+def test_unknown_minor_exposed_mode_refuses_to_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.selection import MinorExposedConfigError
+
+    monkeypatch.setenv("ARGUS_CURATOR_MINOR_EXPOSED", "off")
+    with pytest.raises(MinorExposedConfigError):
+        create_app(cache_dir=str(tmp_path / "cache"))
 
 
 def test_health_declares_manifest_version(client: TestClient) -> None:
@@ -988,10 +1003,32 @@ def test_upload_from_allowlisted_origin_works(tmp_path: Path) -> None:
     assert (root / "uploads" / "evil.png").is_file()
 
 
-def test_upload_from_same_origin_works(upload_setup: tuple[TestClient, Path]) -> None:
-    """A UI proxied onto this host is same-origin and needs no allow-list entry."""
+def test_upload_from_same_origin_by_dns_name_needs_a_trusted_host(upload_setup: tuple[TestClient, Path]) -> None:
+    """Under DNS rebinding the attacker's name is both Origin and Host, so a bare name match is not enough."""
     client, root = upload_setup
     resp = _upload(client, headers={"Origin": "http://testserver"})
+    assert resp.status_code == 403  # type: ignore[attr-defined]
+    assert not (root / "uploads" / "evil.png").exists()
+
+
+def test_upload_from_a_trusted_host_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A UI proxied onto this host by DNS name passes once CURATOR_TRUSTED_HOSTS names it."""
+    root = tmp_path / "mount"
+    root.mkdir()
+    monkeypatch.setenv("CURATOR_TRUSTED_HOSTS", "morpheus, testserver")
+    client = TestClient(create_app(cache_dir=str(tmp_path / "cache"), source_root=str(root)))
+    resp = _upload(client, headers={"Origin": "http://testserver"})
+    assert resp.status_code == 200  # type: ignore[attr-defined]
+    assert (root / "uploads" / "evil.png").is_file()
+
+
+def test_upload_from_same_origin_on_localhost_works(tmp_path: Path) -> None:
+    """localhost and IP literals cannot be rebound, so same-host writes there need no entry."""
+    root = tmp_path / "mount"
+    root.mkdir()
+    app = create_app(cache_dir=str(tmp_path / "cache"), source_root=str(root))
+    client = TestClient(app, base_url="http://localhost:8101")
+    resp = _upload(client, headers={"Origin": "http://localhost:8101"})
     assert resp.status_code == 200  # type: ignore[attr-defined]
     assert (root / "uploads" / "evil.png").is_file()
 
@@ -1744,6 +1781,20 @@ def test_faces_503_with_retry_after_when_the_gpu_is_busy(client: TestClient, mon
     assert resp.status_code == 503 and resp.headers["retry-after"] == "5"
     assert resp.json()["detail"].startswith("GPU busy:")
     assert waits == [30.0]
+
+
+def test_faces_503_when_the_gpu_broker_refuses_the_lease(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_cortex.gpu import GpuLeaseRefused
+
+    def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
+        raise GpuLeaseRefused("argus-curator:faces:run asks 2012 MB; no node has it")
+
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    monkeypatch.setattr("argus_curator.faces.detect_faces", detect)
+    resp = client.post("/faces", content=_png_bytes())
+    assert resp.status_code == 503 and resp.headers["retry-after"] == "5"
+    assert "no node has it" in resp.json()["detail"]
 
 
 def test_health_reports_the_gpu_coordinator(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

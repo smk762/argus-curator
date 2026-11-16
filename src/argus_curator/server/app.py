@@ -40,7 +40,6 @@ except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
 import structlog
-from argus_cortex.gpu import GpuLeaseTimeout
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -67,7 +66,7 @@ from argus_curator.models import (
     SelectResult,
     SelectRow,
 )
-from argus_curator.runtime import ModelUnavailable, gpu_coordinator
+from argus_curator.runtime import GPU_UNAVAILABLE, ModelUnavailable, gpu_coordinator
 from argus_curator.scenes import scenes_available
 from argus_curator.selection import (
     decide_selection,
@@ -75,6 +74,7 @@ from argus_curator.selection import (
     garment_floor_problem,
     guard_filter_problem,
     minor_exposed,
+    minor_exposed_mode,
     nsfw_filter_problem,
 )
 from argus_curator.store import ScanStore
@@ -308,6 +308,16 @@ _FACES_CONCURRENCY = 2
 _FACES_LEASE_WAIT_S = 30.0
 
 
+def _env_list(name: str) -> list[str]:
+    """The comma-separated values of env var *name*, stripped; empty when unset."""
+    return [v.strip() for v in os.environ.get(name, "").split(",") if v.strip()]
+
+
+def _gpu_unavailable(exc: Exception) -> HTTPException:
+    """The 503 for a GPU lease that was not granted (timed out, or refused by the broker)."""
+    return HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"})
+
+
 def _faces_from_bytes(data: bytes, body: bool = False) -> dict[str, Any]:
     """MiVOLO estimates for every face in *data*. Writes nothing.
 
@@ -342,8 +352,8 @@ def _faces_from_bytes(data: bytes, body: bool = False) -> dict[str, Any]:
             strict=True,
             lease_wait_s=_FACES_LEASE_WAIT_S,
         )
-    except GpuLeaseTimeout as exc:
-        raise HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"}) from exc
+    except GPU_UNAVAILABLE as exc:
+        raise _gpu_unavailable(exc) from exc
     except (FacesUnavailable, ModelUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -382,6 +392,7 @@ def create_app(
     cors: bool = False,
     cors_origins: list[str] | None = None,
     cors_allow_any: bool = False,
+    trusted_hosts: list[str] | None = None,
     cache_dir: str | None = None,
     source_root: str | None = None,
     export_root: str | None = None,
@@ -397,6 +408,8 @@ def create_app(
     rejected unless *allow_move* is enabled. ``POST /scan/{id}/delete`` takes
     any image in the scan only with *allow_delete* (``CURATOR_ALLOW_DELETE=1``
     or ``CURATOR_DEVMODE=1``); without it, only an under-18 exposed image.
+    *trusted_hosts* (``CURATOR_TRUSTED_HOSTS``) names the DNS names a same-host
+    browser write may come through; an IP literal or ``localhost`` needs none.
     """
     app = FastAPI(
         title="Argus Curator",
@@ -404,8 +417,8 @@ def create_app(
         version=__version__,
     )
 
-    if cors_origins is None and (env_origins := os.environ.get("CURATOR_CORS_ORIGINS")):
-        cors_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+    if cors_origins is None:
+        cors_origins = _env_list("CURATOR_CORS_ORIGINS") or None
 
     # A literal wildcard is only honoured by browsers without credentials; with
     # allow_credentials=True Starlette reflects any Origin back, which defeats
@@ -435,7 +448,14 @@ def create_app(
     # but the guard refuses the write: the page gets a readable 403 rather than
     # an opaque CORS error. For a non-allow-listed origin CORS correctly adds
     # nothing — it must not advertise itself to an origin it does not trust.
-    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins))
+    #
+    # A same-host write passes by bare hostname only for an IP literal or
+    # localhost: under DNS rebinding the browser sends the attacker's name as
+    # both Origin and Host. A server reached by a DNS name (a UI proxied onto
+    # http://morpheus:8101) lists that name in CURATOR_TRUSTED_HOSTS.
+    if trusted_hosts is None:
+        trusted_hosts = _env_list("CURATOR_TRUSTED_HOSTS")
+    app.add_middleware(WriteGuard, refuse=cross_site_refuse(trusted_origins, trusted_hosts))
 
     if cors or cors_origins or cors_allow_any:
         from fastapi.middleware.cors import CORSMiddleware
@@ -462,6 +482,9 @@ def create_app(
     default_export = export_root or os.environ.get("ARGUS_CURATOR_EXPORT_ROOT") or os.environ.get("CURATOR_EXPORT_PATH")
     if allow_move is None:
         allow_move = env_flag("CURATOR_ALLOW_MOVE")
+    # Fails the start on an unknown ARGUS_CURATOR_MINOR_EXPOSED, rather than a
+    # first selection or delete: never a silent fallback to another rule.
+    minor_rule = minor_exposed_mode()
     if allow_delete is None:
         # Two flags, either one enough: devmode is the broad "this is my own
         # box" switch, allow-delete the narrow one for a deployment.
@@ -508,6 +531,8 @@ def create_app(
             "source_root": str(Path(default_source).resolve()) if default_source else None,
             "export_root": str(Path(default_export).resolve()) if default_export else None,
             "allow_move": allow_move,
+            # The under-18 rule (ARGUS_CURATOR_MINOR_EXPOSED): "frame" or "overlap".
+            "minor_exposed": minor_rule,
             # A client asks, rather than sniffing the version: this server can
             # stop a running scan and purge the scan cache (0.6 and later).
             "scan_control": True,
@@ -777,8 +802,8 @@ def create_app(
             return summary
         except scanner.ScanCancelled as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except GpuLeaseTimeout as exc:
-            raise HTTPException(status_code=503, detail=f"GPU busy: {exc}", headers={"Retry-After": "5"}) from exc
+        except GPU_UNAVAILABLE as exc:
+            raise _gpu_unavailable(exc) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"scan failed: {exc}") from exc
         finally:
@@ -849,7 +874,7 @@ def create_app(
             except scanner.ScanCancelled:
                 drop_snapshots()
                 events.put(("cancelled", {"scan_id": scan_id}))
-            except GpuLeaseTimeout as exc:
+            except GPU_UNAVAILABLE as exc:
                 drop_snapshots()
                 events.put(("error", {"detail": f"GPU busy: {exc}", "retry_after": 5}))
             except Exception as exc:  # surface as a stream error, not a 500
@@ -1001,7 +1026,7 @@ def create_app(
         missing = [path for path in paths if path not in by_path]
         if missing:
             raise HTTPException(status_code=404, detail=f"not in scan: {missing[0]}")
-        if not allow_delete and not all(minor_exposed(by_path[path]) for path in paths):
+        if not allow_delete and not all(minor_exposed(by_path[path], minor_rule) for path in paths):
             raise HTTPException(
                 status_code=403,
                 detail=(
@@ -1083,7 +1108,7 @@ def create_app(
         if scan_id:
             summary = store.load(scan_id)
             match = next((r for r in summary.results if r.rel_path == path), None) if summary else None
-            if match is not None and minor_exposed(match):
+            if match is not None and minor_exposed(match, minor_rule):
                 raise HTTPException(status_code=403, detail="This image stays blurred.")
         target = _image_file(path, scan_id)
         return FileResponse(target, media_type=_IMAGE_TYPES[target.suffix.lower()])

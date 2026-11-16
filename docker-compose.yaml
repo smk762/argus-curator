@@ -33,6 +33,9 @@ services:
       - ARGUS_CURATOR_SINGGUARD_THINKING=${ARGUS_CURATOR_SINGGUARD_THINKING-cascade}
       # What the scan already knows, sent as recorded context. Empty sends the image alone.
       - ARGUS_CURATOR_SINGGUARD_CONTEXT=${ARGUS_CURATOR_SINGGUARD_CONTEXT-age,folder,caption,scene}
+      # Under-18 rule: frame (a young age and any exposure in the frame) or overlap
+      # (the exposure must sit on the young person's box). Anything else stops the start.
+      - ARGUS_CURATOR_MINOR_EXPOSED=${ARGUS_CURATOR_MINOR_EXPOSED:-frame}
       # Uncomment to permit destructive mode="move" exports.
       # - CURATOR_ALLOW_MOVE=1
       # Share the GPU with other argus services (argus-lens) one job at a time,
@@ -43,6 +46,15 @@ services:
       - ARGUS_GPU_COORDINATOR=${ARGUS_GPU_COORDINATOR:-lease}
       - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
       - ARGUS_GPU_LEASE_TIMEOUT_S=${ARGUS_GPU_LEASE_TIMEOUT_S:-300}
+      # ARGUS_GPU_COORDINATOR=broker asks argus-iris instead (docs/gpu.md),
+      # falling back to the lease above while iris cannot be reached.
+      - ARGUS_GPU_BROKER_URL=${ARGUS_GPU_BROKER_URL-}
+      - ARGUS_GPU_BROKER_TOKEN=${ARGUS_GPU_BROKER_TOKEN-}
+      - ARGUS_GPU_TENANT_MANIFEST=${ARGUS_GPU_TENANT_MANIFEST:-/app/gpu-tenant.yaml}
+      - ARGUS_GPU_BROKER_FALLBACK=${ARGUS_GPU_BROKER_FALLBACK:-lease}
+      # DNS names a browser UI reaches curator by (comma-separated), whose
+      # same-host writes the write-guard allows. IPs and localhost need none.
+      - CURATOR_TRUSTED_HOSTS=${CURATOR_TRUSTED_HOSTS-}
     volumes:
       # Dataset mount the curator scans and serves /thumb from.
       - ${CURATOR_SOURCE_PATH:-./data}:/data/images
