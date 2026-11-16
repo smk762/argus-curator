@@ -3728,7 +3728,7 @@
       "type": "object"
     },
     "TargetProfile": {
-      "description": "What we are curating *for* \u2014 shared verbatim with argus-lens.\n\nThe curator uses it to weight scoring and label exports; the captioner\ninherits it to pick caption variants. This is the reason generic CV tools\n(FiftyOne / fastdup) structurally cannot replace the suite.",
+      "description": "What a dataset was curated for \u2014 shared verbatim across the suite.\n\nInherited unchanged from stage to stage (curator \u2192 lens \u2192 forge \u2192 proof) so\na decision made once at curation time is honoured everywhere downstream; no\nstage remaps the taxonomy.",
       "properties": {
         "checkpoint": {
           "anyOf": [

@@ -24,9 +24,12 @@ from argus_cortex.moderation.policies import PolicyName
 from argus_cortex.taxonomy import (  # re-exported: the suite's one taxonomy, not a local copy
     TARGET_CATEGORIES,  # noqa: F401
     TARGET_STYLES,  # noqa: F401
-    TargetCategory,
-    TargetStyle,
+    TargetCategory,  # noqa: F401
+    TargetStyle,  # noqa: F401
 )
+from argus_cortex.taxonomy import TargetProfile as _CortexTargetProfile
+from argus_cortex.wire import render_schema as _cortex_render_schema
+from argus_cortex.wire import wire_schema as _cortex_wire_schema
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -129,18 +132,9 @@ RUN_STATS_MAX_BYTES = 5 * 1024 * 1024
 # ---------------------------------------------------------------------------
 
 
-class TargetProfile(BaseModel):
-    """What we are curating *for* — shared verbatim with argus-lens.
-
-    The curator uses it to weight scoring and label exports; the captioner
-    inherits it to pick caption variants. This is the reason generic CV tools
-    (FiftyOne / fastdup) structurally cannot replace the suite.
-    """
-
-    target_style: TargetStyle = "photo"
-    target_backend: str | None = "sdxl"
-    checkpoint: str | None = None
-    target_category: TargetCategory = "identity"
+# Not a local copy: argus-cortex's, which every stage inherits unchanged (curator -> lens -> forge -> proof).
+# Re-exported here because it is part of curator's wire contract.
+TargetProfile = _CortexTargetProfile
 
 
 # ---------------------------------------------------------------------------
@@ -1284,13 +1278,14 @@ WIRE_MODELS: tuple[type[BaseModel], ...] = (
 )
 
 
+WIRE_SCHEMA_TITLE = "argus-curator wire contract"
+
+
 def wire_schema() -> dict:
     """Combined JSON Schema for the curator's wire contract (all WIRE_MODELS)."""
-    from pydantic.json_schema import models_json_schema
+    return _cortex_wire_schema(WIRE_MODELS, title=WIRE_SCHEMA_TITLE)
 
-    _, schema = models_json_schema(
-        [(m, "serialization") for m in WIRE_MODELS],
-        title="argus-curator wire contract",
-        ref_template="#/$defs/{model}",
-    )
-    return schema
+
+def render_wire_schema() -> str:
+    """The committed ``schema/curator-wire.schema.json`` text, formatted by argus-cortex."""
+    return _cortex_render_schema(WIRE_MODELS, title=WIRE_SCHEMA_TITLE)

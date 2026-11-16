@@ -1,0 +1,431 @@
+{
+  "manifest_version": "2.3",
+  "schema": {
+    "$defs": {
+      "CropBox": {
+        "description": "A crop in pixels of the image as displayed: after its EXIF orientation, ``right``/``bottom`` exclusive.\n\nRecorded beside a source as ``<image>.crop.json`` (``{\"left\": .., \"top\": ..,\n\"right\": .., \"bottom\": ..}``) or passed inline in :class:`CropConfig`. A box\nmust lie inside the frame and be non-empty; one that does not makes the\nimage a ``crop:`` reject rather than letting it through uncropped.",
+        "properties": {
+          "bottom": {
+            "exclusiveMinimum": 0,
+            "title": "Bottom",
+            "type": "integer"
+          },
+          "left": {
+            "minimum": 0,
+            "title": "Left",
+            "type": "integer"
+          },
+          "right": {
+            "exclusiveMinimum": 0,
+            "title": "Right",
+            "type": "integer"
+          },
+          "top": {
+            "minimum": 0,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "left",
+          "top",
+          "right",
+          "bottom"
+        ],
+        "title": "CropBox",
+        "type": "object"
+      },
+      "FaceLandmarks": {
+        "description": "InsightFace's landmarks for one face, in the image's pixels.\n\n``kps`` are the detector's 5 keypoints (eyes, nose tip, mouth corners) as\n``[x, y]``; ``landmark_3d_68`` the 68 iBUG points as ``[x, y, z]``. Kept in\nthe scan cache only, and written to a manifest when an export asks\n(``ExportRequest.landmarks``): they are the largest per-face payload.",
+        "properties": {
+          "kps": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kps"
+          },
+          "landmark_3d_68": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Landmark 3D 68"
+          }
+        },
+        "required": [
+          "kps",
+          "landmark_3d_68"
+        ],
+        "title": "FaceLandmarks",
+        "type": "object"
+      },
+      "ManifestFace": {
+        "description": "The primary face of a manifest row (manifest 2.3).",
+        "properties": {
+          "age_years": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Age Years"
+          },
+          "bbox": {
+            "description": "[x, y, w, h]",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Bbox",
+            "type": "array"
+          },
+          "cluster_distance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cluster Distance"
+          },
+          "eye_open": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Eye Open"
+          },
+          "landmarks": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FaceLandmarks"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "mouth_open": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mouth Open"
+          },
+          "pitch": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pitch"
+          },
+          "reference_distance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reference Distance"
+          },
+          "roll": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Roll"
+          },
+          "sharpness": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sharpness"
+          },
+          "yaw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Yaw"
+          }
+        },
+        "required": [
+          "bbox",
+          "yaw",
+          "pitch",
+          "roll",
+          "sharpness",
+          "eye_open",
+          "mouth_open",
+          "cluster_distance",
+          "reference_distance",
+          "age_years",
+          "landmarks"
+        ],
+        "title": "ManifestFace",
+        "type": "object"
+      },
+      "SetAge": {
+        "description": "An age for a frame with no face, read off the set the frame belongs to.\n\n``years`` is the median MiVOLO age of the faces in the scan's dominant\nidentity, ``cluster_id`` that identity, ``faces`` how many ages it is read\nfrom, and ``share`` the fraction of the scan's faces in it. It is an\ninference about the set, not a reading of this frame: a viewer shows it as\nsuch, and treats it as it treats a measured age where a wrong age would be\nthe costlier mistake.",
+        "properties": {
+          "cluster_id": {
+            "title": "Cluster Id",
+            "type": "string"
+          },
+          "faces": {
+            "title": "Faces",
+            "type": "integer"
+          },
+          "share": {
+            "title": "Share",
+            "type": "number"
+          },
+          "years": {
+            "title": "Years",
+            "type": "number"
+          }
+        },
+        "required": [
+          "years",
+          "cluster_id",
+          "faces",
+          "share"
+        ],
+        "title": "SetAge",
+        "type": "object"
+      },
+      "TargetProfile": {
+        "description": "What a dataset was curated for \u2014 shared verbatim across the suite.\n\nInherited unchanged from stage to stage (curator \u2192 lens \u2192 forge \u2192 proof) so\na decision made once at curation time is honoured everywhere downstream; no\nstage remaps the taxonomy.",
+        "properties": {
+          "checkpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Checkpoint"
+          },
+          "target_backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "sdxl",
+            "title": "Target Backend"
+          },
+          "target_category": {
+            "default": "identity",
+            "enum": [
+              "identity",
+              "wardrobe",
+              "pose_composition",
+              "setting",
+              "concept"
+            ],
+            "title": "Target Category",
+            "type": "string"
+          },
+          "target_style": {
+            "default": "photo",
+            "enum": [
+              "photo",
+              "anime"
+            ],
+            "title": "Target Style",
+            "type": "string"
+          }
+        },
+        "title": "TargetProfile",
+        "type": "object"
+      }
+    },
+    "description": "One line of the JSONL handoff manifest (written by ``export.write_manifest``).\n\n``exported_path`` is the path actually written under the export root\n(posix, relative to it). Consumers must use it instead of re-deriving a\ndestination from ``rel_path`` \u2014 flattened exports de-collide basenames, and\nwith carried sidecars a root image cannot take the stem of an export file,\nso the two can differ. Rows exist only for files whose transfer succeeded.\n\n``exported_abs_path`` is that same file's absolute location, so a row is\nself-contained: the manifest is often read somewhere other than the export\nroot it was written into (argus-lens receives it as an upload), and nothing\nin the row names the root to join ``exported_path`` onto.\n\n``abs_path`` is where the image can be *read*, which is not always where it\ncame from: ``mode=\"move\"`` deletes the source during transfer, so for a\nmoved export it equals ``exported_abs_path``. Use ``rel_path`` for the\noriginal location within the scan.",
+    "properties": {
+      "abs_path": {
+        "title": "Abs Path",
+        "type": "string"
+      },
+      "crop": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/CropBox"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "exported_abs_path": {
+        "title": "Exported Abs Path",
+        "type": "string"
+      },
+      "exported_path": {
+        "title": "Exported Path",
+        "type": "string"
+      },
+      "manifest_version": {
+        "default": "2.3",
+        "title": "Manifest Version",
+        "type": "string"
+      },
+      "primary_face": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ManifestFace"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "primary_face_cluster": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Primary Face Cluster"
+      },
+      "primary_face_pose": {
+        "anyOf": [
+          {
+            "enum": [
+              "frontal",
+              "three_quarter",
+              "profile"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Primary Face Pose"
+      },
+      "rel_path": {
+        "title": "Rel Path",
+        "type": "string"
+      },
+      "score": {
+        "title": "Score",
+        "type": "number"
+      },
+      "set_age": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/SetAge"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "similar_group": {
+        "title": "Similar Group",
+        "type": "integer"
+      },
+      "target_profile": {
+        "$ref": "#/$defs/TargetProfile"
+      }
+    },
+    "required": [
+      "manifest_version",
+      "rel_path",
+      "abs_path",
+      "exported_path",
+      "exported_abs_path",
+      "target_profile",
+      "primary_face_cluster",
+      "primary_face_pose",
+      "score",
+      "similar_group",
+      "crop",
+      "primary_face",
+      "set_age"
+    ],
+    "title": "ManifestRow",
+    "type": "object"
+  }
+}

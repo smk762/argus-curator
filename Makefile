@@ -2,7 +2,7 @@
 DIST := dist
 UV := uv
 
-.PHONY: help install dev lint fmt test build clean smoke check schema docs docs-check
+.PHONY: help install dev lint fmt test build clean smoke check schema manifest-snapshot docs docs-check
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -28,6 +28,9 @@ test:  ## Run pytest
 
 schema:  ## Regenerate the committed wire-contract JSON Schema
 	$(UV) run --no-sync argus-curator schema
+
+manifest-snapshot:  ## Record ManifestRow for MANIFEST_VERSION (refuses an unbumped or breaking change)
+	$(UV) run --no-sync python tests/manifest_compat.py
 
 docs:  ## Regenerate docs/cli.md from the Typer app
 	$(UV) run --no-sync typer argus_curator.cli utils docs --name argus-curator --title "argus-curator CLI reference" --output docs/cli.md
