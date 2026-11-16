@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-16
+
 ### Added
 
 - **The SingGuard mode a scan asked for is recorded (#152).** `guard_config.thinking`
@@ -28,16 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Requires `argus-cortex>=0.6.0,<0.7`** (#155). The `[gpu]` extra adds cortex's
-  `[remote,yaml]` extras for the broker client and `gpu-tenant.yaml`.
-- **A same-host write by DNS name is refused unless trusted.** Cortex 0.6's
-  write-guard no longer trusts a browser write whose `Origin` matches the `Host`
-  by name alone, because under DNS rebinding both carry the attacker's name. IP
-  addresses and `localhost` still pass. A UI proxied onto curator under a DNS name
-  (`http://morpheus:8101`) now gets 403 on writes until that name is in
-  `CURATOR_TRUSTED_HOSTS` (or `--trusted-host`). Origins on the
-  `--cors-origin` allow-list are unaffected.
-
 - **The under-18 rule now covers the whole frame by default.** `minor-exposed`
   used to flag an image only when the exposure overlapped a young person's box
   (or no box at all). It now flags any image where MiVOLO reads a face or body
@@ -51,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports the rule in use as `minor_exposed`. The wider rule also widens what
   `POST /scan/{id}/delete` removes without `--allow-delete`, and what
   `GET /image` refuses to serve.
+- **Requires `argus-cortex>=0.6.0,<0.7`** (#155). The `[gpu]` extra adds cortex's
+  `[remote,yaml]` extras for the broker client and `gpu-tenant.yaml`.
+- **A same-host write by DNS name is refused unless trusted.** Cortex 0.6's
+  write-guard no longer trusts a browser write whose `Origin` matches the `Host`
+  by name alone, because under DNS rebinding both carry the attacker's name. IP
+  addresses and `localhost` still pass. A UI proxied onto curator under a DNS name
+  (`http://morpheus:8101`) now gets 403 on writes until that name is in
+  `CURATOR_TRUSTED_HOSTS` (or `--trusted-host`). Origins on the
+  `--cors-origin` allow-list are unaffected.
 
 ## [0.15.1] - 2026-11-14
 
@@ -975,7 +976,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/smk762/argus-curator/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/smk762/argus-curator/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/smk762/argus-curator/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/smk762/argus-curator/compare/v0.14.0...v0.14.1
