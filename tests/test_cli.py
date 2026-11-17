@@ -216,3 +216,16 @@ def test_unknown_minor_exposed_env_fails_serve(monkeypatch: pytest.MonkeyPatch) 
     result = runner.invoke(app, ["serve"])
     assert result.exit_code == 2, result.output
     assert "must be one of frame, overlap" in result.output
+
+
+def test_singguard_summary_does_not_break_the_export_report(
+    dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SingGuard line once reused `mode`, so the "Copied N images" lookup raised KeyError."""
+    from argus_curator import guard as guard_mod
+
+    monkeypatch.setattr(guard_mod, "check_images", lambda *a, **k: True)
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["scan", str(dataset), "--singguard-url", "http://g:1", "--copy-to", str(out)])
+    assert result.exit_code == 0, result.output
+    assert "SingGuard:" in result.output and "Copied " in result.output

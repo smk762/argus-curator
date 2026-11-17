@@ -88,6 +88,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   goes to the box covering most of the detection (IoU breaks a tie). The
   minor-exposure guard never read this assignment: under `overlap` it tests each
   detection against every young box, so no image was let through by it.
+- **`argus-curator scan` with SingGuard and a destination finishes its report**
+  (pack-argus-curator-c7365a3eb7). The SingGuard summary line overwrote the
+  export mode, so after the files were transferred the "Copied N images" line
+  raised `KeyError` and the command exited 1 without reporting the manifest.
 - **A scan no longer follows symlinks out of its folder**
   (pack-argus-curator-aebf19d832). A file or link whose resolved path lies
   outside the scanned folder is skipped, and symlinked directories are not
