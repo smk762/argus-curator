@@ -456,6 +456,15 @@ def test_image_context_lines(tmp_path: Path) -> None:
         "a woman in a pink sweater, studio portrait"
     )
 
+    # A dotted name: its sidecars keep every dot, and a sibling's never stands in.
+    dated = tmp_path / "2021.05.03.jpg"
+    dated.write_bytes(_png(10))
+    (tmp_path / "2021.05.03.txt").write_text("the dated frame's caption\n")
+    (tmp_path / "2021.05.txt").write_text("a sibling's caption\n")
+    assert guard_context.image_context(_aged("2021.05.03.jpg", abs_path=str(dated)), frozenset({"caption"})).endswith(
+        "the dated frame's caption"
+    )
+
     (tmp_path / "c.txt").write_text("x" * 5000)
     (tmp_path / "c.xmp").unlink()
     long = guard_context.image_context(_aged("c.jpg", abs_path=str(image)), frozenset({"caption"}))

@@ -98,6 +98,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the card while another tenant held it; only `prepare()` (which sets sizes)
   was leased. The pack is now fetched first, off the lease, and the app is
   built and prepared under it.
+- **Garment boxes are plain floats** (pack-argus-curator-7d52f097b6). An edge
+  the frame did not clip stayed the model's `np.float32`, which JSON cannot encode.
+- **SingGuard's caption context finds a dotted name's sidecars**
+  (pack-argus-curator-33c37e7c9b). For `2021.05.03.jpg` it read `2021.05.txt` /
+  `2021.05.xmp` (a sibling's caption, or none) instead of `2021.05.03.txt` /
+  `2021.05.03.xmp`.
 - **A scan no longer follows symlinks out of its folder**
   (pack-argus-curator-aebf19d832). A file or link whose resolved path lies
   outside the scanned folder is skipped, and symlinked directories are not
