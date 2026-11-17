@@ -41,6 +41,7 @@ Each rule names what enforces it. A new rule nothing checks yet is marked **UNEN
 | A cross-site write allowed because CORS is open: CORS grants anonymous reads only, and the cortex write-guard gates writes on `Origin` | `tests/test_server.py::test_cors_any_does_not_grant_cross_site_writes` |
 | A local copy of a shared argus-cortex helper (write-guard, `env_flag`, moderation clients, taxonomy, `TargetProfile`) | `tests/test_cortex_reuse.py::test_no_module_redefines_a_cortex_helper` (a module-level name cortex also defines fails unless `_ALLOWED` gives the reason) |
 | An under-18 frame with any reported exposed score kept, whatever the request says | `tests/test_nsfw.py::test_under_18_with_a_reported_exposed_score_is_never_kept`, `::test_frame_rule_is_a_hard_exclusion` |
+| `/image` serving, or `/thumb` sending unblurred, a file any cached scan reads as under-18 exposed, whatever the path's spelling, a symlink, or a missing `scan_id` | `tests/test_server.py::test_image_block_holds_for_any_spelling_of_the_path`, `::test_thumb_of_an_under_18_exposed_frame_is_blurred_by_the_server` |
 | A server that starts with an unknown `minor-exposed` mode (no fallback) | `tests/test_server.py::test_unknown_minor_exposed_mode_refuses_to_start` |
 | A prefiltered image kept or exported | `tests/test_server.py::test_prefiltered_images_are_never_kept_or_exported` |
 | Moderation filters applied to a scan that never ran the check | `tests/test_server.py::test_select_refuses_moderation_filters_on_unchecked_scan` |

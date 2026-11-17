@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The under-18 exposed block on `/image` can't be stepped around**
+  (pack-argus-curator-1d6b28208d). It was decided from the raw `path` against
+  the named scan only, so omitting `scan_id`, `./x.jpg`, `sub/../x.jpg` or a
+  symlink served the original. `/image` now resolves the file first and refuses
+  it (403) when any cached scan reads it as under-18 exposed, and `/thumb` blurs
+  such a frame server-side instead of sending it unblurred.
 - **`ARGUS_CURATOR_ERAX_URL` and `ARGUS_CURATOR_WATERMARK_URL` reach the
   container** (#156). The compose passed neither into `argus-curator`, so
   setting them in `.env` did nothing and EraX and the watermark detector stayed

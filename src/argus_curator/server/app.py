@@ -42,7 +42,7 @@ except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
 import structlog
-from PIL import Image
+from PIL import Image, ImageFilter
 from pydantic import BaseModel, Field
 
 from argus_curator import __version__, crops, export, scanner
@@ -241,6 +241,59 @@ def _is_within(root: Path, candidate: Path) -> bool:
     except (ValueError, OSError):
         return False
     return candidate == root or root in candidate.parents
+
+
+class _MinorBlockList:
+    """Resolved paths of every file any cached scan reads as under-18 exposed.
+
+    ``/image`` and ``/thumb`` decide from the *resolved* target, never the raw
+    query string, so ``./x.jpg``, ``sub/../x.jpg``, a symlink, or omitting
+    ``scan_id`` all land on the same verdict. Every cached scan counts, not only
+    the one a request names. Each scan file is parsed once per mtime.
+    """
+
+    def __init__(self, store: ScanStore, rule: Any) -> None:
+        self._store = store
+        self._rule = rule
+        self._lock = threading.Lock()
+        self._by_file: dict[Path, tuple[float, frozenset[Path]]] = {}
+
+    def _scan_paths(self, summary: ScanSummary) -> frozenset[Path]:
+        blocked: set[Path] = set()
+        for r in summary.results:
+            if not minor_exposed(r, self._rule):
+                continue
+            for raw in (r.abs_path, str(Path(summary.folder) / r.rel_path)):
+                try:
+                    blocked.add(Path(raw).resolve())
+                except (ValueError, OSError):
+                    continue
+        return frozenset(blocked)
+
+    def blocked(self, target: Path) -> bool:
+        resolved = target.resolve()
+        with self._lock:
+            seen: set[Path] = set()
+            for path in self._store.cache_dir.glob("*.json"):
+                seen.add(path)
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:  # removed meanwhile
+                    continue
+                cached = self._by_file.get(path)
+                if cached is None or cached[0] != mtime:
+                    try:
+                        summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
+                        cached = (mtime, self._scan_paths(summary))
+                    except Exception as exc:  # an unreadable cache file names no file to block
+                        logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
+                        cached = (mtime, frozenset())
+                    self._by_file[path] = cached
+                if resolved in cached[1]:
+                    return True
+            for gone in set(self._by_file) - seen:
+                del self._by_file[gone]
+        return False
 
 
 def _count_images(directory: Path, cap: int = _COUNT_CAP) -> int:
@@ -509,6 +562,7 @@ def create_app(
     # Fails the start on an unknown ARGUS_CURATOR_MINOR_EXPOSED, rather than a
     # first selection or delete: never a silent fallback to another rule.
     minor_rule = minor_exposed_mode()
+    minor_block = _MinorBlockList(store, minor_rule)
     max_upload = _max_upload_bytes()
     if allow_delete is None:
         # Two flags, either one enough: devmode is the broad "this is my own
@@ -1104,6 +1158,9 @@ def create_app(
         target = _image_file(path, scan_id, _scan_root_or_400(summary) if summary else None)
         # A row's face boxes are of the frame the scan saw, so a viewer's thumbnail has to be that frame too.
         box = next((r.crop for r in summary.results if r.rel_path == path), None) if summary else None
+        # An under-18 exposed frame is blurred here, not only by the viewer, so the
+        # bytes /thumb sends are never the unblurred frame.
+        blur = await asyncio.to_thread(minor_block.blocked, target)
 
         def _render() -> bytes:
             with Image.open(target) as img:
@@ -1111,6 +1168,8 @@ def create_app(
                     img = crops.crop_image(img, box)
                 img = img.convert("RGB")
                 img.thumbnail((THUMB_MAX, THUMB_MAX))
+                if blur:
+                    img = img.filter(ImageFilter.GaussianBlur(radius=max(img.size) / 8))
                 buf = io.BytesIO()
                 img.save(buf, format="WEBP", quality=80)
                 return buf.getvalue()
@@ -1131,12 +1190,11 @@ def create_app(
         An under-18 image with an exposed score is not served. The grid keeps a
         blurred thumbnail, and the file itself is only removed by delete.
         """
-        if scan_id:
-            summary = store.load(scan_id)
-            match = next((r for r in summary.results if r.rel_path == path), None) if summary else None
-            if match is not None and minor_exposed(match, minor_rule):
-                raise HTTPException(status_code=403, detail="This image stays blurred.")
         target = _image_file(path, scan_id)
+        # Decided from the resolved file against every cached scan, so neither
+        # another spelling of the path nor omitting scan_id gets around it.
+        if await asyncio.to_thread(minor_block.blocked, target):
+            raise HTTPException(status_code=403, detail="This image stays blurred.")
         return FileResponse(target, media_type=_IMAGE_TYPES[target.suffix.lower()])
 
     @app.post("/upload")

@@ -500,6 +500,47 @@ def test_delete_gate_opens_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert resp.status_code == 200 and not (root / "adult.png").exists()
 
 
+def test_image_block_holds_for_any_spelling_of_the_path(tmp_path: Path) -> None:
+    root, cache = _seed_delete_scan(tmp_path)
+    (root / "sub").mkdir()
+    (root / "alias.png").symlink_to(root / "minor.png")
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/image", params={"path": "adult.png", "scan_id": "scan"}).status_code == 200
+    for params in (
+        {"path": "minor.png", "scan_id": "scan"},
+        {"path": "./minor.png", "scan_id": "scan"},
+        {"path": "sub/../minor.png", "scan_id": "scan"},
+        {"path": "alias.png", "scan_id": "scan"},
+        {"path": "minor.png"},
+        {"path": "./minor-b.png"},
+    ):
+        assert client.get("/image", params=params).status_code == 403, params
+
+
+def test_thumb_of_an_under_18_exposed_frame_is_blurred_by_the_server(tmp_path: Path) -> None:
+    import io
+
+    from PIL import Image, ImageStat
+
+    root, cache = _seed_delete_scan(tmp_path)
+    # A checkerboard: blurring it flattens the spread of pixel values.
+    board = Image.new("L", (64, 64))
+    board.putdata([255 if (x // 8 + y // 8) % 2 else 0 for y in range(64) for x in range(64)])
+    for name in ("minor.png", "adult.png"):
+        board.convert("RGB").save(root / name)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+
+    def spread(params: dict[str, str]) -> float:
+        resp = client.get("/thumb", params=params)
+        assert resp.status_code == 200
+        return ImageStat.Stat(Image.open(io.BytesIO(resp.content)).convert("L")).stddev[0]
+
+    sharp = spread({"path": "adult.png", "scan_id": "scan"})
+    assert sharp > 100
+    assert spread({"path": "minor.png", "scan_id": "scan"}) < sharp / 4
+    assert spread({"path": "./minor.png"}) < sharp / 4
+
+
 def _png_bytes() -> bytes:
     import io
 
