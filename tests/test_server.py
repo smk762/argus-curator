@@ -95,6 +95,24 @@ def test_folders_browse(dataset: Path, tmp_path: Path) -> None:
     assert client.get("/folders", params={"path": "../../etc"}).status_code == 400
 
 
+def test_one_unreadable_folder_does_not_hide_its_siblings(
+    dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_iterdir = Path.iterdir
+
+    def iterdir(self: Path) -> object:
+        if self.name == "personB":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    client = TestClient(create_app(cache_dir=str(tmp_path / "c2"), source_root=str(dataset)))
+    resp = client.get("/folders")
+    assert resp.status_code == 200
+    names = {f["name"] for f in resp.json()["folders"]}
+    assert "personA" in names and "personB" not in names
+
+
 def test_folders_requires_source_root(client: TestClient) -> None:
     assert client.get("/folders").status_code == 400
 

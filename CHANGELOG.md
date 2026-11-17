@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One unreadable folder no longer breaks `GET /folders`**
+  (pack-argus-curator-f82fcf9861). A child that can't be listed (`lost+found`,
+  a dead mount) is left out and logged; its siblings are still listed.
 - **A delete no longer resurrects rows removed while it ran**
   (pack-argus-curator-c80e146d60). `POST /scan/{id}/delete` saved the copy it
   loaded before unlinking; it now re-reads the scan and drops its rows from the

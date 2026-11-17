@@ -322,12 +322,18 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
         for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
             if entry.is_dir() and not entry.name.startswith("."):
                 sub_rel = str(Path(rel) / entry.name) if rel else entry.name
-                subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                try:
+                    subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                    abs_path = str(entry.resolve())
+                except OSError as exc:
+                    # One unreadable child (lost+found, a dead mount) must not hide its siblings.
+                    logger.warning("browse_folder_unreadable", rel_path=sub_rel, error=str(exc))
+                    continue
                 folders.append(
                     {
                         "name": entry.name,
                         "rel_path": sub_rel,
-                        "abs_path": str(entry.resolve()),
+                        "abs_path": abs_path,
                         "image_count": _count_images(entry),
                         "subfolder_count": subfolders,
                     }
