@@ -571,11 +571,11 @@ def write_source_sidecars(results: list[ImageResult], face_names: dict[str, str]
 
 
 def caption_allowed_hosts() -> list[str]:
-    """``CURATOR_CAPTION_ALLOWED_HOSTS``: the internal hosts a ``caption_url`` may name.
+    """``CURATOR_CAPTION_ALLOWED_HOSTS``: the only hosts a ``caption_url`` may name.
 
-    Comma-separated ``host`` or ``host:port`` entries (an internal lens such as
-    ``lens:8100``). Empty by default, so only hosts resolving to public addresses
-    are reached. Read on every call, so a test or a restart picks up a change.
+    Comma-separated ``host`` or ``host:port`` entries (a lens such as
+    ``lens:8100``). Empty by default, which turns the hand-off off. Read on every
+    call, so a test or a restart picks up a change.
     """
     return [v.strip() for v in os.environ.get(CAPTION_HOSTS_ENV, "").split(",") if v.strip()]
 
@@ -588,21 +588,56 @@ def caption_host(caption_url: str) -> str:
         return "?"
 
 
+def caption_url_problem(caption_url: str) -> str | None:
+    """Why *caption_url* may not be sent the manifest, or ``None`` when its host is configured.
+
+    Only a host listed in ``CURATOR_CAPTION_ALLOWED_HOSTS`` is reached, public
+    or not: a ``host`` entry allows any port, a ``host:port`` entry that port.
+    Never names the URL, which may carry credentials.
+    """
+    allowed = caption_allowed_hosts()
+    if not allowed:
+        return f"no caption host is configured: set {CAPTION_HOSTS_ENV} (e.g. lens:8100)"
+    try:
+        parts = urlsplit(caption_url)
+        host, port = (parts.hostname or "").lower(), parts.port
+    except ValueError:
+        return "caption_url is not a valid URL"
+    if parts.scheme not in ("http", "https") or not host:
+        return "caption_url must be an http(s) URL"
+    port = port or (443 if parts.scheme == "https" else 80)
+    for entry in (e.lower() for e in allowed):
+        if entry.startswith("["):  # [::1] or [::1]:8100
+            name, _, rest = entry[1:].partition("]")
+            entry_port = rest.removeprefix(":")
+        elif entry.count(":") == 1:
+            name, _, entry_port = entry.partition(":")
+        else:  # a bare name, or a bare IPv6 address
+            name, entry_port = entry, ""
+        if name == host and (not entry_port or entry_port == str(port)):
+            return None
+    return f"{host}:{port} is not listed in {CAPTION_HOSTS_ENV}"
+
+
 def _post_manifest_to_lens(manifest_path: Path, caption_url: str) -> bool:
     """Optionally POST the manifest to argus-lens for a one-click curate->caption run.
 
-    Sent through :func:`argus_cortex.net.fetch`, which reaches a non-public
-    address only for a host in ``CURATOR_CAPTION_ALLOWED_HOSTS`` and never
+    Only a host listed in ``CURATOR_CAPTION_ALLOWED_HOSTS`` is sent it
+    (:func:`caption_url_problem`), public or not. It goes through
+    :func:`argus_cortex.net.fetch`, which pins the resolved address and never
     re-sends the POST to a redirect. Any refusal or failure is logged (host
     only) and returns False: the export itself has already succeeded.
     """
+    host = caption_host(caption_url)
+    if (problem := caption_url_problem(caption_url)) is not None:
+        logger.warning("caption_handoff_failed", host=host, error=problem)
+        return False
     try:
         import httpx
         from argus_cortex.net import fetch
     except Exception:
         logger.warning("caption_handoff_skipped", reason="httpx not installed")
         return False
-    host = caption_host(caption_url)
     try:
         # httpx encodes the multipart body; fetch sends it.
         encoded = httpx.Request(

@@ -240,14 +240,67 @@ def test_export_hands_off_to_an_allow_listed_caption_url(
     assert len(seen) == 1 and (exports / "out" / "manifest.jsonl").exists()
 
 
-def test_export_allows_a_public_caption_url_without_an_allow_list(
+PUBLIC_LENS = "https://lens.example.com/caption"
+
+
+@pytest.mark.parametrize(
+    ("allowed", "url", "address"),
+    [
+        ("", PUBLIC_LENS, "93.184.215.14"),  # nothing configured: a public host is not enough
+        ("lens:8100", PUBLIC_LENS, "93.184.215.14"),  # a public host that isn't the configured lens
+        ("lens:8100", "http://nas:8100/caption", "192.168.1.20"),  # an unconfigured LAN host
+        ("lens:8100", "http://lens:9000/caption", "10.0.0.5"),  # the lens host on another port
+    ],
+)
+def test_export_refuses_a_caption_url_whose_host_is_not_configured(
+    scanned: tuple[TestClient, Path, str], monkeypatch: pytest.MonkeyPatch, allowed: str, url: str, address: str
+) -> None:
+    client, exports, scan_id = scanned
+    seen = _lens(monkeypatch, address=address)
+    monkeypatch.setenv("CURATOR_CAPTION_ALLOWED_HOSTS", allowed)
+    resp = client.post("/export", json={"scan_id": scan_id, "dest": "out", "min_score": 0.0, "caption_url": url})
+    assert resp.status_code == 400
+    assert "CURATOR_CAPTION_ALLOWED_HOSTS" in resp.json()["detail"] and url not in resp.json()["detail"]
+    assert not (exports / "out").exists() and seen == []
+    # The engine refuses it too, so the CLI and a direct caller can't send it either.
+    assert _post_manifest_to_lens(_manifest(exports), url) is False and seen == []
+
+
+def test_an_empty_caption_host_config_names_the_variable_to_set(
+    scanned: tuple[TestClient, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, scan_id = scanned
+    _lens(monkeypatch)
+    monkeypatch.delenv("CURATOR_CAPTION_ALLOWED_HOSTS", raising=False)
+    resp = client.post("/export", json={"scan_id": scan_id, "dest": "out", "min_score": 0.0, "caption_url": LENS})
+    assert resp.status_code == 400
+    assert "no caption host is configured: set CURATOR_CAPTION_ALLOWED_HOSTS" in resp.json()["detail"]
+
+
+def test_export_hands_off_to_a_configured_public_lens(
     scanned: tuple[TestClient, Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, _, scan_id = scanned
     seen = _lens(monkeypatch, address="93.184.215.14")
+    monkeypatch.setenv("CURATOR_CAPTION_ALLOWED_HOSTS", "lens.example.com")
     resp = client.post(
-        "/export",
-        json={"scan_id": scan_id, "dest": "out", "min_score": 0.0, "caption_url": "https://lens.example.com/caption"},
+        "/export", json={"scan_id": scan_id, "dest": "out", "min_score": 0.0, "caption_url": PUBLIC_LENS}
     )
     assert resp.status_code == 200 and resp.json()["captioned"] is True
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    ("entry", "url", "ok"),
+    [
+        ("lens", "http://lens:8100/caption", True),
+        ("LENS:8100", "http://lens:8100/caption", True),
+        ("lens:80", "http://lens/caption", True),
+        ("lens:443", "http://lens/caption", False),
+        ("[::1]:8100", "http://[::1]:8100/caption", True),
+        ("lens", "ftp://lens/caption", False),
+    ],
+)
+def test_caption_host_entries(monkeypatch: pytest.MonkeyPatch, entry: str, url: str, ok: bool) -> None:
+    monkeypatch.setenv("CURATOR_CAPTION_ALLOWED_HOSTS", entry)
+    assert (export.caption_url_problem(url) is None) is ok

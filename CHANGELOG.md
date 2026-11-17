@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`caption_url` reaches only a configured host** (decided by the user, PR #179).
+  The hand-off used to reach any public host, and an internal one listed in
+  `CURATOR_CAPTION_ALLOWED_HOSTS`. Now only a listed host is sent the manifest,
+  public or not (a bare `host` entry allows any port, `host:port` that port), and
+  with the variable empty an export naming a `caption_url` is refused with 400
+  naming it. The CLI and engine refuse the same hosts (the export still runs,
+  uncaptioned). argus-studio sends no `caption_url`, so it is unaffected; a
+  deployment handing off to a public lens must now list it.
+
 - **argus-cortex 0.8** (ai-code-auditor#56). Every `argus-cortex` requirement,
   extras included, is now `>=0.8,<0.9`, and curator adopts its shared `net` and
   `limits` helpers.

@@ -196,10 +196,11 @@ Export writes `manifest.jsonl`, one row per exported image, carrying the
 shared `TargetProfile`, the real exported path, and the primary face's
 measurements. argus-lens batch-captions it with no remapping; set
 `caption_url` on the export request to POST it straight to lens for a
-one-click curate-then-caption run. An internal lens (`http://lens:8100/caption`,
-`localhost`, a LAN address) must be listed in `CURATOR_CAPTION_ALLOWED_HOSTS`
-(comma-separated `host` or `host:port`; empty by default, so only public hosts
-are reached), or the export is refused with 400. The rows, their versions (currently 2.3)
+one-click curate-then-caption run. Only a host listed in
+`CURATOR_CAPTION_ALLOWED_HOSTS` is sent the manifest, public or not
+(comma-separated `host` or `host:port`, e.g. `lens:8100`; a bare `host` allows
+any port). Empty by default, so the hand-off is off until you name your lens:
+any other `caption_url` is refused with 400. The rows, their versions (currently 2.3)
 and the rule for consumers (refuse an unknown major) are in the
 [manifest reference](docs/manifest.md).
 

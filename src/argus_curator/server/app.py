@@ -1316,13 +1316,16 @@ def create_app(
     async def _check_caption_url(req: ExportRequest) -> None:
         """Refuse (400) a ``caption_url`` the hand-off would refuse, before the export runs.
 
-        The same check :func:`argus_cortex.net.fetch` makes when the manifest is
-        sent (which checks again then): a host that resolves to a non-public
-        address must be listed in ``CURATOR_CAPTION_ALLOWED_HOSTS``. The detail
-        names the host only, never the URL.
+        The same checks the hand-off makes when the manifest is sent (which
+        makes them again then): the host must be listed in
+        ``CURATOR_CAPTION_ALLOWED_HOSTS``, public or not, and its address must
+        pass :func:`argus_cortex.net.check_url`. The detail names the host only,
+        never the URL.
         """
         if not (req.caption_url and req.write_manifest):
             return
+        if (problem := export.caption_url_problem(req.caption_url)) is not None:
+            raise HTTPException(status_code=400, detail=f"caption_url refused: {problem}")
         try:
             await asyncio.to_thread(check_url, req.caption_url, allow_hosts=export.caption_allowed_hosts())
         except UrlRefused as exc:
