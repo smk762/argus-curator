@@ -2870,11 +2870,13 @@
         },
         "resolution_ref": {
           "default": 1024,
+          "minimum": 0,
           "title": "Resolution Ref",
           "type": "integer"
         },
         "sharpness_ref": {
           "default": 800.0,
+          "minimum": 0.0,
           "title": "Sharpness Ref",
           "type": "number"
         },

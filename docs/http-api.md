@@ -146,11 +146,10 @@ has it.
 
 `write_manifest` writes `manifest.jsonl` into the destination; see
 [Manifest](manifest.md) for its rows. `caption_url` then POSTs it to argus-lens
-through argus-cortex's `net.fetch`: a host that resolves to a non-public address
-(an internal lens such as `http://lens:8100/caption`, or `localhost`) must be
-listed in `CURATOR_CAPTION_ALLOWED_HOSTS` (comma-separated `host` or
-`host:port`, empty by default), or the export is refused with 400 before
-anything is transferred. A POST is never re-sent to a redirect; a hand-off that
+through argus-cortex's `net.fetch`, and only to a host listed in
+`CURATOR_CAPTION_ALLOWED_HOSTS`, public or not (comma-separated `host`, any
+port, or `host:port`, e.g. `lens:8100`). Any other host, or any `caption_url`
+while the variable is empty, is refused with 400 before anything is transferred. A POST is never re-sent to a redirect; a hand-off that
 fails after the export leaves `captioned: false` and logs the host only. `carry_sidecars` and `run_stats` are
 covered in [Sidecars and run stats](sidecars.md), and every filter field in its
 feature's page ([Face attributes](face-attributes.md), [Scene tags](scene-tags.md),

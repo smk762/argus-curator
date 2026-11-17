@@ -18,6 +18,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import structlog
@@ -43,6 +44,8 @@ _APP_CACHE: dict[str, object] = {}
 # and the 3D-68 landmarks behind head pose. A pack's gender/age model (MiVOLO
 # replaces it) and its 2D-106 landmarks are never loaded.
 FACE_MODULES = ("detection", "recognition", "landmark_3d_68")
+# InsightFace's own default model root; packs are fetched there before FaceAnalysis reads them.
+INSIGHTFACE_ROOT = "~/.insightface"
 # A scan thread and POST /faces can ask for the same app at once; build it once.
 _APP_LOCK = threading.Lock()
 # FaceAnalysis.get is not thread-safe (bbox/result mix-ups under concurrent
@@ -79,15 +82,20 @@ def _get_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
 def _build_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
     try:
         from insightface.app import FaceAnalysis
+        from insightface.utils import ensure_available
     except Exception as exc:  # pragma: no cover - exercised only without deps
         raise FacesUnavailable("Face detection requires: pip install argus-curator[faces]  (or [gpu])") from exc
 
     provs = providers(cfg.device)
-    # FaceAnalysis() fetches the pack to disk; prepare() builds CUDA sessions.
-    # Keep the download off the GPU lease so a cold start does not block lens.
-    app = FaceAnalysis(name=cfg.model, providers=provs, allowed_modules=list(FACE_MODULES))
+    # FaceAnalysis() builds every onnxruntime session (on CUDA, the context and
+    # the weights); prepare() only sets sizes. So the app is built under the GPU
+    # lease, and only the pack download, fetched first, stays off it so a cold
+    # start does not block lens. FaceAnalysis finds the pack already there.
+    if not Path(cfg.model).expanduser().is_dir():
+        ensure_available("models", cfg.model, root=INSIGHTFACE_ROOT)
     ctx_id = 0 if "CUDAExecutionProvider" in provs else -1
     with gpu_lease(cfg.device, "faces", "load", wait_s=lease_wait_s):
+        app = FaceAnalysis(name=cfg.model, root=INSIGHTFACE_ROOT, providers=provs, allowed_modules=list(FACE_MODULES))
         app.prepare(ctx_id=ctx_id, det_size=(640, 640))
     return app
 

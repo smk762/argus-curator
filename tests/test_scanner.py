@@ -497,3 +497,28 @@ def test_concept_ignores_faces_and_rewards_clean_high_res() -> None:
     clean = _scored("concept")
     noisy = _scored("concept", artifact=0.5, width=640, height=640)
     assert clean.score_breakdown["target_bonus"] > noisy.score_breakdown["target_bonus"]
+
+
+def test_collect_images_skips_symlinks_that_leave_the_root(tmp_path: Path) -> None:
+    from argus_curator.scanner import collect_images
+
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    (root / "sub").mkdir(parents=True)
+    outside.mkdir()
+    Image.new("RGB", (8, 8)).save(root / "inside.png")
+    Image.new("RGB", (8, 8)).save(outside / "secret.png")
+    (root / "leak.png").symlink_to(outside / "secret.png")
+    (root / "linked_dir").symlink_to(outside, target_is_directory=True)
+    (root / "sub" / "alias.png").symlink_to(root / "inside.png")
+    items = collect_images(root)
+    assert [rel for rel, _abs, _data in items] == ["inside.png", "sub/alias.png"]
+    assert all(Path(abs_path).is_relative_to(root.resolve()) for _rel, abs_path, _data in items)
+
+
+@pytest.mark.parametrize("field", ["sharpness_ref", "resolution_ref"])
+def test_a_negative_normalisation_ceiling_is_refused(field: str) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=field):
+        ScanConfig(**{field: -1})
+    assert getattr(ScanConfig(**{field: 0}), field) == 0  # 0 turns the term off

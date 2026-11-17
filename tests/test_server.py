@@ -95,6 +95,24 @@ def test_folders_browse(dataset: Path, tmp_path: Path) -> None:
     assert client.get("/folders", params={"path": "../../etc"}).status_code == 400
 
 
+def test_one_unreadable_folder_does_not_hide_its_siblings(
+    dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_iterdir = Path.iterdir
+
+    def iterdir(self: Path) -> object:
+        if self.name == "personB":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    client = TestClient(create_app(cache_dir=str(tmp_path / "c2"), source_root=str(dataset)))
+    resp = client.get("/folders")
+    assert resp.status_code == 200
+    names = {f["name"] for f in resp.json()["folders"]}
+    assert "personA" in names and "personB" not in names
+
+
 def test_folders_requires_source_root(client: TestClient) -> None:
     assert client.get("/folders").status_code == 400
 
@@ -498,6 +516,71 @@ def test_delete_gate_opens_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert client.get("/health").json()["delete_any"] is True
     resp = client.post("/scan/scan/delete", json={"rel_path": "adult.png"})
     assert resp.status_code == 200 and not (root / "adult.png").exists()
+
+
+def test_delete_does_not_resurrect_rows_removed_while_it_ran(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator import scanner
+    from argus_curator.store import ScanStore
+
+    root, cache = _seed_delete_scan(tmp_path)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root), allow_delete=True))
+    real_unlink = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.name == "adult.png":
+            # Another request drops minor.png from the cache while this delete is in flight.
+            store = ScanStore(cache)
+            current = store.load("scan")
+            assert current is not None
+            scanner.drop_results(current, ["minor.png"])
+            store.save(current)
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    resp = client.post("/scan/scan/delete", json={"rel_path": "adult.png"})
+    assert resp.status_code == 200 and resp.json()["total"] == 1
+    assert [r["rel_path"] for r in client.get("/scan/scan").json()["results"]] == ["minor-b.png"]
+
+
+def test_image_block_holds_for_any_spelling_of_the_path(tmp_path: Path) -> None:
+    root, cache = _seed_delete_scan(tmp_path)
+    (root / "sub").mkdir()
+    (root / "alias.png").symlink_to(root / "minor.png")
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/image", params={"path": "adult.png", "scan_id": "scan"}).status_code == 200
+    for params in (
+        {"path": "minor.png", "scan_id": "scan"},
+        {"path": "./minor.png", "scan_id": "scan"},
+        {"path": "sub/../minor.png", "scan_id": "scan"},
+        {"path": "alias.png", "scan_id": "scan"},
+        {"path": "minor.png"},
+        {"path": "./minor-b.png"},
+    ):
+        assert client.get("/image", params=params).status_code == 403, params
+
+
+def test_thumb_of_an_under_18_exposed_frame_is_blurred_by_the_server(tmp_path: Path) -> None:
+    import io
+
+    from PIL import Image, ImageStat
+
+    root, cache = _seed_delete_scan(tmp_path)
+    # A checkerboard: blurring it flattens the spread of pixel values.
+    board = Image.new("L", (64, 64))
+    board.putdata([255 if (x // 8 + y // 8) % 2 else 0 for y in range(64) for x in range(64)])
+    for name in ("minor.png", "adult.png"):
+        board.convert("RGB").save(root / name)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+
+    def spread(params: dict[str, str]) -> float:
+        resp = client.get("/thumb", params=params)
+        assert resp.status_code == 200
+        return ImageStat.Stat(Image.open(io.BytesIO(resp.content)).convert("L")).stddev[0]
+
+    sharp = spread({"path": "adult.png", "scan_id": "scan"})
+    assert sharp > 100
+    assert spread({"path": "minor.png", "scan_id": "scan"}) < sharp / 4
+    assert spread({"path": "./minor.png"}) < sharp / 4
 
 
 def _png_bytes() -> bytes:
@@ -1928,6 +2011,35 @@ def test_deleting_a_scan_removes_a_half_written_save(tmp_path: Path) -> None:
 
     assert store.delete("s") is False  # no finished scan went
     assert list(tmp_path.iterdir()) == []
+
+
+def test_overlapping_saves_of_one_scan_each_use_their_own_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    first, second = _summary("s", "/data/images", total=1), _summary("s", "/data/images", total=2)
+    real_replace = Path.replace
+    nested = {"done": False}
+
+    def replace(self: Path, target: Path) -> Path:
+        # A second save of the same scan lands between the first's write and its replace.
+        if not nested["done"]:
+            nested["done"] = True
+            store.save(second)
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    store.save(first)
+    loaded = store.load("s")
+    assert loaded is not None and loaded.total == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["s.json"]
+    # A temp file a killed save left behind goes with its scan, and only its own.
+    (tmp_path / "s.0123abcd.json.tmp").write_text("{")
+    (tmp_path / "s.v2.0123abcd.json.tmp").write_text("{")
+    assert store.delete("s") is True
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["s.v2.0123abcd.json.tmp"]
 
 
 def _store_with_a_killed_scan(cache: Path, scan_id: str = "killed") -> None:

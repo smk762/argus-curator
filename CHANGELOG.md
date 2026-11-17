@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`caption_url` reaches only a configured host** (decided by the user, PR #179).
+  The hand-off used to reach any public host, and an internal one listed in
+  `CURATOR_CAPTION_ALLOWED_HOSTS`. Now only a listed host is sent the manifest,
+  public or not (a bare `host` entry allows any port, `host:port` that port), and
+  with the variable empty an export naming a `caption_url` is refused with 400
+  naming it. The CLI and engine refuse the same hosts (the export still runs,
+  uncaptioned). argus-studio sends no `caption_url`, so it is unaffected; a
+  deployment handing off to a public lens must now list it.
+
 - **argus-cortex 0.8** (ai-code-auditor#56). Every `argus-cortex` requirement,
   extras included, is now `>=0.8,<0.9`, and curator adopts its shared `net` and
   `limits` helpers.
@@ -37,6 +46,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A negative `sharpness_ref` / `resolution_ref` is refused**
+  (pack-argus-curator-730686a4ee). It inverted the scan's ranking; `ScanConfig`
+  now requires both to be at least 0 (0 already turned the term off, and still
+  does). The wire schema carries the new minimum.
+- **One unreadable folder no longer breaks `GET /folders`**
+  (pack-argus-curator-f82fcf9861). A child that can't be listed (`lost+found`,
+  a dead mount) is left out and logged; its siblings are still listed.
+- **A delete no longer resurrects rows removed while it ran**
+  (pack-argus-curator-c80e146d60). `POST /scan/{id}/delete` saved the copy it
+  loaded before unlinking; it now re-reads the scan and drops its rows from the
+  current copy, under a lock it shares with a move export's drop.
+- **Two saves of one scan can't corrupt it** (pack-argus-curator-af0f507d0f).
+  Every save writes its own `<id>.<random>.json.tmp` before the atomic replace,
+  so an overlapping save no longer moves another's half-written file into place.
+- **A symlink export can't delete its source** (pack-argus-curator-38e6c3ff70).
+  When the destination already was the source file (an export into the source
+  folder, or through a parent symlink), `mode="symlink"` unlinked the original
+  before linking to it. That file is now skipped, as `mode="copy"` skips it.
+- **Carried sidecars no longer overwrite each other in a structured export**
+  (pack-argus-curator-28f17d184f). With `preserve_structure` and
+  `carry_sidecars`, `a/IMG.jpg` and `a/IMG.png` both carried to `a/IMG.txt`.
+  Names that share a stem (or differ only in case or Unicode form) in one
+  folder now get the hash suffix a flattened export gives them, and stay in
+  their folder; `exported_path` in the manifest names the result.
+- **`overlap` mode counts a young face's own person as young**
+  (pack-argus-curator-7044e38d14). When a MiVOLO face age under 18 was matched
+  to a person whose body read adult (or had no age), an exposure on that body
+  counted as "only adults" and the image passed the minor-exposure guard. The
+  younger reading now wins. The default `frame` rule was not affected.
+- **`guard_policies` alone is refused on a scan that did not run SingGuard**
+  (pack-argus-curator-67d5f2fc89), as `guard_unsafe` and `guard_rules` already were.
+- **Images without a pHash no longer win the diversity term**
+  (pack-argus-curator-705607f144). An unhashed candidate counted as the widest
+  possible spread, so a capped selection filled with them; it now counts as a
+  repeat, as an untagged scene or outfit does.
+- **A face no longer loses its body to two weaker pairs**
+  (pack-argus-curator-79d93c84fc). The face-to-body assignment was solved on
+  every score and the `body_face_match` threshold applied after, so two
+  sub-threshold cross pairs could outbid one valid match and leave that face
+  face-only. Pairs at or under the threshold no longer weigh in the solve.
+- **A body crop running past the image edge keeps its pixels**
+  (pack-argus-curator-973d330c33). A face or person box that met the body only
+  in its off-image part gave a negative slice stop, which blacked out most of
+  the crop. Mask offsets are now clamped at both ends, and an empty one masks nothing.
+- **A NudeNet detection goes to the person holding it**
+  (pack-argus-curator-28e56cc0b1). The per-person `nsfw_labels` /
+  `exposed_score` went to the highest IoU, which favours a small box the
+  detection only grazes over a close-up person it lies wholly inside. It now
+  goes to the box covering most of the detection (IoU breaks a tie). The
+  minor-exposure guard never read this assignment: under `overlap` it tests each
+  detection against every young box, so no image was let through by it.
+- **`argus-curator scan` with SingGuard and a destination finishes its report**
+  (pack-argus-curator-c7365a3eb7). The SingGuard summary line overwrote the
+  export mode, so after the files were transferred the "Copied N images" line
+  raised `KeyError` and the command exited 1 without reporting the manifest.
+- **InsightFace's CUDA sessions are built under the GPU lease**
+  (pack-argus-curator-00f89b68b4). `FaceAnalysis()` builds every onnxruntime
+  session, so constructing it before taking the lease put the face models on
+  the card while another tenant held it; only `prepare()` (which sets sizes)
+  was leased. The pack is now fetched first, off the lease, and the app is
+  built and prepared under it.
+- **Garment boxes are plain floats** (pack-argus-curator-7d52f097b6). An edge
+  the frame did not clip stayed the model's `np.float32`, which JSON cannot encode.
+- **SingGuard's caption context finds a dotted name's sidecars**
+  (pack-argus-curator-33c37e7c9b). For `2021.05.03.jpg` it read `2021.05.txt` /
+  `2021.05.xmp` (a sibling's caption, or none) instead of `2021.05.03.txt` /
+  `2021.05.03.xmp`.
+- **The `MANIFEST_VERSION` check counts a new enum value as breaking**
+  (pack-argus-curator-1993a6d0f8). It treated an added value as additive, but a
+  consumer that validates the field rejects a row carrying it (argus-forge reads
+  `target_profile` into cortex's `TargetProfile` `Literal`s), so it now needs a
+  major bump, as a lost value already did.
+- **The `MANIFEST_VERSION` check compares every use of a `$ref` the new row
+  inlined** (pack-argus-curator-e3c65ac0e4). Its cycle guard keyed an inlined
+  definition on the old name alone, so only the first use was compared and a
+  change at a later one passed unseen.
+- **A scan no longer follows symlinks out of its folder**
+  (pack-argus-curator-aebf19d832). A file or link whose resolved path lies
+  outside the scanned folder is skipped, and symlinked directories are not
+  descended into.
+- **The under-18 exposed block on `/image` can't be stepped around**
+  (pack-argus-curator-1d6b28208d). It was decided from the raw `path` against
+  the named scan only, so omitting `scan_id`, `./x.jpg`, `sub/../x.jpg` or a
+  symlink served the original. `/image` now resolves the file first and refuses
+  it (403) when any cached scan reads it as under-18 exposed, and `/thumb` blurs
+  such a frame server-side instead of sending it unblurred.
 - **`ARGUS_CURATOR_ERAX_URL` and `ARGUS_CURATOR_WATERMARK_URL` reach the
   container** (#156). The compose passed neither into `argus-curator`, so
   setting them in `.env` did nothing and EraX and the watermark detector stayed

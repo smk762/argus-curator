@@ -666,8 +666,9 @@ def scan(
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
         unsafe = sum(1 for g in judged if not g.safe)
         gc = summary.guard_config
-        mode = f", {gc.thinking}" + (" (refused, ran fast)" if gc.fell_back else "") if gc.thinking else ""
-        typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{mode}{tail}")
+        # Not `mode`: that is the export's copy/move/symlink, read again after the transfer.
+        thinking = f", {gc.thinking}" + (" (refused, ran fast)" if gc.fell_back else "") if gc.thinking else ""
+        typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{thinking}{tail}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")

@@ -456,6 +456,15 @@ def test_image_context_lines(tmp_path: Path) -> None:
         "a woman in a pink sweater, studio portrait"
     )
 
+    # A dotted name: its sidecars keep every dot, and a sibling's never stands in.
+    dated = tmp_path / "2021.05.03.jpg"
+    dated.write_bytes(_png(10))
+    (tmp_path / "2021.05.03.txt").write_text("the dated frame's caption\n")
+    (tmp_path / "2021.05.txt").write_text("a sibling's caption\n")
+    assert guard_context.image_context(_aged("2021.05.03.jpg", abs_path=str(dated)), frozenset({"caption"})).endswith(
+        "the dated frame's caption"
+    )
+
     (tmp_path / "c.txt").write_text("x" * 5000)
     (tmp_path / "c.xmp").unlink()
     long = guard_context.image_context(_aged("c.jpg", abs_path=str(image)), frozenset({"caption"}))
@@ -541,9 +550,13 @@ def test_large_images_are_downscaled(singguard: type[_SingGuard]) -> None:
 
 
 def test_undecodable_image_is_a_failed_check(singguard: type[_SingGuard]) -> None:
-    results = [ImageResult(rel_path="a.png", abs_path="/d/a", passed=True)]
+    """A frame SingGuard could not read has no verdict, and a guard filter excludes it (fail closed)."""
+    results = [ImageResult(rel_path="a.png", abs_path="/d/a", score=1.0, passed=True)]
     guard.check_images(results, [("a.png", "/d/a", b"not an image")], GuardConfig())
     assert results[0].guard is None and singguard.seen == []
+    for req in ({"guard_unsafe": True}, {"guard_rules": ["C"]}, {"guard_policies": ["default"], "guard_unsafe": True}):
+        selected, why = decide_selection(results, ExportRequest(dest="/o", min_score=0.0, **req), 0.0)
+        assert selected == [] and why["a.png"].startswith("guard-unchecked"), req
 
 
 def test_disabled_check_sends_nothing(singguard: type[_SingGuard]) -> None:
@@ -720,7 +733,11 @@ def test_filters_on_a_scan_without_singguard_are_a_problem() -> None:
         "total": 0, "passed": 0, "rejected": 0, "duplicates": 0, "similar_clusters": 0,
     }  # fmt: skip
     legacy = ScanSummary.model_validate(base)  # cached before SingGuard existed
-    for req in (ExportRequest(dest="/o", guard_unsafe=True), ExportRequest(dest="/o", guard_rules=["A"])):
+    for req in (
+        ExportRequest(dest="/o", guard_unsafe=True),
+        ExportRequest(dest="/o", guard_rules=["A"]),
+        ExportRequest(dest="/o", guard_policies=["default"]),
+    ):
         assert "rescan" in guard_filter_problem(req, legacy)
     ran = ScanSummary.model_validate({**base, "guard_config": {"enabled": True}})
     assert guard_filter_problem(ExportRequest(dest="/o", guard_unsafe=True), ran) is None

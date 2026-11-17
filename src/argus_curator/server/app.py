@@ -42,7 +42,7 @@ except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
 import structlog
-from PIL import Image
+from PIL import Image, ImageFilter
 from pydantic import BaseModel, Field
 
 from argus_curator import __version__, crops, export, scanner
@@ -243,6 +243,59 @@ def _is_within(root: Path, candidate: Path) -> bool:
     return candidate == root or root in candidate.parents
 
 
+class _MinorBlockList:
+    """Resolved paths of every file any cached scan reads as under-18 exposed.
+
+    ``/image`` and ``/thumb`` decide from the *resolved* target, never the raw
+    query string, so ``./x.jpg``, ``sub/../x.jpg``, a symlink, or omitting
+    ``scan_id`` all land on the same verdict. Every cached scan counts, not only
+    the one a request names. Each scan file is parsed once per mtime.
+    """
+
+    def __init__(self, store: ScanStore, rule: Any) -> None:
+        self._store = store
+        self._rule = rule
+        self._lock = threading.Lock()
+        self._by_file: dict[Path, tuple[float, frozenset[Path]]] = {}
+
+    def _scan_paths(self, summary: ScanSummary) -> frozenset[Path]:
+        blocked: set[Path] = set()
+        for r in summary.results:
+            if not minor_exposed(r, self._rule):
+                continue
+            for raw in (r.abs_path, str(Path(summary.folder) / r.rel_path)):
+                try:
+                    blocked.add(Path(raw).resolve())
+                except (ValueError, OSError):
+                    continue
+        return frozenset(blocked)
+
+    def blocked(self, target: Path) -> bool:
+        resolved = target.resolve()
+        with self._lock:
+            seen: set[Path] = set()
+            for path in self._store.cache_dir.glob("*.json"):
+                seen.add(path)
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:  # removed meanwhile
+                    continue
+                cached = self._by_file.get(path)
+                if cached is None or cached[0] != mtime:
+                    try:
+                        summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
+                        cached = (mtime, self._scan_paths(summary))
+                    except Exception as exc:  # an unreadable cache file names no file to block
+                        logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
+                        cached = (mtime, frozenset())
+                    self._by_file[path] = cached
+                if resolved in cached[1]:
+                    return True
+            for gone in set(self._by_file) - seen:
+                del self._by_file[gone]
+        return False
+
+
 def _count_images(directory: Path, cap: int = _COUNT_CAP) -> int:
     """Recursive count of supported images under *directory* (capped)."""
     n = 0
@@ -269,12 +322,18 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
         for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
             if entry.is_dir() and not entry.name.startswith("."):
                 sub_rel = str(Path(rel) / entry.name) if rel else entry.name
-                subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                try:
+                    subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                    abs_path = str(entry.resolve())
+                except OSError as exc:
+                    # One unreadable child (lost+found, a dead mount) must not hide its siblings.
+                    logger.warning("browse_folder_unreadable", rel_path=sub_rel, error=str(exc))
+                    continue
                 folders.append(
                     {
                         "name": entry.name,
                         "rel_path": sub_rel,
-                        "abs_path": str(entry.resolve()),
+                        "abs_path": abs_path,
                         "image_count": _count_images(entry),
                         "subfolder_count": subfolders,
                     }
@@ -509,6 +568,9 @@ def create_app(
     # Fails the start on an unknown ARGUS_CURATOR_MINOR_EXPOSED, rather than a
     # first selection or delete: never a silent fallback to another rule.
     minor_rule = minor_exposed_mode()
+    minor_block = _MinorBlockList(store, minor_rule)
+    # Serialises the load-drop-save of a cached scan (delete, a move export's drop).
+    cache_lock = threading.Lock()
     max_upload = _max_upload_bytes()
     if allow_delete is None:
         # Two flags, either one enough: devmode is the broad "this is my own
@@ -1080,12 +1142,20 @@ def create_app(
             failure = exc
         if gone:
 
-            def _drop_and_save() -> None:
+            def _drop_and_save() -> ScanSummary:
                 # Regrouping near-duplicates is O(n^2) on pHash: off the event loop.
-                scanner.drop_results(summary, gone)
-                store.save(summary)
+                # Re-read under the lock: saving the copy loaded before the unlink
+                # would put back rows another delete or a move removed meanwhile.
+                with cache_lock:
+                    current = store.load(scan_id)
+                    if current is None:  # Deleted meanwhile: saving would bring the scan back.
+                        scanner.drop_results(summary, gone)
+                        return summary
+                    scanner.drop_results(current, gone)
+                    store.save(current)
+                    return current
 
-            await asyncio.to_thread(_drop_and_save)
+            summary = await asyncio.to_thread(_drop_and_save)
         if failure is not None:
             raise HTTPException(status_code=400, detail=f"could not delete: {failure}; deleted: {gone}") from failure
         body: dict[str, Any] = {"rel_paths": paths, "total": summary.total}
@@ -1104,6 +1174,9 @@ def create_app(
         target = _image_file(path, scan_id, _scan_root_or_400(summary) if summary else None)
         # A row's face boxes are of the frame the scan saw, so a viewer's thumbnail has to be that frame too.
         box = next((r.crop for r in summary.results if r.rel_path == path), None) if summary else None
+        # An under-18 exposed frame is blurred here, not only by the viewer, so the
+        # bytes /thumb sends are never the unblurred frame.
+        blur = await asyncio.to_thread(minor_block.blocked, target)
 
         def _render() -> bytes:
             with Image.open(target) as img:
@@ -1111,6 +1184,8 @@ def create_app(
                     img = crops.crop_image(img, box)
                 img = img.convert("RGB")
                 img.thumbnail((THUMB_MAX, THUMB_MAX))
+                if blur:
+                    img = img.filter(ImageFilter.GaussianBlur(radius=max(img.size) / 8))
                 buf = io.BytesIO()
                 img.save(buf, format="WEBP", quality=80)
                 return buf.getvalue()
@@ -1131,12 +1206,11 @@ def create_app(
         An under-18 image with an exposed score is not served. The grid keeps a
         blurred thumbnail, and the file itself is only removed by delete.
         """
-        if scan_id:
-            summary = store.load(scan_id)
-            match = next((r for r in summary.results if r.rel_path == path), None) if summary else None
-            if match is not None and minor_exposed(match, minor_rule):
-                raise HTTPException(status_code=403, detail="This image stays blurred.")
         target = _image_file(path, scan_id)
+        # Decided from the resolved file against every cached scan, so neither
+        # another spelling of the path nor omitting scan_id gets around it.
+        if await asyncio.to_thread(minor_block.blocked, target):
+            raise HTTPException(status_code=403, detail="This image stays blurred.")
         return FileResponse(target, media_type=_IMAGE_TYPES[target.suffix.lower()])
 
     @app.post("/upload")
@@ -1242,13 +1316,16 @@ def create_app(
     async def _check_caption_url(req: ExportRequest) -> None:
         """Refuse (400) a ``caption_url`` the hand-off would refuse, before the export runs.
 
-        The same check :func:`argus_cortex.net.fetch` makes when the manifest is
-        sent (which checks again then): a host that resolves to a non-public
-        address must be listed in ``CURATOR_CAPTION_ALLOWED_HOSTS``. The detail
-        names the host only, never the URL.
+        The same checks the hand-off makes when the manifest is sent (which
+        makes them again then): the host must be listed in
+        ``CURATOR_CAPTION_ALLOWED_HOSTS``, public or not, and its address must
+        pass :func:`argus_cortex.net.check_url`. The detail names the host only,
+        never the URL.
         """
         if not (req.caption_url and req.write_manifest):
             return
+        if (problem := export.caption_url_problem(req.caption_url)) is not None:
+            raise HTTPException(status_code=400, detail=f"caption_url refused: {problem}")
         try:
             await asyncio.to_thread(check_url, req.caption_url, allow_hosts=export.caption_allowed_hosts())
         except UrlRefused as exc:
@@ -1271,11 +1348,12 @@ def create_app(
         try:
             # Re-read: the export can run for minutes, and saving the copy
             # loaded before it would put back rows a delete removed meanwhile.
-            current = store.load(summary.scan_id)
-            if current is None:  # Deleted meanwhile: saving would bring the scan back.
-                return
-            scanner.drop_results(current, moved)
-            store.save(current)
+            with cache_lock:
+                current = store.load(summary.scan_id)
+                if current is None:  # Deleted meanwhile: saving would bring the scan back.
+                    return
+                scanner.drop_results(current, moved)
+                store.save(current)
         except Exception as exc:
             logger.warning("export_cache_drop_failed", scan_id=summary.scan_id, error=str(exc))
 

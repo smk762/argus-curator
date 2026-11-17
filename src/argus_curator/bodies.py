@@ -124,7 +124,10 @@ def assign(bodies: np.ndarray, faces_xywh: list[list[float]], min_score: float) 
         return out
     faces = [_xyxy(f) for f in faces_xywh]
     scores = np.array([[match_score(np.asarray(b, np.float64), f) for f in faces] for b in bodies])
-    for b, f in zip(*linear_sum_assignment(scores, maximize=True), strict=True):
+    # Pairs at or under the threshold are no match, so they must not weigh in the
+    # assignment either: solved on raw scores, two weak pairs can outbid one valid one.
+    eligible = np.where(scores > min_score, scores, 0.0)
+    for b, f in zip(*linear_sum_assignment(eligible, maximize=True), strict=True):
         if scores[b, f] > min_score:
             out[f] = int(b)
     return out
@@ -154,8 +157,12 @@ def body_crop(
     for box, is_person in others:
         if _intersection(body, box) == 0.0:
             continue
-        ox1, oy1 = max(0, int(box[0]) - x1), max(0, int(box[1]) - y1)
-        ox2, oy2 = min(w, int(box[2]) - x1), min(h, int(box[3]) - y1)
+        # Both ends clamped to the crop: a box that meets the body only off the image
+        # edge would otherwise give a negative stop, which numpy counts from the end.
+        ox1, oy1 = min(w, max(0, int(box[0]) - x1)), min(h, max(0, int(box[1]) - y1))
+        ox2, oy2 = max(0, min(w, int(box[2]) - x1)), max(0, min(h, int(box[3]) - y1))
+        if ox2 <= ox1 or oy2 <= oy1:
+            continue
         if is_person:
             if ox1 < w * CROP_ROUND_RATE:
                 ox1 = 0
@@ -194,8 +201,21 @@ def overlaps(a: list[float], b: list[float]) -> bool:
     return _intersection(_xyxy(a), _xyxy(b)) > 0.0
 
 
+def _coverage_xywh(det: list[float], target: list[float]) -> float:
+    """The share of *det*'s area inside *target*."""
+    db = _xyxy(det)
+    area = _area(db)
+    return _intersection(db, _xyxy(target)) / area if area else 0.0
+
+
 def associate_nsfw(results: list[ImageResult]) -> None:
     """Give each NudeNet detection to the person (else face) its box overlaps most.
+
+    "Most" is the share of the detection inside the box, IoU breaking a tie:
+    IoU alone penalises a large box, so a small region wholly on a close-up
+    person could go to a smaller one it only grazes. This is the per-person
+    record only; :func:`selection.minor_exposed` tests each detection against
+    every young box, so the guard does not depend on which person gets it.
 
     A detection that overlaps nothing is left unassigned; :func:`selection.minor_exposed`
     treats those as image-level (fail closed). Called after faces and NudeNet both
@@ -216,12 +236,12 @@ def associate_nsfw(results: list[ImageResult]) -> None:
         if not targets:
             continue
         for det in result.nsfw.detections:
-            best, best_iou = None, 0.0
+            best, best_key = None, (0.0, 0.0)
             for bbox, obj in targets:
-                iou = _iou_xywh(det.bbox, bbox)
-                if iou > best_iou:
-                    best, best_iou = obj, iou
-            if best is None or best_iou <= 0.0:
+                key = (_coverage_xywh(det.bbox, bbox), _iou_xywh(det.bbox, bbox))
+                if key > best_key:
+                    best, best_key = obj, key
+            if best is None or best_key[0] <= 0.0:
                 continue
             labels = best.nsfw_labels
             labels[det.label] = max(float(labels.get(det.label, 0.0)), det.score)

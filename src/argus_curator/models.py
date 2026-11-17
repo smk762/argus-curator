@@ -175,9 +175,10 @@ class ScanConfig(BaseModel):
     weight_artifact: float = 0.15
     weight_subject: float = 0.20
 
-    # Normalisation ceilings
-    sharpness_ref: float = 800.0
-    resolution_ref: int = 1024
+    # Normalisation ceilings. 0 turns the term off (it scores 0); a negative
+    # ceiling would invert the ranking, so it is refused.
+    sharpness_ref: float = Field(800.0, ge=0.0)
+    resolution_ref: int = Field(1024, ge=0)
 
     # Diversity blend used by the optional selection cap (0=score, 1=spread)
     diversity_weight: float = 0.40

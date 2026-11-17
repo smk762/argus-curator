@@ -87,6 +87,17 @@ def test_postprocess_keeps_confident_garments_only() -> None:
     assert shoe[2][0] + shoe[2][2] == pytest.approx(1000.0)
 
 
+def test_postprocess_boxes_are_python_floats() -> None:
+    """The model's float32 boxes must not leak np.float32 into a box JSON can't encode."""
+    import json
+
+    logits = np.stack([_query(10, (0.5, 0.5, 0.2, 0.4))[0]]).astype(np.float32)
+    boxes = np.array([(0.5, 0.5, 0.2, 0.4)], dtype=np.float32)
+    ((_lbl, conf, bbox),) = garments.postprocess(logits, boxes, 1000, 500, min_conf=0.5)
+    assert all(type(v) is float for v in bbox) and type(conf) is float
+    json.dumps(bbox)
+
+
 def test_touches_edge_and_dominant_color() -> None:
     assert garments.touches_edge([0, 100, 50, 50], 1000, 1000)
     assert garments.touches_edge([900, 100, 99, 50], 1000, 1000)

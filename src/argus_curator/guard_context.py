@@ -126,11 +126,12 @@ def caption_line(abs_path: str) -> str | None:
     digiKam does); Lightroom writes ``<stem>.xmp``. The first sidecar found is read.
     """
     image = Path(abs_path)
-    stem = image.with_suffix("")
-    txt = _read_small(stem.with_suffix(".txt"))
+    # with_suffix on the image itself: only its extension is swapped, so a
+    # dotted name (2021.05.03.jpg) reads 2021.05.03.txt, not 2021.05.txt.
+    txt = _read_small(image.with_suffix(".txt"))
     xmp = _read_small(sidecar_path(image))
     if xmp is None:
-        xmp = _read_small(stem.with_suffix(".xmp"))
+        xmp = _read_small(image.with_suffix(".xmp"))
     if txt is None and xmp is None:
         return None
     keywords, description = parse_xmp(xmp) if xmp is not None else ([], "")
