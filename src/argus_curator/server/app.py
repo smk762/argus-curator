@@ -18,6 +18,7 @@ Routes (section 4 of the brief):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import json
 import os
@@ -26,7 +27,7 @@ import threading
 import uuid
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 try:
     # Inside the guard with fastapi: argus_cortex.server ships in argus-cortex 0.2.0+
@@ -243,6 +244,17 @@ def _is_within(root: Path, candidate: Path) -> bool:
     return candidate == root or root in candidate.parents
 
 
+class _Blocked(NamedTuple):
+    """What one scan cache file blocks: exact files, whole folders, or every target."""
+
+    files: frozenset[Path] = frozenset()
+    roots: tuple[Path, ...] = ()
+    everything: bool = False
+
+    def covers(self, target: Path) -> bool:
+        return self.everything or target in self.files or any(r == target or r in target.parents for r in self.roots)
+
+
 class _MinorBlockList:
     """Resolved paths of every file any cached scan reads as under-18 exposed.
 
@@ -250,25 +262,70 @@ class _MinorBlockList:
     query string, so ``./x.jpg``, ``sub/../x.jpg``, a symlink, or omitting
     ``scan_id`` all land on the same verdict. Every cached scan counts, not only
     the one a request names. Each scan file is parsed once per mtime.
+
+    A cache file that does not validate fails closed, as narrowly as it can
+    still be read. When every row still parses on its own, those rows decide as
+    usual. Otherwise every file under the scan's ``folder`` is blocked, plus the
+    ``abs_path`` of any broken row. When not even the folder can be read (not
+    JSON, no ``folder``, unreadable), every target is blocked while it exists.
     """
 
     def __init__(self, store: ScanStore, rule: Any) -> None:
         self._store = store
         self._rule = rule
         self._lock = threading.Lock()
-        self._by_file: dict[Path, tuple[float, frozenset[Path]]] = {}
+        self._by_file: dict[Path, tuple[float, _Blocked]] = {}
 
-    def _scan_paths(self, summary: ScanSummary) -> frozenset[Path]:
+    def _scan_paths(self, folder: str, results: list[ImageResult]) -> frozenset[Path]:
         blocked: set[Path] = set()
-        for r in summary.results:
+        for r in results:
             if not minor_exposed(r, self._rule):
                 continue
-            for raw in (r.abs_path, str(Path(summary.folder) / r.rel_path)):
+            for raw in (r.abs_path, str(Path(folder) / r.rel_path)):
                 try:
                     blocked.add(Path(raw).resolve())
                 except (ValueError, OSError):
                     continue
         return frozenset(blocked)
+
+    def _read(self, path: Path) -> _Blocked:
+        """What *path* blocks; never raises, and never blocks less than the file could mean."""
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            logger.error("minor_blocklist_scan_unreadable_blocking_everything", file=path.name, error=str(exc))
+            return _Blocked(everything=True)
+        try:
+            summary = ScanSummary.model_validate_json(text)
+            return _Blocked(files=self._scan_paths(summary.folder, summary.results))
+        except Exception as exc:  # fall through to the lenient read below
+            error = str(exc)
+        try:
+            data = json.loads(text)
+            folder = data["folder"]
+            if not isinstance(folder, str) or not folder:
+                raise ValueError("no folder")
+            root = Path(folder).resolve()
+        except Exception:
+            logger.error("minor_blocklist_scan_unreadable_blocking_everything", file=path.name, error=error)
+            return _Blocked(everything=True)
+        rows = data.get("results")
+        rows_ok = isinstance(rows, list)
+        parsed: list[ImageResult] = []
+        broken: set[Path] = set()
+        for row in rows if rows_ok else []:
+            try:
+                parsed.append(ImageResult.model_validate(row))
+            except Exception:
+                raw = row.get("abs_path") if isinstance(row, dict) else None
+                if isinstance(raw, str) and raw:
+                    with contextlib.suppress(ValueError, OSError):
+                        broken.add(Path(raw).resolve())
+        if rows_ok and len(parsed) == len(rows):
+            logger.error("minor_blocklist_scan_invalid_rows_used", file=path.name, error=error)
+            return _Blocked(files=self._scan_paths(folder, parsed))
+        logger.error("minor_blocklist_scan_invalid_blocking_folder", file=path.name, folder=str(root), error=error)
+        return _Blocked(files=self._scan_paths(folder, parsed) | broken, roots=(root,))
 
     def blocked(self, target: Path) -> bool:
         resolved = target.resolve()
@@ -282,14 +339,9 @@ class _MinorBlockList:
                     continue
                 cached = self._by_file.get(path)
                 if cached is None or cached[0] != mtime:
-                    try:
-                        summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
-                        cached = (mtime, self._scan_paths(summary))
-                    except Exception as exc:  # an unreadable cache file names no file to block
-                        logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
-                        cached = (mtime, frozenset())
+                    cached = (mtime, self._read(path))
                     self._by_file[path] = cached
-                if resolved in cached[1]:
+                if cached[1].covers(resolved):
                     return True
             for gone in set(self._by_file) - seen:
                 del self._by_file[gone]

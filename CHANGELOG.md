@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A scan cache file that won't parse no longer lifts the under-18 block**
+  (decided by the user, PR #179). `/image` and `/thumb` used to treat such a
+  file as naming nothing, so the frames it flagged were served. It now fails
+  closed as narrowly as it can still be read: when every row parses on its own,
+  the rows decide as usual; otherwise every file under the scan's `folder` is
+  blocked, plus any broken row's `abs_path`; and when not even the folder can be
+  read (not JSON, no `folder`), every image is refused while the file exists.
+  Each case logs an error naming the file. Delete or re-run the scan to lift it.
+
 - **`caption_url` reaches only a configured host** (decided by the user, PR #179).
   The hand-off used to reach any public host, and an internal one listed in
   `CURATOR_CAPTION_ALLOWED_HOSTS`. Now only a listed host is sent the manifest,

@@ -559,6 +559,68 @@ def test_image_block_holds_for_any_spelling_of_the_path(tmp_path: Path) -> None:
         assert client.get("/image", params=params).status_code == 403, params
 
 
+def _corrupt_cache(cache: Path, mutate) -> Path:
+    """Rewrite the one cached scan file through *mutate* (dict -> dict, or str for raw text)."""
+    import json
+
+    (path,) = cache.glob("*.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    out = mutate(data)
+    path.write_text(out if isinstance(out, str) else json.dumps(out), encoding="utf-8")
+    return path
+
+
+def _status(client: TestClient, name: str) -> int:
+    return client.get("/image", params={"path": name}).status_code
+
+
+def test_invalid_scan_file_whose_rows_all_parse_still_blocks_by_row(tmp_path: Path) -> None:
+    """A bad top-level field: the rows still decide, so the minor is refused and the adult served."""
+    root, cache = _seed_delete_scan(tmp_path)
+    _corrupt_cache(cache, lambda d: {**d, "total": "not a number"})
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert _status(client, "minor.png") == 403
+    assert _status(client, "minor-b.png") == 403
+    assert _status(client, "adult.png") == 200
+
+
+def test_scan_file_with_a_broken_row_blocks_its_whole_folder(tmp_path: Path) -> None:
+    """A row that won't parse could be any frame: everything under the scan's folder is refused."""
+    root, cache = _seed_delete_scan(tmp_path)
+
+    def break_minor(d: dict) -> dict:
+        d["results"][0]["faces"] = "garbled"
+        return d
+
+    _corrupt_cache(cache, break_minor)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    for name in ("minor.png", "minor-b.png", "adult.png"):
+        assert _status(client, name) == 403, name
+
+
+@pytest.mark.parametrize("raw", ["{not json", "[]", '{"results": []}', '{"folder": ""}'])
+def test_scan_file_without_a_readable_folder_blocks_everything(tmp_path: Path, raw: str) -> None:
+    """Not JSON, or no folder to narrow it to: every image is refused while the file exists."""
+    root, cache = _seed_delete_scan(tmp_path)
+    bad = _corrupt_cache(cache, lambda _d: raw)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert _status(client, "adult.png") == 403
+    bad.unlink()
+    assert _status(client, "adult.png") == 200  # removing the file lifts the block
+
+
+def test_a_cache_file_corrupted_after_it_was_read_is_re_read(tmp_path: Path) -> None:
+    root, cache = _seed_delete_scan(tmp_path)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert _status(client, "adult.png") == 200
+    bad = _corrupt_cache(cache, lambda _d: "{truncated")
+    import os
+
+    st = bad.stat()
+    os.utime(bad, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert _status(client, "adult.png") == 403
+
+
 def test_thumb_of_an_under_18_exposed_frame_is_blurred_by_the_server(tmp_path: Path) -> None:
     import io
 
