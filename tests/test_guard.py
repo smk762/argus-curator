@@ -550,9 +550,13 @@ def test_large_images_are_downscaled(singguard: type[_SingGuard]) -> None:
 
 
 def test_undecodable_image_is_a_failed_check(singguard: type[_SingGuard]) -> None:
-    results = [ImageResult(rel_path="a.png", abs_path="/d/a", passed=True)]
+    """A frame SingGuard could not read has no verdict, and a guard filter excludes it (fail closed)."""
+    results = [ImageResult(rel_path="a.png", abs_path="/d/a", score=1.0, passed=True)]
     guard.check_images(results, [("a.png", "/d/a", b"not an image")], GuardConfig())
     assert results[0].guard is None and singguard.seen == []
+    for req in ({"guard_unsafe": True}, {"guard_rules": ["C"]}, {"guard_policies": ["default"], "guard_unsafe": True}):
+        selected, why = decide_selection(results, ExportRequest(dest="/o", min_score=0.0, **req), 0.0)
+        assert selected == [] and why["a.png"].startswith("guard-unchecked"), req
 
 
 def test_disabled_check_sends_nothing(singguard: type[_SingGuard]) -> None:
