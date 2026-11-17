@@ -31,6 +31,7 @@ Each rule names what enforces it. A new rule nothing checks yet is marked **UNEN
 |---|---|
 | A `WIRE_MODELS` change merged without regenerating `schema/curator-wire.schema.json` (`make schema`) | `tests/test_schema.py::test_committed_schema_is_current`; CI `argus-curator schema --check` |
 | `model_config = RESPONSE_ONLY` on a model a request carries (the `ScanRequest` configs, `TargetProfile`): a client may omit those defaults | `tests/test_schema.py::test_only_models_no_request_carries_list_their_defaults_as_required` |
+| A symlink export deleting the source file it was to link to (the destination already is the source) | `tests/test_export.py::test_symlink_export_into_the_source_folder_never_deletes_the_source` |
 | A manifest row for a file whose transfer failed or was skipped | `tests/test_export.py::test_skipped_sources_are_excluded_from_manifest` |
 | A manifest path consumers must re-derive: `exported_path`/`exported_abs_path` are the de-collided on-disk paths, and under `mode="move"` `abs_path` is the destination (#9) | `tests/test_export.py::test_exported_abs_paths_survive_flattened_de_collision`, `::test_move_manifest_abs_path_points_at_the_moved_file` |
 | A breaking `ManifestRow` change without a `MANIFEST_VERSION` major bump, or any row change without a bump (argus-lens and argus-forge branch on it) | `tests/test_manifest_version.py::test_manifest_version_matches_the_recorded_row` against `schema/manifest-row.snapshot.json`; `make manifest-snapshot` refuses an unbumped or breaking change |

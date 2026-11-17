@@ -111,14 +111,24 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_s
     def key(name: str) -> str:
         return _norm_name(PurePosixPath(name).stem if by_stem else name)
 
+    def dest_key(dest: str) -> tuple[str, str]:
+        # Collisions are per directory: a/IMG.jpg and b/IMG.jpg never meet.
+        p = PurePosixPath(dest)
+        return _norm_name(str(p.parent)), key(p.name)
+
     reserved = _RESERVED_STEMS if by_stem else frozenset()
     dests: dict[str, str] = {}
     digest_len: dict[str, int] = {}
     if preserve_structure:
         dests = {r.rel_path: r.rel_path for r in selected}
-        digest_len = dict.fromkeys((rel for rel in dests if "/" not in rel and key(rel) in reserved), 8)
-        for rel in digest_len:
-            logger.warning("export_basename_collision", basename=rel, rel_paths=[rel])
+        by_key: dict[tuple[str, str], list[str]] = {}
+        for rel in dests:
+            by_key.setdefault(dest_key(rel), []).append(rel)
+        for (parent, name), rels in by_key.items():
+            # Same directory, same key: a/IMG.jpg + a/IMG.png would carry to one a/IMG.txt.
+            if len(rels) > 1 or (parent == "." and name in reserved):
+                logger.warning("export_basename_collision", basename=PurePosixPath(rels[0]).name, rel_paths=rels)
+                digest_len.update(dict.fromkeys(rels, 8))
     else:
         by_name: dict[str, list[str]] = {}
         for r in selected:
@@ -133,9 +143,11 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_s
     pending = set(digest_len)
     while pending:
         for rel in pending:
-            dests[rel] = _suffixed(rel, digest_len[rel])
-        counts = Counter(key(d) for d in dests.values())
-        pending = {rel for rel in digest_len if counts[key(dests[rel])] > 1}
+            name = _suffixed(rel, digest_len[rel])
+            parent = PurePosixPath(rel).parent
+            dests[rel] = str(parent / name) if preserve_structure and str(parent) != "." else name
+        counts = Counter(dest_key(d) for d in dests.values())
+        pending = {rel for rel in digest_len if counts[dest_key(dests[rel])] > 1}
         stuck = sorted(rel for rel in pending if digest_len[rel] >= 40)
         if stuck:
             raise ValueError(f"cannot de-collide flattened basenames for: {stuck}")
@@ -149,9 +161,16 @@ def _transfer_one(src: Path, dst: Path, mode: ExportMode) -> None:
     if mode == "move":
         shutil.move(str(src), str(dst))
     elif mode == "symlink":
-        if dst.exists() or dst.is_symlink():
+        target = src.resolve()
+        if dst.is_symlink():
+            dst.unlink()  # removes only the link (e.g. an earlier symlink export's)
+        elif dst.exists():
+            # dst may *be* the source (dest == source folder, or a parent symlink):
+            # unlinking it would delete the original, as copy refuses to do.
+            if os.path.samefile(dst, target):
+                raise shutil.SameFileError(f"{dst} is the source file")
             dst.unlink()
-        dst.symlink_to(src.resolve())
+        dst.symlink_to(target)
     else:  # copy
         if dst.is_symlink():
             # A link left by an earlier symlink export: copying through it would overwrite its target.

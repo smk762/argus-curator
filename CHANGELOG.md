@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A symlink export can't delete its source** (pack-argus-curator-38e6c3ff70).
+  When the destination already was the source file (an export into the source
+  folder, or through a parent symlink), `mode="symlink"` unlinked the original
+  before linking to it. That file is now skipped, as `mode="copy"` skips it.
+- **Carried sidecars no longer overwrite each other in a structured export**
+  (pack-argus-curator-28f17d184f). With `preserve_structure` and
+  `carry_sidecars`, `a/IMG.jpg` and `a/IMG.png` both carried to `a/IMG.txt`.
+  Names that share a stem (or differ only in case or Unicode form) in one
+  folder now get the hash suffix a flattened export gives them, and stay in
+  their folder; `exported_path` in the manifest names the result.
 - **A scan no longer follows symlinks out of its folder**
   (pack-argus-curator-aebf19d832). A file or link whose resolved path lies
   outside the scanned folder is skipped, and symlinked directories are not

@@ -270,6 +270,18 @@ def test_flattened_carry_decollides_on_stem(tmp_path: Path) -> None:
     assert len(stems) == 2
 
 
+def test_structured_carry_decollides_on_stem_within_a_folder(tmp_path: Path) -> None:
+    """a/IMG.jpg and a/IMG.png keep their folder but would share a/IMG.txt."""
+    rels = ("a/IMG.jpg", "a/IMG.png", "b/IMG.jpg", "IMG.jpg", "img.png")
+    sel = [ImageResult(rel_path=p, abs_path=str(tmp_path / p)) for p in rels]
+    dests = _plan_dest_paths(sel, preserve_structure=True, by_stem=True)
+    # A folder's lone name keeps its rel_path; colliding ones stay in their folder.
+    assert dests["b/IMG.jpg"] == "b/IMG.jpg"
+    assert all(str(Path(dests[rel]).parent) == str(Path(rel).parent) for rel in rels)
+    places = {(str(Path(d).parent), Path(d).stem.casefold()) for d in dests.values()}
+    assert len(places) == len(rels)
+
+
 def test_run_stats_rejects_nan() -> None:
     with pytest.raises(ValidationError):
         ExportRequest(dest="/tmp/x", run_stats={"ratio": float("nan")})

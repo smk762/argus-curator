@@ -168,6 +168,22 @@ def test_symlink_mode(dataset: Path, tmp_path: Path) -> None:
     assert a_link.is_symlink()
 
 
+def test_symlink_export_into_the_source_folder_never_deletes_the_source(dataset: Path, tmp_path: Path) -> None:
+    summary = scan_folder(dataset)
+    req = ExportRequest(scan_id=summary.scan_id, dest=str(dataset), mode="symlink", min_score=0.0, write_manifest=False)
+    before = {r.rel_path: (dataset / r.rel_path).read_bytes() for r in summary.results}
+    result = export_selection(summary, req)
+    assert result.copied == 0
+    for rel, data in before.items():
+        assert not (dataset / rel).is_symlink()
+        assert (dataset / rel).read_bytes() == data
+    # A re-export over an earlier symlink export still replaces the link.
+    dest = tmp_path / "linked"
+    export_selection(summary, req.model_copy(update={"dest": str(dest)}))
+    again = export_selection(summary, req.model_copy(update={"dest": str(dest)}))
+    assert again.copied >= 1
+
+
 # ---------------------------------------------------------------------------
 # Manifest/result path contract (issues #9, #10, #11). The recurring failure is
 # a consumer having to reconstruct the server's layout — or being handed a path
