@@ -61,6 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Names that share a stem (or differ only in case or Unicode form) in one
   folder now get the hash suffix a flattened export gives them, and stay in
   their folder; `exported_path` in the manifest names the result.
+- **`overlap` mode counts a young face's own person as young**
+  (pack-argus-curator-7044e38d14). When a MiVOLO face age under 18 was matched
+  to a person whose body read adult (or had no age), an exposure on that body
+  counted as "only adults" and the image passed the minor-exposure guard. The
+  younger reading now wins. The default `frame` rule was not affected.
+- **`guard_policies` alone is refused on a scan that did not run SingGuard**
+  (pack-argus-curator-67d5f2fc89), as `guard_unsafe` and `guard_rules` already were.
+- **Images without a pHash no longer win the diversity term**
+  (pack-argus-curator-705607f144). An unhashed candidate counted as the widest
+  possible spread, so a capped selection filled with them; it now counts as a
+  repeat, as an untagged scene or outfit does.
 - **A scan no longer follows symlinks out of its folder**
   (pack-argus-curator-aebf19d832). A file or link whose resolved path lies
   outside the scanned folder is skipped, and symlinked directories are not

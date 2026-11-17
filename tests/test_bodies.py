@@ -270,3 +270,35 @@ def test_associate_nsfw_gives_each_detection_to_the_overlapping_person(monkeypat
     )
     bodies.associate_nsfw([r])
     assert minor_exposed(r) is True
+
+
+def test_overlap_rule_counts_a_young_face_on_a_person_whose_body_reads_adult() -> None:
+    """Face and body ages disagree: the young face's own person box is young."""
+    from argus_cortex.moderation import NsfwDetection, NsfwResult
+
+    from argus_curator.models import FaceAttributes, FaceDetection, PersonDetection
+    from argus_curator.selection import minor_exposed
+
+    young = PersonDetection(bbox=[0, 0, 100, 200], det_score=0.9, age_years=16.0, age_source="mivolo", age_body=True)
+    # MiVOLO reads this body as adult, but the face matched to it reads 15.
+    disputed = PersonDetection(bbox=[200, 0, 100, 200], det_score=0.8, age_years=30.0, age_source="mivolo")
+    r = ImageResult(
+        rel_path="x.png",
+        abs_path="/d/x.png",
+        passed=True,
+        people=[young, disputed],
+        faces=[
+            FaceDetection(
+                bbox=[220, 10, 30, 30],
+                det_score=0.9,
+                person_index=1,
+                attributes=FaceAttributes(age_years=15.0, age_source="mivolo"),
+            )
+        ],
+        nsfw=NsfwResult(
+            detections=[NsfwDetection(label="FEMALE_BREAST_EXPOSED", score=0.8, bbox=[210, 80, 40, 40])],
+            labels={"FEMALE_BREAST_EXPOSED": 0.8},
+            exposed_score=0.8,
+        ),
+    )
+    assert minor_exposed(r, "overlap") is True

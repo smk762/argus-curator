@@ -337,3 +337,19 @@ def test_selected_rel_paths_is_not_a_record_of_what_landed(dataset: Path, tmp_pa
     assert doomed.rel_path not in result.exported_paths
     assert doomed.rel_path not in result.exported_abs_paths
     assert result.skipped >= 1
+
+
+def test_unhashed_candidates_do_not_win_the_diversity_term() -> None:
+    from argus_curator.selection import select_diverse
+
+    def row(rel: str, score: float, phash: str) -> ImageResult:
+        return ImageResult(rel_path=rel, abs_path=f"/src/{rel}", score=score, phash=phash)
+
+    candidates = [
+        row("a.jpg", 1.0, "0000000000000000"),
+        row("b.jpg", 0.9, ""),
+        row("c.jpg", 0.9, "not-a-hash"),
+        row("d.jpg", 0.5, "ffffffffffffffff"),
+    ]
+    picked = [r.rel_path for r in select_diverse(candidates, 2, 0.5)]
+    assert picked == ["a.jpg", "d.jpg"]

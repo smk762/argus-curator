@@ -132,7 +132,13 @@ def select_diverse(
         best_idx, best_val = None, -1.0
         for i in remaining:
             score_norm = candidates[i].score / max_score
-            if not selected_hashes or hashes[i] is None:
+            if not selected_idx:
+                div_norm = 1.0
+            elif hashes[i] is None:
+                # No pHash: its spread is unknown, so it counts as a repeat, as an
+                # untagged scene or outfit does, rather than as the widest spread.
+                div_norm = 0.0
+            elif not selected_hashes:
                 div_norm = 1.0
             else:
                 div_norm = min(hashes[i] - sh for sh in selected_hashes) / _MAX_DIST
@@ -201,7 +207,15 @@ def minor_exposed(result: ImageResult, mode: MinorExposedMode | None = None) -> 
         ):
             return True  # a young face whose body was not found: any exposure may be theirs
         boxes = [p.bbox for p in result.people]
-        young = [p.bbox for p in result.people if _young_mivolo(p.age_years)]
+        # A person is young by their own body age or by a young face matched to them:
+        # when the two disagree, the younger reading wins.
+        young_idx = {i for i, p in enumerate(result.people) if _young_mivolo(p.age_years)}
+        young_idx |= {
+            face.person_index
+            for face, age in zip(result.faces, face_years, strict=True)
+            if _young_mivolo(age) and face.person_index is not None
+        }
+        young = [p.bbox for i, p in enumerate(result.people) if i in young_idx]
     else:
         boxes = [f.bbox for f in result.faces]
         young = [f.bbox for f, age in zip(result.faces, face_years, strict=True) if _young_mivolo(age)]
