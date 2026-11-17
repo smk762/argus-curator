@@ -41,8 +41,8 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 Same-origin passes on its own only when the server is reached by an IP address
 or `localhost`. Under DNS rebinding a browser sends the attacker's DNS name as
 both `Origin` and `Host`, so a matching name proves nothing. A UI proxied onto
-this server under a DNS name (`http://morpheus:8101`) must list that name with
-`--trusted-host morpheus` (`CURATOR_TRUSTED_HOSTS=morpheus`, comma-separated,
+this server under a DNS name (`http://<LAN_HOST>:8101`) must list that name with
+`--trusted-host <LAN_HOST>` (`CURATOR_TRUSTED_HOSTS=<LAN_HOST>`, comma-separated,
 no port), or its writes get 403.
 
 ## Routes

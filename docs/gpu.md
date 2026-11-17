@@ -62,7 +62,7 @@ taking the host lock (argus-cortex's `BrokerCoordinator`, from cortex 0.6):
 | Variable | Value |
 |---|---|
 | `ARGUS_GPU_COORDINATOR` | `broker` |
-| `ARGUS_GPU_BROKER_URL` | `http://morpheus:8120` |
+| `ARGUS_GPU_BROKER_URL` | `http://<GPU_HOST>:8120` |
 | `ARGUS_GPU_BROKER_TOKEN` | the suite's shared caller token. Put it in the host's `.env`, never in a repo. |
 | `ARGUS_GPU_TENANT_MANIFEST` | `/app/gpu-tenant.yaml` in the image (compose's default), or set `ARGUS_GPU_TENANT=argus-curator` instead |
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none` |
@@ -73,7 +73,7 @@ taking the host lock (argus-cortex's `BrokerCoordinator`, from cortex 0.6):
 `model_mb` the load ask). Each lease names its model as the kind. Scans take
 the kinds' `batch` priority. `POST /faces`, which darkroom waits on, asks for
 `interactive`. A test checks that the manifest validates as cortex's
-`TenantManifest`. The manifest pins `node: morpheus`, the host curator runs on.
+`TenantManifest`. The manifest pins `node` to the host curator runs on.
 Change it if curator runs on another node.
 
 The broker client fails open. If iris cannot be reached or answers 5xx, the
