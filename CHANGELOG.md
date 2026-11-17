@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A scan no longer follows symlinks out of its folder**
+  (pack-argus-curator-aebf19d832). A file or link whose resolved path lies
+  outside the scanned folder is skipped, and symlinked directories are not
+  descended into.
 - **The under-18 exposed block on `/image` can't be stepped around**
   (pack-argus-curator-1d6b28208d). It was decided from the raw `path` against
   the named scan only, so omitting `scan_id`, `./x.jpg`, `sub/../x.jpg` or a
