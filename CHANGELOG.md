@@ -72,6 +72,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (pack-argus-curator-705607f144). An unhashed candidate counted as the widest
   possible spread, so a capped selection filled with them; it now counts as a
   repeat, as an untagged scene or outfit does.
+- **A face no longer loses its body to two weaker pairs**
+  (pack-argus-curator-79d93c84fc). The face-to-body assignment was solved on
+  every score and the `body_face_match` threshold applied after, so two
+  sub-threshold cross pairs could outbid one valid match and leave that face
+  face-only. Pairs at or under the threshold no longer weigh in the solve.
+- **A body crop running past the image edge keeps its pixels**
+  (pack-argus-curator-973d330c33). A face or person box that met the body only
+  in its off-image part gave a negative slice stop, which blacked out most of
+  the crop. Mask offsets are now clamped at both ends, and an empty one masks nothing.
+- **A NudeNet detection goes to the person holding it**
+  (pack-argus-curator-28e56cc0b1). The per-person `nsfw_labels` /
+  `exposed_score` went to the highest IoU, which favours a small box the
+  detection only grazes over a close-up person it lies wholly inside. It now
+  goes to the box covering most of the detection (IoU breaks a tie). The
+  minor-exposure guard never read this assignment: under `overlap` it tests each
+  detection against every young box, so no image was let through by it.
 - **A scan no longer follows symlinks out of its folder**
   (pack-argus-curator-aebf19d832). A file or link whose resolved path lies
   outside the scanned folder is skipped, and symlinked directories are not

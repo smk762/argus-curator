@@ -302,3 +302,41 @@ def test_overlap_rule_counts_a_young_face_on_a_person_whose_body_reads_adult() -
         ),
     )
     assert minor_exposed(r, "overlap") is True
+
+
+def test_sub_threshold_pairs_do_not_outbid_a_valid_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Face 0 matches body 0 at 0.6; the two cross pairs (0.45 each) are no match and must not win."""
+    table = {(0, 0): 0.6, (0, 100): 0.45, (100, 0): 0.45, (100, 100): 0.0}
+    monkeypatch.setattr(bodies, "match_score", lambda body, face: table[(int(body[0]), int(face[0]))])
+    people = np.array([[0, 0, 50, 50], [100, 0, 150, 50]], np.float32)
+    faces_xywh = [[0.0, 0.0, 10.0, 10.0], [100.0, 0.0, 10.0, 10.0]]
+    assert bodies.assign(people, faces_xywh, 0.5) == [0, None]
+
+
+def test_body_crop_ignores_boxes_that_meet_it_only_off_the_image() -> None:
+    """A body box running past the image edge: a face in the off-image part masks nothing."""
+    body = np.array([[-50, -50, 150, 400]], np.float32)  # the crop is x 0..150, y 0..400
+    off_left, off_top = [-40.0, 10.0, 30.0, 30.0], [10.0, -40.0, 30.0, 30.0]
+    crop = bodies.body_crop(_white(), body, 0, [off_left, off_top], min_size=50, min_visible=0.1)
+    assert crop is not None and crop.size == (150, 400)
+    assert np.asarray(crop).min() == 255
+
+
+def test_associate_nsfw_prefers_the_person_holding_the_detection_over_a_higher_iou() -> None:
+    from argus_cortex.moderation import NsfwDetection, NsfwResult
+
+    from argus_curator.models import PersonDetection
+
+    close_up = PersonDetection(bbox=[0, 0, 300, 400], det_score=0.9)
+    behind = PersonDetection(bbox=[250, 0, 60, 100], det_score=0.8)
+    # Wholly inside the close-up; a quarter of it pokes out over the smaller box (higher IoU there).
+    det = NsfwDetection(label="FEMALE_BREAST_EXPOSED", score=0.8, bbox=[240, 20, 40, 40])
+    r = ImageResult(
+        rel_path="x.png",
+        abs_path="/d/x.png",
+        passed=True,
+        people=[close_up, behind],
+        nsfw=NsfwResult(detections=[det], labels={"FEMALE_BREAST_EXPOSED": 0.8}, exposed_score=0.8),
+    )
+    bodies.associate_nsfw([r])
+    assert r.people[0].exposed_score == 0.8 and r.people[1].exposed_score == 0.0
