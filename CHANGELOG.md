@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A delete no longer resurrects rows removed while it ran**
+  (pack-argus-curator-c80e146d60). `POST /scan/{id}/delete` saved the copy it
+  loaded before unlinking; it now re-reads the scan and drops its rows from the
+  current copy, under a lock it shares with a move export's drop.
+- **Two saves of one scan can't corrupt it** (pack-argus-curator-af0f507d0f).
+  Every save writes its own `<id>.<random>.json.tmp` before the atomic replace,
+  so an overlapping save no longer moves another's half-written file into place.
 - **A symlink export can't delete its source** (pack-argus-curator-38e6c3ff70).
   When the destination already was the source file (an export into the source
   folder, or through a parent symlink), `mode="symlink"` unlinked the original

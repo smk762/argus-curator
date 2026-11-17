@@ -563,6 +563,8 @@ def create_app(
     # first selection or delete: never a silent fallback to another rule.
     minor_rule = minor_exposed_mode()
     minor_block = _MinorBlockList(store, minor_rule)
+    # Serialises the load-drop-save of a cached scan (delete, a move export's drop).
+    cache_lock = threading.Lock()
     max_upload = _max_upload_bytes()
     if allow_delete is None:
         # Two flags, either one enough: devmode is the broad "this is my own
@@ -1134,12 +1136,20 @@ def create_app(
             failure = exc
         if gone:
 
-            def _drop_and_save() -> None:
+            def _drop_and_save() -> ScanSummary:
                 # Regrouping near-duplicates is O(n^2) on pHash: off the event loop.
-                scanner.drop_results(summary, gone)
-                store.save(summary)
+                # Re-read under the lock: saving the copy loaded before the unlink
+                # would put back rows another delete or a move removed meanwhile.
+                with cache_lock:
+                    current = store.load(scan_id)
+                    if current is None:  # Deleted meanwhile: saving would bring the scan back.
+                        scanner.drop_results(summary, gone)
+                        return summary
+                    scanner.drop_results(current, gone)
+                    store.save(current)
+                    return current
 
-            await asyncio.to_thread(_drop_and_save)
+            summary = await asyncio.to_thread(_drop_and_save)
         if failure is not None:
             raise HTTPException(status_code=400, detail=f"could not delete: {failure}; deleted: {gone}") from failure
         body: dict[str, Any] = {"rel_paths": paths, "total": summary.total}
@@ -1329,11 +1339,12 @@ def create_app(
         try:
             # Re-read: the export can run for minutes, and saving the copy
             # loaded before it would put back rows a delete removed meanwhile.
-            current = store.load(summary.scan_id)
-            if current is None:  # Deleted meanwhile: saving would bring the scan back.
-                return
-            scanner.drop_results(current, moved)
-            store.save(current)
+            with cache_lock:
+                current = store.load(summary.scan_id)
+                if current is None:  # Deleted meanwhile: saving would bring the scan back.
+                    return
+                scanner.drop_results(current, moved)
+                store.save(current)
         except Exception as exc:
             logger.warning("export_cache_drop_failed", scan_id=summary.scan_id, error=str(exc))
 
