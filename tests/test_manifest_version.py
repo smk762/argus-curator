@@ -58,13 +58,28 @@ def test_nested_model_change_is_breaking(live: dict) -> None:
     assert breaking_changes(live["schema"], new["schema"])
 
 
-def test_lost_enum_value_is_breaking_and_a_new_one_is_not() -> None:
+def test_an_enum_that_gains_or_loses_a_value_is_breaking() -> None:
+    """A consumer that validates the field rejects a new value; one that branches on it misses a lost one."""
+
     def row(*poses: str) -> dict:
         pose = {"anyOf": [{"enum": list(poses), "type": "string"}, {"type": "null"}]}
         return {"type": "object", "properties": {"pose": pose}, "required": ["pose"]}
 
     assert breaking_changes(row("front", "side"), row("front")) == ["ManifestRow.pose.anyOf[0].enum: lost 'side'"]
-    assert breaking_changes(row("front"), row("front", "side")) == []
+    assert breaking_changes(row("front"), row("front", "side")) == ["ManifestRow.pose.anyOf[0].enum: gained 'side'"]
+    assert breaking_changes(row("front", "side"), row("side", "front")) == []
+
+
+def test_a_shared_ref_inlined_by_the_new_schema_is_compared_at_every_use() -> None:
+    money = {"type": "object", "properties": {"amount": {"type": "number"}}, "required": ["amount"]}
+    old = {
+        "type": "object",
+        "properties": {"a": {"$ref": "#/$defs/Money"}, "b": {"$ref": "#/$defs/Money"}},
+        "$defs": {"Money": money},
+    }
+    retyped = {"type": "object", "properties": {"amount": {"type": "string"}}, "required": ["amount"]}
+    new = {"type": "object", "properties": {"a": copy.deepcopy(money), "b": retyped}}
+    assert breaking_changes(old, new) == ["ManifestRow.b.amount.type: changed from 'number' to 'string'"]
 
 
 def test_breaking_change_with_a_major_bump_only_asks_for_a_refresh(live: dict) -> None:

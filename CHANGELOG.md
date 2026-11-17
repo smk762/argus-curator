@@ -104,6 +104,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (pack-argus-curator-33c37e7c9b). For `2021.05.03.jpg` it read `2021.05.txt` /
   `2021.05.xmp` (a sibling's caption, or none) instead of `2021.05.03.txt` /
   `2021.05.03.xmp`.
+- **The `MANIFEST_VERSION` check counts a new enum value as breaking**
+  (pack-argus-curator-1993a6d0f8). It treated an added value as additive, but a
+  consumer that validates the field rejects a row carrying it (argus-forge reads
+  `target_profile` into cortex's `TargetProfile` `Literal`s), so it now needs a
+  major bump, as a lost value already did.
+- **The `MANIFEST_VERSION` check compares every use of a `$ref` the new row
+  inlined** (pack-argus-curator-e3c65ac0e4). Its cycle guard keyed an inlined
+  definition on the old name alone, so only the first use was compared and a
+  change at a later one passed unseen.
 - **A scan no longer follows symlinks out of its folder**
   (pack-argus-curator-aebf19d832). A file or link whose resolved path lies
   outside the scanned folder is skipped, and symlinked directories are not
