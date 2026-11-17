@@ -513,3 +513,12 @@ def test_collect_images_skips_symlinks_that_leave_the_root(tmp_path: Path) -> No
     items = collect_images(root)
     assert [rel for rel, _abs, _data in items] == ["inside.png", "sub/alias.png"]
     assert all(Path(abs_path).is_relative_to(root.resolve()) for _rel, abs_path, _data in items)
+
+
+@pytest.mark.parametrize("field", ["sharpness_ref", "resolution_ref"])
+def test_a_negative_normalisation_ceiling_is_refused(field: str) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=field):
+        ScanConfig(**{field: -1})
+    assert getattr(ScanConfig(**{field: 0}), field) == 0  # 0 turns the term off

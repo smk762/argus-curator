@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A negative `sharpness_ref` / `resolution_ref` is refused**
+  (pack-argus-curator-730686a4ee). It inverted the scan's ranking; `ScanConfig`
+  now requires both to be at least 0 (0 already turned the term off, and still
+  does). The wire schema carries the new minimum.
 - **One unreadable folder no longer breaks `GET /folders`**
   (pack-argus-curator-f82fcf9861). A child that can't be listed (`lost+found`,
   a dead mount) is left out and logged; its siblings are still listed.
