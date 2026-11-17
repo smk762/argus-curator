@@ -45,6 +45,7 @@ Each rule names what enforces it. A new rule nothing checks yet is marked **UNEN
 | An under-18 frame with any reported exposed score kept, whatever the request says | `tests/test_nsfw.py::test_under_18_with_a_reported_exposed_score_is_never_kept`, `::test_frame_rule_is_a_hard_exclusion` |
 | `/image` serving, or `/thumb` sending unblurred, a file any cached scan reads as under-18 exposed, whatever the path's spelling, a symlink, or a missing `scan_id` | `tests/test_server.py::test_image_block_holds_for_any_spelling_of_the_path`, `::test_thumb_of_an_under_18_exposed_frame_is_blurred_by_the_server` |
 | Under `overlap`, an exposure on a person whose matched face reads under 18 treated as an adult's because the body reads adult | `tests/test_bodies.py::test_overlap_rule_counts_a_young_face_on_a_person_whose_body_reads_adult` |
+| InsightFace's face models built outside the GPU lease (`FaceAnalysis()` builds its sessions in the constructor, not in `prepare()`) | `tests/test_bodies.py::test_face_sessions_are_built_under_the_gpu_lease` |
 | A server that starts with an unknown `minor-exposed` mode (no fallback) | `tests/test_server.py::test_unknown_minor_exposed_mode_refuses_to_start` |
 | A prefiltered image kept or exported | `tests/test_server.py::test_prefiltered_images_are_never_kept_or_exported` |
 | Moderation filters applied to a scan that never ran the check | `tests/test_server.py::test_select_refuses_moderation_filters_on_unchecked_scan` |
