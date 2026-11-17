@@ -720,7 +720,11 @@ def test_filters_on_a_scan_without_singguard_are_a_problem() -> None:
         "total": 0, "passed": 0, "rejected": 0, "duplicates": 0, "similar_clusters": 0,
     }  # fmt: skip
     legacy = ScanSummary.model_validate(base)  # cached before SingGuard existed
-    for req in (ExportRequest(dest="/o", guard_unsafe=True), ExportRequest(dest="/o", guard_rules=["A"])):
+    for req in (
+        ExportRequest(dest="/o", guard_unsafe=True),
+        ExportRequest(dest="/o", guard_rules=["A"]),
+        ExportRequest(dest="/o", guard_policies=["default"]),
+    ):
         assert "rescan" in guard_filter_problem(req, legacy)
     ran = ScanSummary.model_validate({**base, "guard_config": {"enabled": True}})
     assert guard_filter_problem(ExportRequest(dest="/o", guard_unsafe=True), ran) is None

@@ -371,12 +371,13 @@ def _guard_exclusion(r: ImageResult, req: ExportRequest) -> str | None:
 
 def guard_filter_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
     """Why *req*'s SingGuard filters cannot be applied to *summary*, else ``None``."""
-    if (req.guard_unsafe or req.guard_rules) and not summary.guard_config.enabled:
+    # guard_policies alone counts too: naming the default policy must not pass on a scan with no verdicts.
+    if (req.guard_unsafe or req.guard_rules or req.guard_policies) and not summary.guard_config.enabled:
         return (
             "SingGuard filters need a scan that ran SingGuard; this one did not "
             "(set ARGUS_CURATOR_SINGGUARD_URL and rescan)"
         )
-    ran = [summary.guard_config.policy, *summary.guard_config.variants]
+    ran = [name for name in (summary.guard_config.policy, *summary.guard_config.variants) if name]
     missing = [name for name in req.guard_policies or [] if name not in ran]
     if missing:
         return (
