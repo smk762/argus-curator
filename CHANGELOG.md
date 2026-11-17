@@ -92,6 +92,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (pack-argus-curator-c7365a3eb7). The SingGuard summary line overwrote the
   export mode, so after the files were transferred the "Copied N images" line
   raised `KeyError` and the command exited 1 without reporting the manifest.
+- **InsightFace's CUDA sessions are built under the GPU lease**
+  (pack-argus-curator-00f89b68b4). `FaceAnalysis()` builds every onnxruntime
+  session, so constructing it before taking the lease put the face models on
+  the card while another tenant held it; only `prepare()` (which sets sizes)
+  was leased. The pack is now fetched first, off the lease, and the app is
+  built and prepared under it.
 - **A scan no longer follows symlinks out of its folder**
   (pack-argus-curator-aebf19d832). A file or link whose resolved path lies
   outside the scanned folder is skipped, and symlinked directories are not

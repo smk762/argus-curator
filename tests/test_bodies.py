@@ -41,10 +41,47 @@ def test_only_the_insightface_modules_curator_reads_are_loaded(monkeypatch: pyte
 
     app_mod = types.ModuleType("insightface.app")
     app_mod.FaceAnalysis = _FaceAnalysis  # type: ignore[attr-defined]
+    utils_mod = types.ModuleType("insightface.utils")
+    utils_mod.ensure_available = lambda *a, **k: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "insightface", types.ModuleType("insightface"))
     monkeypatch.setitem(sys.modules, "insightface.app", app_mod)
+    monkeypatch.setitem(sys.modules, "insightface.utils", utils_mod)
     faces._build_app(FaceConfig(enabled=True, device="cpu"))
     assert seen["allowed_modules"] == ["detection", "recognition", "landmark_3d_68"]
+
+
+def test_face_sessions_are_built_under_the_gpu_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FaceAnalysis() builds the onnxruntime (CUDA) sessions; only the pack download stays off the lease."""
+    import contextlib
+    import sys
+    import types
+
+    events: list[str] = []
+
+    class _FaceAnalysis:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            events.append("sessions")
+
+        def prepare(self, **kwargs) -> None:  # noqa: ANN003
+            events.append("prepare")
+
+    @contextlib.contextmanager
+    def lease(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        events.append("lease")
+        yield
+        events.append("release")
+
+    app_mod = types.ModuleType("insightface.app")
+    app_mod.FaceAnalysis = _FaceAnalysis  # type: ignore[attr-defined]
+    utils_mod = types.ModuleType("insightface.utils")
+    utils_mod.ensure_available = lambda *a, **k: events.append("download")  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "insightface", types.ModuleType("insightface"))
+    monkeypatch.setitem(sys.modules, "insightface.app", app_mod)
+    monkeypatch.setitem(sys.modules, "insightface.utils", utils_mod)
+    monkeypatch.setattr(faces, "providers", lambda device: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    monkeypatch.setattr(faces, "gpu_lease", lease)
+    faces._build_app(FaceConfig(enabled=True, device="cuda"))
+    assert events == ["download", "lease", "sessions", "prepare", "release"]
 
 
 def test_each_face_gets_its_own_body() -> None:
