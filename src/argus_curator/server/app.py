@@ -18,6 +18,7 @@ Routes (section 4 of the brief):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import json
 import os
@@ -189,7 +190,7 @@ def _busy_detail(active: dict[str, Any]) -> str:
 _LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
-def _detectors() -> dict[str, bool | list[str]]:
+def _detectors() -> dict[str, bool | list[str] | str | None]:
     torch_ok = find_spec("torch") is not None
     cuda_ok = False
     if torch_ok:
@@ -199,6 +200,12 @@ def _detectors() -> dict[str, bool | list[str]]:
             cuda_ok = bool(torch.cuda.is_available())
         except Exception:
             cuda_ok = False
+    thinking_modes: list[str] = []
+    thinking_default: str | None = None
+    if guard_mod.configured():
+        # A misconfigured mode lists none; a scan asking for SingGuard gets the 400 naming the variable.
+        with contextlib.suppress(ModelUnavailable):
+            thinking_modes, thinking_default = guard_mod.allowed_thinking(), guard_mod.default_thinking()
     return {
         "torch": torch_ok,
         "cuda": cuda_ok,
@@ -217,6 +224,10 @@ def _detectors() -> dict[str, bool | list[str]]:
         "singguard": guard_mod.configured(),
         # Policy names a scan can pass as guard.policy; empty without a server.
         "singguard_policies": list(guard_mod.POLICIES) if guard_mod.configured() else [],
+        # Modes a scan can pass as guard.thinking, and the one it runs in when it
+        # names none; empty and null without a server or with a misconfigured mode.
+        "singguard_thinking_modes": thinking_modes,
+        "singguard_thinking_default": thinking_default,
     }
 
 
@@ -635,6 +646,9 @@ def create_app(
             # ScanRequest.crops: crops applied to the bytes in memory, so every
             # check sees the cropped frame; export writes it cropped (copy only).
             "crops": True,
+            # GuardConfig.thinking: a scan picks its SingGuard mode (options and
+            # default in GET /detectors). An older server replaced the value silently.
+            "guard_thinking": True,
             # CropConfig.detect: watermarks found by ARGUS_CURATOR_WATERMARK_URL and cut away at the edges.
             "watermark_detect": True,
             # ExportRequest.carry_sidecars / run_stats, ExportResult.sidecars_carried
@@ -654,7 +668,7 @@ def create_app(
         }
 
     @app.get("/detectors")
-    async def detectors() -> dict[str, bool | list[str]]:
+    async def detectors() -> dict[str, bool | list[str] | str | None]:
         return _detectors()
 
     # Semaphore.locked() is not a non-blocking acquire: when one slot remains,
@@ -813,11 +827,18 @@ def create_app(
                     detail=f"SingGuard check requested but {guard_mod.URL_ENV} {state}",
                 )
             try:
-                guard_mod.thinking()
+                allowed = guard_mod.allowed_thinking()
                 for name in (req.guard.policy, *req.guard.variants):
                     guard_mod.policy(name)
             except ModelUnavailable as exc:  # these name no URL or path
                 raise HTTPException(status_code=400, detail=f"SingGuard check requested but {exc}") from exc
+            # Refused, never downgraded: the caller asked for this mode's cost and its reasons.
+            if req.guard.thinking is not None and req.guard.thinking not in allowed:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"SingGuard mode {req.guard.thinking!r} is not allowed here; "
+                    f"this server allows {', '.join(allowed)} ({guard_mod.THINKING_ALLOWED_ENV})",
+                )
 
     def _require_detector(req: ScanRequest) -> None:
         """Refuse a watermark scan while the detector is down.

@@ -135,6 +135,12 @@ def test_bad_singguard_thinking_mode_fails_before_scanning(dataset: Path) -> Non
     assert "fast-slow" in result.output and "Scanning" not in result.output
 
 
+def test_unknown_guard_thinking_flag_fails_before_scanning(dataset: Path) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), "--singguard-url", "http://g:1", "--guard-thinking", "turbo"])
+    assert result.exit_code == 1, result.output
+    assert "fast-slow" in result.output and "Scanning" not in result.output
+
+
 def test_guard_policies_must_be_judged_before_scanning(dataset: Path) -> None:
     args = ["scan", str(dataset), "--singguard-url", "http://g:1", "--guard-policy", "adult", "--guard-unsafe"]
     result = runner.invoke(app, [*args, "--guard-policies", "adult,adult-cautious"])

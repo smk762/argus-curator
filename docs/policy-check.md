@@ -25,6 +25,19 @@ NudeNet or EraX reading of 0.2 or more skips `fast` and is judged `slow`).
 SingGuard server answers 400 to them. Curator then retries in `fast`, and once
 `fast` works it judges the rest of the run in `fast` and logs
 `singguard_mode_unsupported`; each such verdict records `thinking: "fast"`.
+
+A scan picks its mode with `guard.thinking` (CLI `--guard-thinking`); left out
+or `null`, it runs in `ARGUS_CURATOR_SINGGUARD_THINKING`. A first pass over a
+large folder suits `fast` or `cascade`, and a review pass over a small keep-set
+suits `slow`, which gives a written reason for every frame. Because `slow` on
+every frame costs far more than `cascade`, the operator can limit the choice
+with `ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED` (comma-separated; every mode when
+unset). It must include the default mode. A request naming a mode outside the
+list gets 422 naming the allowed ones, never a silent downgrade. The CLI is
+your own shell and ignores the limit. `GET /detectors` lists the modes on offer
+(`singguard_thinking_modes`) and the default (`singguard_thinking_default`).
+`GET /health` reports `guard_thinking: true`: an older curator replaces the
+value silently, so a client checks this flag before offering the choice.
 ## Configuration
 
 Configure it like [NudeNet](nudity.md), in the environment. `<AGENT_HOST>` is a placeholder for the host that runs the server:
@@ -32,6 +45,7 @@ Configure it like [NudeNet](nudity.md), in the environment. `<AGENT_HOST>` is a 
 ```bash
 ARGUS_CURATOR_SINGGUARD_URL=http://<AGENT_HOST>:9150   # its origin; /api/guard/check is appended
 ARGUS_CURATOR_SINGGUARD_THINKING=cascade                 # or fast / fast-slow / slow
+ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED=fast,cascade    # optional: the modes a request may pick (default: all)
 ARGUS_CURATOR_SINGGUARD_POLICY_FILE=/etc/curator/policy.txt  # optional: replaces the default rules
 ARGUS_CURATOR_SINGGUARD_TIMEOUT=90                       # seconds per image (default 90)
 ARGUS_CURATOR_SINGGUARD_WORKERS=2                        # concurrent requests (default 2)
@@ -119,15 +133,15 @@ model and the policy: `default`, `adult`, or `custom-<sha256 prefix>` of the
 file. The CSV report has `guard_safe` and `guard_rules`.
 
 Each verdict's `guard.thinking` names the mode that judged it. The scan records
-the mode it asked for in `guard_config.thinking`, from
+the mode it asked for in `guard_config.thinking`: the request's, else
 `ARGUS_CURATOR_SINGGUARD_THINKING`. Under `cascade`, every frame that was not
 escalated reports `fast`, so a cascade scan that flagged nothing has only `fast`
 verdicts, like a `fast` scan. `guard_config.thinking` tells the two apart. When
 the server refuses `cascade` or `slow` and the checks drop to `fast`,
 `guard_config.thinking` still names the mode asked for and
 `guard_config.fell_back` is `true`. Both are `null` when SingGuard did not run,
-and in scans cached by older versions. A request cannot set either: the scan replaces
-whatever a request sends.
+and in scans cached by older versions. A request cannot set `fell_back`: the
+scan replaces whatever a request sends.
 
 ```bash
 # Drop anything judged unsafe

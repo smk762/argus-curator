@@ -57,6 +57,7 @@ URL_ENV = "ARGUS_CURATOR_SINGGUARD_URL"
 TIMEOUT_ENV = "ARGUS_CURATOR_SINGGUARD_TIMEOUT"
 WORKERS_ENV = "ARGUS_CURATOR_SINGGUARD_WORKERS"
 THINKING_ENV = "ARGUS_CURATOR_SINGGUARD_THINKING"
+THINKING_ALLOWED_ENV = "ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED"
 POLICY_FILE_ENV = "ARGUS_CURATOR_SINGGUARD_POLICY_FILE"
 CONTEXT_ENV = "ARGUS_CURATOR_SINGGUARD_CONTEXT"
 DEFAULT_TIMEOUT = 90.0
@@ -97,11 +98,45 @@ def resolve_enabled(cfg: GuardConfig) -> bool:
     return cfg.enabled if cfg.enabled is not None else configured()
 
 
-def thinking() -> str:
+def default_thinking() -> str:
+    """The mode a scan runs in when its request names none (``ARGUS_CURATOR_SINGGUARD_THINKING``)."""
     mode = env_value(THINKING_ENV) or "cascade"
     if mode not in THINKING_MODES:
         raise ModelUnavailable(f"{THINKING_ENV} must be one of {', '.join(THINKING_MODES)}, got {mode!r}")
     return mode
+
+
+def thinking(cfg: GuardConfig | None = None) -> str:
+    """The mode a scan with *cfg* runs in: the one it asked for, else the server's default.
+
+    Does not apply the host's limit (:func:`allowed_thinking`): the CLI is the
+    operator's own shell, and the server refuses a mode outside it up front.
+    """
+    if cfg is not None and cfg.thinking is not None:
+        return cfg.thinking
+    return default_thinking()
+
+
+def allowed_thinking() -> list[str]:
+    """The modes a request may name (``ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED``), in cortex's order.
+
+    Comma-separated; unset or empty allows every mode. The default mode must be
+    among them, so a request that names none is never run in a refused mode.
+    """
+    default = default_thinking()
+    raw = env_value(THINKING_ALLOWED_ENV)
+    if raw is None:
+        return list(THINKING_MODES)
+    names = {part.strip() for part in raw.split(",") if part.strip()}
+    if unknown := sorted(names - set(THINKING_MODES)):
+        raise ModelUnavailable(
+            f"{THINKING_ALLOWED_ENV} names unknown modes ({', '.join(unknown)}); one of {', '.join(THINKING_MODES)}"
+        )
+    if not names:
+        return list(THINKING_MODES)
+    if default not in names:
+        raise ModelUnavailable(f"{THINKING_ALLOWED_ENV} must include the default mode {default!r} ({THINKING_ENV})")
+    return [mode for mode in THINKING_MODES if mode in names]
 
 
 def context_kinds() -> frozenset[str]:
@@ -226,15 +261,15 @@ def client(
 ) -> FallbackClient | None:
     """A client for the configured server and policy *name*, or ``None`` when SingGuard is not configured.
 
-    *mode* overrides :func:`thinking` for one client: cascade sends most frames
-    in ``cascade``, and every exposed frame (:func:`force_slow`) in ``slow``.
+    *mode* overrides the server's default (:func:`default_thinking`): a scan
+    passes its own mode, and under cascade every exposed frame (:func:`force_slow`) goes ``slow``.
     *on_fall_back* is called once if the server refuses the mode and checks drop to ``fast``.
     """
     url = endpoint()
     if url is None:
         return None
     _recorded, text = policy(name)
-    return FallbackClient(url, float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT), mode or thinking(), text, on_fall_back)
+    return FallbackClient(url, float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT), mode or default_thinking(), text, on_fall_back)
 
 
 def force_slow(result: ImageResult, mode: str) -> bool:
@@ -279,10 +314,10 @@ def check_images(
     if not resolve_enabled(cfg):
         return False
     names = [cfg.policy, *cfg.variants]
-    clients = {name: client(name, on_fall_back=on_fall_back) for name in names}
+    mode = thinking(cfg)
+    clients = {name: client(name, mode=mode, on_fall_back=on_fall_back) for name in names}
     if clients[cfg.policy] is None:
         raise ModelUnavailable(f"SingGuard check requested but {URL_ENV} is not set")
-    mode = thinking()
     # Cascade's fast pass is a screen. An exposed frame skips it and is judged slow.
     slow_clients = (
         {name: client(name, mode="slow", on_fall_back=on_fall_back) for name in names} if mode == "cascade" else {}

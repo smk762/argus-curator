@@ -634,8 +634,8 @@ def scan_items(
 
     # Whether each opt-out check actually ran, read when a snapshot is saved.
     ran = {"nsfw": False, "erax": False, "guard": False, "guard_fell_back": False}
-    # The SingGuard mode the scan asks for, recorded with its guard_config.
-    guard_mode = guard_mod.thinking() if guard_mod.resolve_enabled(guard_cfg) else None
+    # The SingGuard mode the scan asks for (its own, else the server's), recorded with its guard_config.
+    guard_mode = guard_mod.thinking(guard_cfg) if guard_mod.resolve_enabled(guard_cfg) else None
     # The set age given to the frames with no face, or why none was, and why
     # FaceConfig.reference_paths gave no reference distances.
     # Until the identities phase a saved snapshot says the age is still to come.

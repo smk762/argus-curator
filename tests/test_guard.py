@@ -598,10 +598,37 @@ def test_a_scan_records_the_mode_it_asked_for(
     """Cascade reports every unescalated verdict as fast, so only guard_config tells the scans apart."""
     monkeypatch.setenv(guard.THINKING_ENV, mode)
     items = [("b.png", "/d/b", _png(10, (600, 600)))]
-    sent = GuardConfig(thinking="slow", fell_back=True)  # a request's values are replaced, never used
+    sent = GuardConfig(fell_back=True)  # a request's fell_back is replaced, never used
     summary = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), guard_cfg=sent)
     assert summary.guard_config.thinking == mode and summary.guard_config.fell_back is False
     assert {s["thinking"] for s in singguard.seen} == {mode}
+
+
+@pytest.mark.parametrize("mode", ["slow", "fast"])
+def test_a_scan_runs_in_the_mode_its_request_names(
+    singguard: type[_SingGuard], monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """The request's mode wins over the server's default, and is the one recorded (#180)."""
+    monkeypatch.setenv(guard.THINKING_ENV, "cascade")
+    items = [("a.png", "/d/a", _png(20, (600, 600))), ("b.png", "/d/b", _png(10, (600, 600)))]
+    sent = GuardConfig(thinking=mode, variants=["adult"])
+    summary = scan_items(items, TargetProfile(), ScanConfig(blur_threshold=0.0), FaceConfig(), guard_cfg=sent)
+    assert summary.guard_config.thinking == mode and summary.guard_config.fell_back is False
+    assert {s["thinking"] for s in singguard.seen} == {mode}  # every policy, every frame
+
+
+def test_allowed_thinking_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert guard.allowed_thinking() == list(guard.THINKING_MODES)
+    monkeypatch.setenv(guard.THINKING_ALLOWED_ENV, " cascade, fast ")
+    assert guard.allowed_thinking() == ["fast", "cascade"]  # cortex's order, not the variable's
+    monkeypatch.setenv(guard.THINKING_ALLOWED_ENV, "fast,turbo")
+    with pytest.raises(ModelUnavailable, match="turbo"):
+        guard.allowed_thinking()
+    monkeypatch.setenv(guard.THINKING_ALLOWED_ENV, "fast")  # the default, cascade, left out
+    with pytest.raises(ModelUnavailable, match=guard.THINKING_ENV):
+        guard.allowed_thinking()
+    monkeypatch.setenv(guard.THINKING_ENV, "fast")
+    assert guard.allowed_thinking() == ["fast"]
 
 
 def test_a_scan_that_fell_back_still_records_the_mode_it_asked_for(
