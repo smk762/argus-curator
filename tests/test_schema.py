@@ -57,17 +57,42 @@ def test_only_models_no_request_carries_list_their_defaults_as_required() -> Non
     assert ours and flagged == ours
 
 
+_JSON_TYPES: dict[str, tuple[type, ...]] = {
+    "object": (dict,),
+    "array": (list,),
+    "string": (str,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+    "null": (type(None),),
+}
+
+
+def _type_matches(value: object, schema: dict, defs: dict) -> bool:
+    """Whether *value* is of the type *schema* declares; a schema that declares none matches."""
+    if "$ref" in schema:
+        return _type_matches(value, defs[schema["$ref"].rsplit("/", 1)[-1]], defs)
+    for key in ("anyOf", "oneOf"):
+        if key in schema:
+            return any(_type_matches(value, b, defs) for b in schema[key])
+    declared = schema.get("type")
+    if declared is None:
+        return True
+    kinds = tuple(t for name in ([declared] if isinstance(declared, str) else declared) for t in _JSON_TYPES[name])
+    # JSON booleans are not integers, though Python's bool is an int.
+    return isinstance(value, kinds) and not (isinstance(value, bool) and bool not in kinds)
+
+
 def _missing_required(value: object, schema: dict, defs: dict, path: str = "$") -> list[str]:
     """Paths where *value* lacks a key its schema requires (a small subset of JSON Schema)."""
     if "$ref" in schema:
         return _missing_required(value, defs[schema["$ref"].rsplit("/", 1)[-1]], defs, path)
     for key in ("anyOf", "oneOf"):
-        if key in schema:  # the branch whose type matches decides
-            for branch in schema[key]:
-                if value is None and branch.get("type") == "null":
-                    return []
-            branches = [b for b in schema[key] if b.get("type") != "null"]
-            return min((_missing_required(value, b, defs, path) for b in branches), key=len, default=[])
+        if key in schema:  # only a branch whose type matches the value can decide
+            branches = [b for b in schema[key] if _type_matches(value, b, defs)]
+            if not branches:
+                return [f"{path} (matches no {key} branch)"]
+            return min((_missing_required(value, b, defs, path) for b in branches), key=len)
     out: list[str] = []
     if isinstance(value, dict):
         out += [f"{path}.{name}" for name in schema.get("required", []) if name not in value]
@@ -124,6 +149,16 @@ def test_what_the_server_sends_has_every_field_the_schema_requires(dataset: Path
     assert rows
     for row in rows:
         check("ManifestRow", row)
+
+
+def test_a_union_branch_of_another_type_cannot_hide_a_missing_key() -> None:
+    defs = {"M": {"type": "object", "required": ["a", "b"], "properties": {"a": {}, "b": {}}}}
+    union = {"anyOf": [{"$ref": "#/$defs/M"}, {"type": "string"}, {"type": "null"}]}
+    assert _missing_required({"a": 1}, union, defs) == ["$.b"]
+    assert _missing_required({"a": 1, "b": 2}, union, defs) == []
+    assert _missing_required("text", union, defs) == []
+    assert _missing_required(None, union, defs) == []
+    assert _missing_required(3, union, defs) == ["$ (matches no anyOf branch)"]
 
 
 def test_a_face_sent_with_its_cache_only_readings_still_has_every_required_field() -> None:

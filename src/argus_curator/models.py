@@ -835,19 +835,30 @@ class ScanSummary(BaseModel):
     reference_skipped: str | None = None
     results: list[ImageResult] = Field(default_factory=list)
 
+    # The min_short_side a scan cached before MIN_SHORT_SIDE existed actually ran
+    # with, when it was below the floor; None otherwise. ``config`` reads the
+    # floor (it is a valid config to scan with again), so this is what says the
+    # pass/reject counts were made with the lower threshold.
+    legacy_min_short_side: int | None = None
+
     # Pagination metadata (server fills these when slicing ``results``)
     offset: int = 0
     limit: int | None = None
     returned: int = 0
 
-    @field_validator("config", mode="before")
+    @model_validator(mode="before")
     @classmethod
     def _config_below_the_floor(cls, value: object) -> object:
-        # The floor governs new scans. One cached with a lower value must still load.
-        if isinstance(value, dict):
-            side = value.get("min_short_side")
+        # The floor governs new scans. One cached with a lower value must still load,
+        # and must still say what it ran with: that moves to legacy_min_short_side.
+        if isinstance(value, dict) and isinstance(config := value.get("config"), dict):
+            side = config.get("min_short_side")
             if isinstance(side, int) and side < MIN_SHORT_SIDE:
-                return {**value, "min_short_side": MIN_SHORT_SIDE}
+                return {
+                    **value,
+                    "config": {**config, "min_short_side": MIN_SHORT_SIDE},
+                    "legacy_min_short_side": side,
+                }
         return value
 
 

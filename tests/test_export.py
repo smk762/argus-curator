@@ -64,7 +64,11 @@ def test_min_score_threshold_excludes_with_reason(dataset: Path) -> None:
     req = ExportRequest(scan_id=summary.scan_id, dest="/tmp/unused", min_score=1.1)
     selected, keep_reason = decide_selection(summary.results, req, summary.config.diversity_weight)
     assert selected == []
+    assert summary.results
+    assert set(keep_reason) == {r.rel_path for r in summary.results}  # every row says why
     assert all(reason for reason in keep_reason.values())
+    passing = [r.rel_path for r in summary.results if r.passed]
+    assert passing and all(keep_reason[rel] == "below-score" for rel in passing)
 
 
 def test_duplicates_excluded_unless_keep_similar(dataset: Path) -> None:

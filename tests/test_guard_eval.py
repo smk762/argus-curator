@@ -152,6 +152,17 @@ def test_a_candidate_is_scored_as_its_parent_with_its_own_text(tmp_path: Path, f
     assert fake_client.made[-1]["policy"] == "candidate text"
 
 
+def test_a_candidate_named_like_a_policy_never_replaces_its_text(fake_client: type[_FakeClient]) -> None:
+    # parse_candidate refuses this name; run() must hold on its own when handed one directly.
+    clash = guard_eval.Candidate(name="adult", parent="adult", text="candidate text")
+    cases = [guard_eval.Case(id="c", expect="cinematic", text="a heist still")]
+
+    guard_eval.run("http://g", ["adult"], cases, "fast", 1, 1.0, [clash])
+
+    sent = [made["policy"] for made in fake_client.made]
+    assert sent == [guard_eval.guard.policy("adult")[1], "candidate text"]
+
+
 @pytest.mark.parametrize(
     ("raw", "message"),
     [

@@ -171,6 +171,12 @@ def test_policy_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     with pytest.raises(ModelUnavailable) as exc:
         guard.policy()
     assert "secret-name" not in str(exc.value)  # the server echoes this message
+    latin1 = tmp_path / "secret-latin1.txt"
+    latin1.write_bytes("## Risk Categories\n- Mädchen\n".encode("latin-1"))
+    monkeypatch.setenv(guard.POLICY_FILE_ENV, str(latin1))
+    with pytest.raises(ModelUnavailable, match="not valid UTF-8") as exc:
+        guard.policy()
+    assert "secret-latin1" not in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -879,4 +885,10 @@ def test_a_scan_cached_below_the_floor_still_loads(tmp_path: Path) -> None:
     cached = json.loads(path.read_text(encoding="utf-8"))
     cached["config"]["min_short_side"] = 256
     path.write_text(json.dumps(cached), encoding="utf-8")
-    assert store.load("s").config.min_short_side == MIN_SHORT_SIDE
+    loaded = store.load("s")
+    assert loaded.config.min_short_side == MIN_SHORT_SIDE
+    # The summary still says the threshold its counts were made with, across a write-back.
+    assert loaded.legacy_min_short_side == 256
+    store.save(loaded)
+    assert store.load("s").legacy_min_short_side == 256
+    assert summary.legacy_min_short_side is None

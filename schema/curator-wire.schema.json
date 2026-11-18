@@ -2980,6 +2980,18 @@
         "guard_config": {
           "$ref": "#/$defs/GuardConfig"
         },
+        "legacy_min_short_side": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Legacy Min Short Side"
+        },
         "limit": {
           "anyOf": [
             {
@@ -3108,6 +3120,7 @@
         "set_age_skipped",
         "reference_skipped",
         "results",
+        "legacy_min_short_side",
         "offset",
         "limit",
         "returned"

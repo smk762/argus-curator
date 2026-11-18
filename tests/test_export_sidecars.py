@@ -163,6 +163,21 @@ def test_a_failed_sidecar_does_not_undo_the_image(tmp_path: Path) -> None:
     assert json.loads((dest / "manifest.jsonl").read_text())["rel_path"] == "photo.png"
 
 
+def test_a_merge_that_fails_with_no_seed_leaves_no_sidecar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src, dst = tmp_path / "src.png", tmp_path / "dst.png"
+    src.write_bytes(b"src")
+    dst.write_bytes(b"dst")
+
+    def half_written(path: Path, data: XmpData) -> None:
+        sidecar_path(path).write_text("<x:xmpmeta")  # truncated
+        raise OSError("disk full")
+
+    monkeypatch.setattr(export_mod, "write_xmp", half_written)
+    with pytest.raises(OSError, match="disk full"):
+        export_mod._write_export_sidecar(src, dst, XmpData(content_rating="safe"))
+    assert not sidecar_path(dst).exists()
+
+
 @pytest.mark.parametrize("lightroom", [False, True])
 def test_write_xmp_merges_onto_the_carried_sidecar_under_move(tmp_path: Path, lightroom: bool) -> None:
     img = _image(tmp_path / "src" / "photo.png", nsfw=NsfwResult(labels={"BUTTOCKS_COVERED": 0.4}, exposed_score=0.4))

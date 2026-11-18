@@ -533,10 +533,11 @@ def _write_export_sidecar(src: Path, dst: Path, data: XmpData, carried: bool = F
     """
     seed = (_source_sidecar(dst) if carried else None) or _source_sidecar(src)
     target = sidecar_path(dst)
-    created = False
-    if seed is not None and not target.exists():
+    # Whatever is at *target* after a failed merge and was not there before is ours
+    # to remove, whether the seed put it there or write_xmp started it from nothing.
+    created = not target.exists()
+    if seed is not None and created:
         shutil.copyfile(seed, target)
-        created = True
     try:
         write_xmp(dst, data)
     except Exception:
