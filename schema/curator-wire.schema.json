@@ -1727,7 +1727,7 @@
       "type": "object"
     },
     "GuardConfig": {
-      "description": "SingGuard policy check via a remote SingGuard server (see guard.py).\n\nLike NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) is process\nconfiguration. A request picks a policy by name, never by text.",
+      "description": "SingGuard policy check via a remote SingGuard server (see guard.py).\n\nLike NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) is process\nconfiguration. A request picks a policy by name, never by text.\n\n``thinking``: a request may pick the SingGuard mode (``fast``,\n``fast-slow``, ``slow`` or ``cascade``); null runs the server's default\n(ARGUS_CURATOR_SINGGUARD_THINKING). The server refuses a mode outside\nARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED with 422. A finished scan records\nthe mode it ran in, whichever set it. ``fell_back`` is recorded by the scan\nonly (a value a request sends is replaced): whether the server refused the\nmode so checks dropped to ``fast``.",
       "properties": {
         "enabled": {
           "anyOf": [

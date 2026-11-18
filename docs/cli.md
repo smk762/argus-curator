@@ -105,6 +105,7 @@ $ argus-curator scan [OPTIONS] {source}
 * `--guard / --no-guard`: SingGuard policy check (default: on when a SingGuard URL is configured; --no-guard opts out)
 * `--singguard-url <str>`: SingGuard server origin, e.g. http://guard:9150 (ARGUS_CURATOR_SINGGUARD_URL)
 * `--guard-policy <str>`: SingGuard policy: default (the policy file, else SingGuard&#x27;s rules) or adult (allows adult nudity)  [default: default]
+* `--guard-thinking <str>`: SingGuard mode: fast, fast-slow, slow or cascade (default: ARGUS_CURATOR_SINGGUARD_THINKING, else cascade)
 * `--guard-variants <str>`: Also judge every image under these policies, comma-separated (one more SingGuard pass each)
 * `--guard-policies <str>`: Which policies&#x27; verdicts --guard-unsafe/--guard-rules read, comma-separated; any failing drops (default: the official one)
 * `--guard-unsafe`: Drop images SingGuard judged unsafe, under any rule

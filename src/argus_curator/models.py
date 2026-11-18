@@ -350,6 +350,14 @@ class GuardConfig(BaseModel):
 
     Like NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) is process
     configuration. A request picks a policy by name, never by text.
+
+    ``thinking``: a request may pick the SingGuard mode (``fast``,
+    ``fast-slow``, ``slow`` or ``cascade``); null runs the server's default
+    (ARGUS_CURATOR_SINGGUARD_THINKING). The server refuses a mode outside
+    ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED with 422. A finished scan records
+    the mode it ran in, whichever set it. ``fell_back`` is recorded by the scan
+    only (a value a request sends is replaced): whether the server refused the
+    mode so checks dropped to ``fast``.
     """
 
     # Same opt-out semantics as NsfwConfig.enabled.
@@ -359,9 +367,10 @@ class GuardConfig(BaseModel):
     # Extra policies to judge every image under too, for comparison: one more
     # SingGuard pass per image each. Results land in ImageResult.guard_variants.
     variants: list[GuardPolicy] = Field(default_factory=list)
-    # Recorded by the scan, never chosen by a request (a value sent is replaced):
-    # the SingGuard mode the scan asked for (ARGUS_CURATOR_SINGGUARD_THINKING),
-    # and whether the server refused it so checks dropped to "fast". Each
+    # The SingGuard mode the scan asks for: the request's, else the server's
+    # default (ARGUS_CURATOR_SINGGUARD_THINKING); the scan records the one it
+    # ran in. fell_back is the scan's alone (a value sent is replaced): whether
+    # the server refused the mode so checks dropped to "fast". Each
     # verdict's own GuardResult.thinking says which mode judged it; under
     # cascade that is "fast" for every frame not escalated, so only this field
     # tells a cascade scan from a fast one. None until the check has run.

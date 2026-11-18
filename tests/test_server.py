@@ -136,8 +136,11 @@ def test_detectors_keys(client: TestClient) -> None:
         "watermark",
         "singguard",
         "singguard_policies",
+        "singguard_thinking_modes",
+        "singguard_thinking_default",
     }
     assert resp.json()["singguard_policies"] == []  # no SingGuard server configured
+    assert resp.json()["singguard_thinking_modes"] == [] and resp.json()["singguard_thinking_default"] is None
 
 
 def test_detectors_list_policies_when_singguard_is_configured(
@@ -148,6 +151,17 @@ def test_detectors_list_policies_when_singguard_is_configured(
     monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
     body = client.get("/detectors").json()
     assert body["singguard"] is True and body["singguard_policies"] == list(guard.POLICIES)
+    assert body["singguard_thinking_modes"] == list(guard.THINKING_MODES)
+    assert body["singguard_thinking_default"] == "cascade"
+    assert client.get("/health").json()["guard_thinking"] is True
+
+
+def test_detectors_list_only_the_modes_the_host_allows(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_THINKING", "fast")
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED", "fast,cascade")
+    body = client.get("/detectors").json()
+    assert body["singguard_thinking_modes"] == ["fast", "cascade"] and body["singguard_thinking_default"] == "fast"
 
 
 def test_guard_policies_serve_builtin_text_and_singguard_default(
@@ -1464,6 +1478,30 @@ def test_scan_requiring_singguard_without_url_is_refused(contained: tuple[TestCl
         resp = client.post(endpoint, json={"folder": "", "guard": {"enabled": True}})
         assert resp.status_code == 400, endpoint
         assert "ARGUS_CURATOR_SINGGUARD_URL is not set" in resp.json()["detail"]
+
+
+def test_scan_asking_for_a_mode_the_host_does_not_allow_is_refused(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refused with 422 naming the allowed modes, never silently downgraded (#180)."""
+    client, _exports = contained
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED", "fast,cascade")
+    for endpoint in ("/scan/folder", "/scan/folder/stream"):
+        resp = client.post(endpoint, json={"folder": "", "guard": {"thinking": "slow"}})
+        assert resp.status_code == 422, endpoint
+        detail = resp.json()["detail"]
+        assert "'slow'" in detail and "fast, cascade" in detail and "THINKING_ALLOWED" in detail
+
+
+def test_scan_with_a_misconfigured_mode_limit_is_refused(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _exports = contained
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED", "turbo")
+    resp = client.post("/scan/folder", json={"folder": "", "guard": {"thinking": "fast"}})
+    assert resp.status_code == 400 and "ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED" in resp.json()["detail"]
 
 
 def test_unreadable_singguard_policy_is_refused_without_echoing_its_path(

@@ -254,6 +254,11 @@ def scan(
         "--guard-policy",
         help="SingGuard policy: default (the policy file, else SingGuard's rules) or adult (allows adult nudity)",
     ),
+    guard_thinking: str | None = Option(
+        None,
+        "--guard-thinking",
+        help="SingGuard mode: fast, fast-slow, slow or cascade (default: ARGUS_CURATOR_SINGGUARD_THINKING, else cascade)",
+    ),
     guard_variants: str | None = Option(
         None,
         "--guard-variants",
@@ -569,7 +574,12 @@ def scan(
         if name not in guard_mod.POLICIES:
             typer.echo(f"Error: unknown SingGuard policy {name!r} (one of {', '.join(guard_mod.POLICIES)})", err=True)
             raise typer.Exit(1)
-    guard_cfg = GuardConfig(enabled=guard, policy=guard_policy, variants=variant_names)
+    if guard_thinking is not None and guard_thinking not in guard_mod.THINKING_MODES:
+        typer.echo(
+            f"Error: unknown SingGuard mode {guard_thinking!r} (one of {', '.join(guard_mod.THINKING_MODES)})", err=True
+        )
+        raise typer.Exit(1)
+    guard_cfg = GuardConfig(enabled=guard, policy=guard_policy, variants=variant_names, thinking=guard_thinking)
     ran = [guard_cfg.policy, *guard_cfg.variants]
     if not_run := [name for name in export_req.guard_policies or [] if name not in ran]:
         typer.echo(f"Error: --guard-policies {', '.join(not_run)} not judged (add them to --guard-variants)", err=True)
@@ -577,7 +587,7 @@ def scan(
     if guard_mod.resolve_enabled(guard_cfg):
         try:
             guard_mod.endpoint()
-            guard_mod.thinking()
+            guard_mod.thinking(guard_cfg)
             for name in (guard_cfg.policy, *guard_cfg.variants):
                 guard_mod.policy(name)
         except Exception as exc:

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A scan can pick its SingGuard mode (#180).** `guard.thinking` (CLI
+  `--guard-thinking`) takes `fast`, `fast-slow`, `slow` or `cascade`; left out
+  or null, the server's `ARGUS_CURATOR_SINGGUARD_THINKING` applies as before.
+  `guard_config.thinking` records the mode the scan ran in, whichever set it,
+  and `fell_back` keeps its meaning. `ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED`
+  (comma-separated, default every mode) limits the choice: a mode outside it is
+  refused with 422 naming the allowed ones, not downgraded. `GET /detectors`
+  adds `singguard_thinking_modes` and `singguard_thinking_default`, and
+  `GET /health` adds `guard_thinking: true`. The wire shape is unchanged; the
+  `GuardConfig` description now says a request may set `thinking`.
+
 ### Changed
 
 - **`caption_url` reaches only a configured host** (decided by the user, PR #179).
