@@ -142,6 +142,13 @@ def test_mivolo_preprocess_feeds_absent_person() -> None:
     assert batch[0, 5, 5, 5] == pytest.approx(-0.406 / 0.225, rel=1e-5)
 
 
+def test_mivolo_preprocess_of_no_faces_is_an_empty_batch() -> None:
+    batch = mivolo.preprocess([])
+    assert batch.shape == (0, 6, 384, 384) and batch.dtype == np.float32
+    with pytest.raises(ValueError, match="1 body crops for 2 face crops"):
+        mivolo.preprocess([Image.new("RGB", (8, 8))] * 2, [None])
+
+
 def test_mivolo_decode_matches_checkpoint_config() -> None:
     gender, age = mivolo.decode(np.array([[2.0, 0.0, 0.0], [0.0, 1.0, -0.5], [0.0, 0.0, -9.0]]))
     assert gender[0].argmax() == 0 and gender[1].argmax() == 1
@@ -469,7 +476,9 @@ def test_inverted_age_range_is_rejected() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _faced(rel: str, cluster: str, years: float | None, *, passed: bool = True, source: str = "mivolo") -> ImageResult:
+def _faced(
+    rel: str, cluster: str | None, years: float | None, *, passed: bool = True, source: str = "mivolo"
+) -> ImageResult:
     attrs = FaceAttributes(age_years=years, age_source=source) if years is not None else None
     face = FaceDetection(bbox=[0, 0, 1, 1], det_score=0.9, primary=True, cluster_id=cluster, attributes=attrs)
     return ImageResult(
@@ -517,6 +526,17 @@ def test_set_age_is_withheld_when_the_scan_is_not_one_subject() -> None:
     ]
     age, why = faces.infer_set_age(mixed, cfg)
     assert age is None and why == "the largest identity (face_1) has 60% of the faces, 90% needed"
+    assert faceless[0].set_age is None
+
+    # Faces clustering left unassigned are other people, and count against the share.
+    crowd = [
+        *(_faced(f"a{i}.jpg", "face_1", 20.0) for i in range(5)),
+        _faced("b.jpg", "face_2", 30.0),
+        *(_faced(f"n{i}.jpg", None, 40.0) for i in range(20)),
+        *faceless,
+    ]
+    age, why = faces.infer_set_age(crowd, cfg)
+    assert age is None and why == "the largest identity (face_1) has 19% of the faces, 90% needed"
     assert faceless[0].set_age is None
 
     few = [*(_faced(f"a{i}.jpg", "face_1", 20.0) for i in range(3)), *faceless]
@@ -584,15 +604,17 @@ def test_insightface_get_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
 
     overlapping = threading.Event()
     inside = 0
+    calls = 0
     guard = threading.Lock()
 
     class App:
         def get(self, bgr):  # noqa: ANN001, ARG002
-            nonlocal inside
+            nonlocal inside, calls
             with guard:
                 if inside:
                     overlapping.set()
                 inside += 1
+                calls += 1
             time.sleep(0.05)
             with guard:
                 inside -= 1
@@ -602,13 +624,20 @@ def test_insightface_get_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
     png = _png(400)
     cfg = FaceConfig(enabled=True)
 
+    errors: list[BaseException] = []
+
     def one(rel: str) -> None:
         result = ImageResult(rel_path=rel, abs_path=f"/{rel}", passed=True)
-        faces.detect_faces([result], [(rel, f"/{rel}", png)], cfg)
+        try:
+            faces.detect_faces([result], [(rel, f"/{rel}", png)], cfg)
+        except BaseException as exc:  # a thread's exception does not fail the test by itself
+            errors.append(exc)
 
     threads = [threading.Thread(target=one, args=(f"{i}.png",)) for i in range(4)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
+    assert errors == []
+    assert calls == 4  # every thread reached get(), so the lock was actually contended
     assert not overlapping.is_set()

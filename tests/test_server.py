@@ -1762,8 +1762,12 @@ def test_faces_without_origin_works(client: TestClient, monkeypatch: pytest.Monk
 def test_faces_503_when_the_detector_fails(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """A detector error must not come back as 200 with no faces (fail-open age check)."""
 
+    seen: list[dict] = []
+
     def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
-        assert kwargs.get("strict") is True
+        # Recorded, not asserted here: the server turns any detector error into
+        # this 503, an AssertionError included.
+        seen.append(kwargs)
         raise RuntimeError("onnx exploded")
 
     monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
@@ -1772,6 +1776,7 @@ def test_faces_503_when_the_detector_fails(client: TestClient, monkeypatch: pyte
     resp = client.post("/faces", content=_png_bytes())
     assert resp.status_code == 503
     assert "face detection failed" in resp.json()["detail"]
+    assert len(seen) == 1 and seen[0].get("strict") is True  # fail-closed, and the fake is what ran
 
 
 def test_faces_413_when_the_body_is_too_large(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1846,6 +1851,7 @@ async def test_faces_burst_does_not_queue_past_a_free_slot(tmp_path: Path, monke
     in_detect = 0
     count_lock = threading.Lock()
     first_entered = threading.Event()
+    second_entered = threading.Event()
     release = threading.Event()
 
     def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
@@ -1855,6 +1861,8 @@ async def test_faces_burst_does_not_queue_past_a_free_slot(tmp_path: Path, monke
             n = in_detect
         if n == 1:
             first_entered.set()
+        elif n == 2:
+            second_entered.set()
         assert release.wait(5)
 
     monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
@@ -1864,22 +1872,26 @@ async def test_faces_burst_does_not_queue_past_a_free_slot(tmp_path: Path, monke
     transport = httpx.ASGITransport(app=app)
     png = _png_bytes()
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-        holder = asyncio.create_task(ac.post("/faces", content=png))
-        assert await asyncio.to_thread(first_entered.wait, 5)
-        racers = [asyncio.create_task(ac.post("/faces", content=png)) for _ in range(8)]
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if sum(t.done() for t in racers) >= 7:
-                break
-            await asyncio.sleep(0.01)
-        else:
-            pytest.fail("expected 7 refusals while one slot stayed in flight")
-        with count_lock:
-            running = in_detect
-        assert running == 2
-        codes = [t.result().status_code for t in racers if t.done()]
-        assert codes.count(503) == 7
-        release.set()
+        try:
+            holder = asyncio.create_task(ac.post("/faces", content=png))
+            assert await asyncio.to_thread(first_entered.wait, 5)
+            racers = [asyncio.create_task(ac.post("/faces", content=png)) for _ in range(8)]
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if sum(t.done() for t in racers) >= 7:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("expected 7 refusals while one slot stayed in flight")
+            # The winner holds its slot before it reaches detect(): wait for it to get there.
+            assert await asyncio.to_thread(second_entered.wait, 5)
+            with count_lock:
+                running = in_detect
+            assert running == 2
+            codes = [t.result().status_code for t in racers if t.done()]
+            assert codes.count(503) == 7
+        finally:
+            release.set()  # a failed assertion must not leave the workers blocked
         rest = await asyncio.gather(holder, *racers)
     assert [r.status_code for r in rest].count(200) == 2
     assert [r.status_code for r in rest].count(503) == 7

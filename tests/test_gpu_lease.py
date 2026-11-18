@@ -117,6 +117,7 @@ def test_wait_s_caps_a_broker_lease_and_its_fallback(tmp_path: Path) -> None:
     assert isinstance(capped, BrokerCoordinator) and capped is not broker
     assert capped.timeout_s == 30 and capped.fallback.timeout_s == 30  # type: ignore[attr-defined]
     assert broker.timeout_s == 600 and broker.fallback is fallback  # the shared coordinator is untouched
+    assert fallback.timeout_s == 300 and capped.fallback is not fallback  # copied, not cut in place
 
 
 def test_capped_broker_is_built_once_per_cap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

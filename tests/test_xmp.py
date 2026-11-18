@@ -192,8 +192,16 @@ def test_flattened_export_sidecar_follows_the_de_collided_name(tmp_path: Path) -
         ExportRequest(scan_id="s", dest=str(dest), min_score=0.0, write_xmp=True, preserve_structure=False),
     )
     assert result.xmp_written == 2
-    for dest_rel in result.exported_paths.values():
+    # Two files on disk, not one written twice over the same name.
+    assert len(set(result.exported_paths.values())) == 2
+    # And each sidecar holds its own image's rating.
+    ratings = {}
+    for rel, dest_rel in result.exported_paths.items():
         assert sidecar_path(dest / dest_rel).is_file()
+        data = read_xmp(dest / dest_rel)
+        assert data is not None
+        ratings[rel] = data.content_rating
+    assert ratings == {"a/img.png": "safe", "b/img.png": "suggestive"}
 
 
 def test_face_name_with_xml_special_characters_survives_the_sidecar(tmp_path: Path) -> None:

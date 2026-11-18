@@ -133,6 +133,51 @@ def test_cluster_distance_is_to_the_identity_centroid() -> None:
     assert c.cluster_distance == 0.0
 
 
+def test_clusters_are_listed_in_face_n_order_when_sizes_tie(monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator import faces as faces_mod
+
+    # Twelve singletons, first seen in the reverse of their raw labels: ids follow the labels.
+    monkeypatch.setattr(faces_mod, "_cluster_embeddings", lambda emb, eps: list(range(len(emb)))[::-1])
+    results, found = _detected({f"{i}.png": [_unit(1, i, 0)] for i in range(12)})
+    clusters = cluster_identities(results, found, FaceConfig(enabled=True))
+    assert [c.cluster_id for c in clusters] == [f"face_{n}" for n in range(1, 13)]
+
+
+def test_a_face_that_fails_partway_leaves_found_in_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator import faces as faces_mod
+
+    class Face:
+        det_score = 0.9
+        normed_embedding = _unit(1, 0, 0)
+        pose = None
+        kps = None
+        landmark_3d_68 = None
+
+        def __init__(self, x: float) -> None:
+            self.bbox = [x, 0.0, x + 10.0, 10.0]
+
+    class App:
+        def get(self, bgr: np.ndarray) -> list[Face]:
+            return [Face(0.0), Face(20.0)]
+
+    calls: list[object] = []
+
+    def sharpness(image: object, bbox: list[float]) -> float:
+        calls.append(bbox)
+        if len(calls) == 2:
+            raise ValueError("degenerate box")
+        return 1.0
+
+    monkeypatch.setattr(faces_mod, "face_sharpness", sharpness)
+    found = DetectedFaces([], [], [])
+    r = ImageResult(rel_path="a.png", abs_path="/a.png", passed=True)
+    bgr = np.zeros((40, 40, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="degenerate"):
+        faces_mod._detect_one(App(), (None, None), bgr, "a.png", r, FaceConfig(enabled=True), found, strict=False)
+    assert len(calls) == 2
+    assert found.embeddings == [] and found.meta == [] and found.raws == []
+
+
 def test_reference_distance_from_the_reference_images() -> None:
     results, found = _detected(
         {"ref.png": [_unit(1, 0, 0)], "near.png": [_unit(1, 0.1, 0)], "far.png": [_unit(0, 1, 0), _unit(1, 0, 0)]}
@@ -294,6 +339,11 @@ def test_face_source_problem_names_the_missing_scan_step() -> None:
 def test_select_request_carries_the_preset() -> None:
     req = SelectRequest.model_validate({"face_source": {}}).as_export_request()
     assert req.face_source == FaceSourceFilter()
+    # The caller's own values, not just the defaults, reach the export request.
+    custom = {"max_yaw": 30.0, "min_face_px": 512, "require_adult": False, "cluster": "face_2"}
+    req = SelectRequest.model_validate({"face_source": custom}).as_export_request()
+    assert req.face_source == FaceSourceFilter(**custom) != FaceSourceFilter()
+    assert SelectRequest.model_validate({}).as_export_request().face_source is None
 
 
 # ---------------------------------------------------------------------------

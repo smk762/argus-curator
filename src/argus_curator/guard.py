@@ -166,6 +166,8 @@ def policy(name: GuardPolicy = "default") -> tuple[str, str | None]:
     except OSError as exc:
         # The path is operator configuration; the server echoes this message.
         raise ModelUnavailable(f"{POLICY_FILE_ENV} cannot be read ({exc.strerror})") from exc
+    except UnicodeDecodeError as exc:
+        raise ModelUnavailable(f"{POLICY_FILE_ENV} is not valid UTF-8") from exc
     if not text:
         raise ModelUnavailable(f"{POLICY_FILE_ENV} is empty (unset it to use SingGuard's default rules)")
     return policy_name(text), text
