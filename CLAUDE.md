@@ -31,21 +31,28 @@ Each rule names what enforces it. A new rule nothing checks yet is marked **UNEN
 |---|---|
 | A `WIRE_MODELS` change merged without regenerating `schema/curator-wire.schema.json` (`make schema`) | `tests/test_schema.py::test_committed_schema_is_current`; CI `argus-curator schema --check` |
 | `model_config = RESPONSE_ONLY` on a model a request carries (the `ScanRequest` configs, `TargetProfile`): a client may omit those defaults | `tests/test_schema.py::test_only_models_no_request_carries_list_their_defaults_as_required` |
+| A symlink export deleting the source file it was to link to (the destination already is the source) | `tests/test_export.py::test_symlink_export_into_the_source_folder_never_deletes_the_source` |
 | A manifest row for a file whose transfer failed or was skipped | `tests/test_export.py::test_skipped_sources_are_excluded_from_manifest` |
 | A manifest path consumers must re-derive: `exported_path`/`exported_abs_path` are the de-collided on-disk paths, and under `mode="move"` `abs_path` is the destination (#9) | `tests/test_export.py::test_exported_abs_paths_survive_flattened_de_collision`, `::test_move_manifest_abs_path_points_at_the_moved_file` |
 | A breaking `ManifestRow` change without a `MANIFEST_VERSION` major bump, or any row change without a bump (argus-lens and argus-forge branch on it) | `tests/test_manifest_version.py::test_manifest_version_matches_the_recorded_row` against `schema/manifest-row.snapshot.json`; `make manifest-snapshot` refuses an unbumped or breaking change |
 | A request path escaping `source_root`/`export_root` (scan, thumb, image, upload, export) | `tests/test_server.py::test_*_traversal_blocked` |
+| A scan reading a file outside its folder through a symlink (a linked file or directory) | `tests/test_scanner.py::test_collect_images_skips_symlinks_that_leave_the_root` |
 | A cached scan used from outside the source root: the store is data, so `summary.folder` is re-checked | `tests/test_server.py::test_*_rejects_scan_outside_source_root` |
 | `mode="move"` over HTTP without `--allow-move` / `CURATOR_ALLOW_MOVE=1` | `tests/test_server.py::test_export_move_rejected_by_default` |
 | Deleting a source file that isn't under-18 exposed without `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1` | `tests/test_server.py::test_delete_without_the_gate_takes_only_under_18_exposed` |
 | A cross-site write allowed because CORS is open: CORS grants anonymous reads only, and the cortex write-guard gates writes on `Origin` | `tests/test_server.py::test_cors_any_does_not_grant_cross_site_writes` |
 | A local copy of a shared argus-cortex helper (write-guard, `env_flag`, moderation clients, taxonomy, `TargetProfile`) | `tests/test_cortex_reuse.py::test_no_module_redefines_a_cortex_helper` (a module-level name cortex also defines fails unless `_ALLOWED` gives the reason) |
 | An under-18 frame with any reported exposed score kept, whatever the request says | `tests/test_nsfw.py::test_under_18_with_a_reported_exposed_score_is_never_kept`, `::test_frame_rule_is_a_hard_exclusion` |
+| `/image` serving, or `/thumb` sending unblurred, a file any cached scan reads as under-18 exposed, whatever the path's spelling, a symlink, or a missing `scan_id` | `tests/test_server.py::test_image_block_holds_for_any_spelling_of_the_path`, `::test_thumb_of_an_under_18_exposed_frame_is_blurred_by_the_server` |
+| Under `overlap`, an exposure on a person whose matched face reads under 18 treated as an adult's because the body reads adult | `tests/test_bodies.py::test_overlap_rule_counts_a_young_face_on_a_person_whose_body_reads_adult` |
+| InsightFace's face models built outside the GPU lease (`FaceAnalysis()` builds its sessions in the constructor, not in `prepare()`) | `tests/test_bodies.py::test_face_sessions_are_built_under_the_gpu_lease` |
 | A server that starts with an unknown `minor-exposed` mode (no fallback) | `tests/test_server.py::test_unknown_minor_exposed_mode_refuses_to_start` |
 | A prefiltered image kept or exported | `tests/test_server.py::test_prefiltered_images_are_never_kept_or_exported` |
 | Moderation filters applied to a scan that never ran the check | `tests/test_server.py::test_select_refuses_moderation_filters_on_unchecked_scan` |
 | XMP sidecars writing an age | `tests/test_xmp.py::test_xmp_data_names_only_named_clusters_and_never_writes_age` |
 | `POST /faces` (darkroom's age check) writing anything to disk | `tests/test_server.py::test_faces_returns_estimates_and_writes_nothing` |
+| An upload read past `CURATOR_MAX_UPLOAD_MB` (it goes through `argus_cortex.limits`) | `tests/test_paved_roads.py::test_upload_over_the_cap_is_413_and_saves_nothing`, `::test_faces_multipart_over_the_upload_cap_is_413` |
+| The `caption_url` hand-off reaching any host (public or not) not listed in `CURATOR_CAPTION_ALLOWED_HOSTS`, or logging the full URL (it goes through `argus_cortex.net.fetch`) | `tests/test_paved_roads.py::test_caption_handoff_to_a_private_address_is_refused_without_an_allow_list`, `::test_export_refuses_a_caption_url_whose_host_is_not_configured`, `::test_an_empty_caption_host_config_names_the_variable_to_set`, `::test_caption_handoff_logs_the_host_never_the_url` |
 | A config error echoing a URL or path | `tests/test_server.py::test_malformed_nudenet_url_is_refused_without_echoing_it` |
 | Importing NudeNet (AGPL-3.0): it stays a separate server behind `NudeNetClient` | ruff `TID251` banned-api (`pyproject.toml`), run by `make lint` and CI |
 

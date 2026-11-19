@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import threading
 import time
 import uuid
@@ -171,13 +172,20 @@ def _artifact_score(img: Image.Image) -> float:
     gray = np.array(img.convert("L"), dtype=np.float32)
     h, w = gray.shape
 
-    h_b = float(np.abs(gray[8::8, :] - gray[7:-1:8, :]).mean()) if h > 16 else 0.0
-    v_b = float(np.abs(gray[:, 8::8] - gray[:, 7:-1:8]).mean()) if w > 16 else 0.0
-    boundary = (h_b + v_b) / 2.0
-
-    internal_h = float(np.abs(np.diff(gray, axis=0)).mean())
-    internal_v = float(np.abs(np.diff(gray, axis=1)).mean())
-    internal = (internal_h + internal_v) / 2.0
+    # Only an axis long enough to hold block boundaries is measured, and both terms
+    # average over the same axes: an unmeasured axis counted as 0 would read as clean.
+    boundaries: list[float] = []
+    internals: list[float] = []
+    if h > 16:
+        boundaries.append(float(np.abs(gray[8::8, :] - gray[7:-1:8, :]).mean()))
+        internals.append(float(np.abs(np.diff(gray, axis=0)).mean()))
+    if w > 16:
+        boundaries.append(float(np.abs(gray[:, 8::8] - gray[:, 7:-1:8]).mean()))
+        internals.append(float(np.abs(np.diff(gray, axis=1)).mean()))
+    if not boundaries:
+        return 1.0  # too small to have blocks to measure
+    boundary = sum(boundaries) / len(boundaries)
+    internal = sum(internals) / len(internals)
 
     if internal < 1e-6:
         return 1.0
@@ -365,14 +373,31 @@ def _score_image(rel: str, abs_path: str, data: bytes, profile: TargetProfile, c
 
 
 def collect_images(root: Path) -> list[tuple[str, str, bytes]]:
-    """Load ``(rel_path, abs_path, bytes)`` for every supported image under *root*."""
+    """Load ``(rel_path, abs_path, bytes)`` for every supported image under *root*.
+
+    Symlinked directories are not descended into, and a file (or symlink) whose
+    resolved path lies outside *root* is skipped: a link named ``x.jpg`` must not
+    pull a file from elsewhere on the host into the scan.
+    """
     items: list[tuple[str, str, bytes]] = []
-    for p in sorted(root.rglob("*")):
-        if not p.is_file() or p.suffix.lower() not in SUPPORTED_EXTS:
+    root_resolved = root.resolve()
+    candidates: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+        candidates.extend(Path(dirpath) / name for name in filenames)
+    for p in sorted(candidates):
+        if p.suffix.lower() not in SUPPORTED_EXTS or not p.is_file():
             continue
         rel = p.relative_to(root).as_posix()
         try:
-            items.append((rel, str(p.resolve()), p.read_bytes()))
+            resolved = p.resolve()
+        except (OSError, RuntimeError) as exc:
+            logger.warning("scan_collect_read_error", path=str(p), error=str(exc))
+            continue
+        if not resolved.is_relative_to(root_resolved):
+            logger.warning("scan_collect_outside_root", rel_path=rel)
+            continue
+        try:
+            items.append((rel, str(resolved), p.read_bytes()))
         except OSError as exc:
             logger.warning("scan_collect_read_error", path=str(p), error=str(exc))
     return items
@@ -462,7 +487,9 @@ def recount_identities(clusters: list[FaceCluster], results: list[ImageResult]) 
         if not members:
             continue
         cluster.size = len(members)
-        if cluster.representative_rel_path not in {rel for rel, _face in members}:
+        # A representative is one face, not one image: the image can hold another of this identity's faces.
+        current = (cluster.representative_rel_path, tuple(cluster.representative_bbox or ()))
+        if current not in {(rel, tuple(face.bbox)) for rel, face in members}:
             rel, face = max(members, key=lambda m: m[1].det_score * ((m[1].bbox[2] * m[1].bbox[3]) or 1.0))
             cluster.representative_rel_path = rel
             cluster.representative_bbox = face.bbox
@@ -616,8 +643,8 @@ def scan_items(
 
     # Whether each opt-out check actually ran, read when a snapshot is saved.
     ran = {"nsfw": False, "erax": False, "guard": False, "guard_fell_back": False}
-    # The SingGuard mode the scan asks for, recorded with its guard_config.
-    guard_mode = guard_mod.thinking() if guard_mod.resolve_enabled(guard_cfg) else None
+    # The SingGuard mode the scan asks for (its own, else the server's), recorded with its guard_config.
+    guard_mode = guard_mod.thinking(guard_cfg) if guard_mod.resolve_enabled(guard_cfg) else None
     # The set age given to the frames with no face, or why none was, and why
     # FaceConfig.reference_paths gave no reference distances.
     # Until the identities phase a saved snapshot says the age is still to come.
@@ -777,13 +804,27 @@ def scan_items(
     # other. Each delivers its own chunks under the lock. Identities are
     # clustered after the other checks so an under-18 age is visible before
     # that work finishes.
+    # Set when the NudeNet pass dies, so face detection stops at its next image
+    # rather than running a failed scan to the end.
+    faces_stop = threading.Event()
+
+    def faces_check_stopped() -> None:
+        if faces_stop.is_set():
+            raise ScanCancelled("the NudeNet pass stopped")
+        check_cancelled()
+
     def run_faces() -> Any:
         from argus_curator import faces as faces_mod
 
         face_batch: list[ImageResult] = []
 
+        def faces_progress(done: int, phase_total: int) -> None:
+            faces_check_stopped()
+            if progress:
+                emit("faces", done, phase_total)
+
         def on_face(row: ImageResult, phase_done: int, phase_total: int) -> None:
-            check_cancelled()
+            faces_check_stopped()
             finalize_score(row, profile, cfg, faces_known=True)
             face_batch.append(row)
             last = phase_done == phase_total
@@ -796,7 +837,7 @@ def scan_items(
                 results,
                 items,
                 faces_cfg,
-                progress=(lambda done, phase_total: emit("faces", done, phase_total)) if progress else None,
+                progress=faces_progress,
                 on_done=on_face,
             )
         finally:
@@ -914,8 +955,8 @@ def scan_items(
                         if row.rel_path in nudenet_done:
                             release(row)
             ran["nsfw"] = ran_nudenet
-            # Only here: when the pass dies, its rows stay undecided, and the
-            # faces thread goes on shipping them until it ends.
+            # Only here: when the pass dies, its rows stay undecided, so whatever
+            # the faces thread ships before faces_stop reaches it stays held.
             undecided.clear()
         finally:
             # Over whether it ran or not: a client must not wait for a result that will not come.
@@ -924,7 +965,15 @@ def scan_items(
     detected_faces = None
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="faces") as side:
         faces_future = side.submit(run_faces) if faces_cfg.enabled else None
-        run_nsfw()
+        try:
+            run_nsfw()
+        except BaseException:
+            # Stop face detection and wait it out; NudeNet's error is the one to raise.
+            faces_stop.set()
+            if faces_future is not None:
+                with contextlib.suppress(BaseException):
+                    faces_future.result()
+            raise
         if faces_future is not None:
             detected_faces = faces_future.result()
 

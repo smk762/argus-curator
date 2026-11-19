@@ -98,13 +98,14 @@ $ argus-curator scan [OPTIONS] {source}
 * `--nudenet-url <str>`: NudeNet server origin, e.g. http://nudenet:8080 (ARGUS_CURATOR_NUDENET_URL)
 * `--erax-url <str>`: EraX-NSFW server origin, e.g. http://erax:8080 (ARGUS_CURATOR_ERAX_URL)
 * `--watermark-url <str>`: Watermark detector origin, e.g. http://watermark:8080 (ARGUS_CURATOR_WATERMARK_URL)
-* `--nsfw-threshold <float>`: Drop images whose exposed-nudity score is at or above this (0.2..1)
+* `--nsfw-threshold <float>`: Drop images whose exposed-nudity score is at or above this (0.2..1; 0.2, any reported exposure, is recommended)
 * `--nsfw-label <str>`: Per-class thresholds, comma-separated LABEL=score (e.g. FEMALE_BREAST_EXPOSED=0.5,BELLY_EXPOSED=0.8)
 * `--nsfw-exposed-labels <str>`: NudeNet classes --nsfw-threshold is taken over (default: the 5 exposed)
 * `--content-ratings <str>`: Keep only these NudeNet content ratings, comma-separated: safe, suggestive, explicit
 * `--guard / --no-guard`: SingGuard policy check (default: on when a SingGuard URL is configured; --no-guard opts out)
 * `--singguard-url <str>`: SingGuard server origin, e.g. http://guard:9150 (ARGUS_CURATOR_SINGGUARD_URL)
 * `--guard-policy <str>`: SingGuard policy: default (the policy file, else SingGuard&#x27;s rules) or adult (allows adult nudity)  [default: default]
+* `--guard-thinking <str>`: SingGuard mode: fast, fast-slow, slow or cascade (default: ARGUS_CURATOR_SINGGUARD_THINKING, else cascade)
 * `--guard-variants <str>`: Also judge every image under these policies, comma-separated (one more SingGuard pass each)
 * `--guard-policies <str>`: Which policies&#x27; verdicts --guard-unsafe/--guard-rules read, comma-separated; any failing drops (default: the official one)
 * `--guard-unsafe`: Drop images SingGuard judged unsafe, under any rule

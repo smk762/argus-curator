@@ -95,6 +95,24 @@ def test_folders_browse(dataset: Path, tmp_path: Path) -> None:
     assert client.get("/folders", params={"path": "../../etc"}).status_code == 400
 
 
+def test_one_unreadable_folder_does_not_hide_its_siblings(
+    dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_iterdir = Path.iterdir
+
+    def iterdir(self: Path) -> object:
+        if self.name == "personB":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    client = TestClient(create_app(cache_dir=str(tmp_path / "c2"), source_root=str(dataset)))
+    resp = client.get("/folders")
+    assert resp.status_code == 200
+    names = {f["name"] for f in resp.json()["folders"]}
+    assert "personA" in names and "personB" not in names
+
+
 def test_folders_requires_source_root(client: TestClient) -> None:
     assert client.get("/folders").status_code == 400
 
@@ -118,8 +136,11 @@ def test_detectors_keys(client: TestClient) -> None:
         "watermark",
         "singguard",
         "singguard_policies",
+        "singguard_thinking_modes",
+        "singguard_thinking_default",
     }
     assert resp.json()["singguard_policies"] == []  # no SingGuard server configured
+    assert resp.json()["singguard_thinking_modes"] == [] and resp.json()["singguard_thinking_default"] is None
 
 
 def test_detectors_list_policies_when_singguard_is_configured(
@@ -130,6 +151,17 @@ def test_detectors_list_policies_when_singguard_is_configured(
     monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
     body = client.get("/detectors").json()
     assert body["singguard"] is True and body["singguard_policies"] == list(guard.POLICIES)
+    assert body["singguard_thinking_modes"] == list(guard.THINKING_MODES)
+    assert body["singguard_thinking_default"] == "cascade"
+    assert client.get("/health").json()["guard_thinking"] is True
+
+
+def test_detectors_list_only_the_modes_the_host_allows(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_THINKING", "fast")
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED", "fast,cascade")
+    body = client.get("/detectors").json()
+    assert body["singguard_thinking_modes"] == ["fast", "cascade"] and body["singguard_thinking_default"] == "fast"
 
 
 def test_guard_policies_serve_builtin_text_and_singguard_default(
@@ -498,6 +530,71 @@ def test_delete_gate_opens_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert client.get("/health").json()["delete_any"] is True
     resp = client.post("/scan/scan/delete", json={"rel_path": "adult.png"})
     assert resp.status_code == 200 and not (root / "adult.png").exists()
+
+
+def test_delete_does_not_resurrect_rows_removed_while_it_ran(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator import scanner
+    from argus_curator.store import ScanStore
+
+    root, cache = _seed_delete_scan(tmp_path)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root), allow_delete=True))
+    real_unlink = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.name == "adult.png":
+            # Another request drops minor.png from the cache while this delete is in flight.
+            store = ScanStore(cache)
+            current = store.load("scan")
+            assert current is not None
+            scanner.drop_results(current, ["minor.png"])
+            store.save(current)
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    resp = client.post("/scan/scan/delete", json={"rel_path": "adult.png"})
+    assert resp.status_code == 200 and resp.json()["total"] == 1
+    assert [r["rel_path"] for r in client.get("/scan/scan").json()["results"]] == ["minor-b.png"]
+
+
+def test_image_block_holds_for_any_spelling_of_the_path(tmp_path: Path) -> None:
+    root, cache = _seed_delete_scan(tmp_path)
+    (root / "sub").mkdir()
+    (root / "alias.png").symlink_to(root / "minor.png")
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/image", params={"path": "adult.png", "scan_id": "scan"}).status_code == 200
+    for params in (
+        {"path": "minor.png", "scan_id": "scan"},
+        {"path": "./minor.png", "scan_id": "scan"},
+        {"path": "sub/../minor.png", "scan_id": "scan"},
+        {"path": "alias.png", "scan_id": "scan"},
+        {"path": "minor.png"},
+        {"path": "./minor-b.png"},
+    ):
+        assert client.get("/image", params=params).status_code == 403, params
+
+
+def test_thumb_of_an_under_18_exposed_frame_is_blurred_by_the_server(tmp_path: Path) -> None:
+    import io
+
+    from PIL import Image, ImageStat
+
+    root, cache = _seed_delete_scan(tmp_path)
+    # A checkerboard: blurring it flattens the spread of pixel values.
+    board = Image.new("L", (64, 64))
+    board.putdata([255 if (x // 8 + y // 8) % 2 else 0 for y in range(64) for x in range(64)])
+    for name in ("minor.png", "adult.png"):
+        board.convert("RGB").save(root / name)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+
+    def spread(params: dict[str, str]) -> float:
+        resp = client.get("/thumb", params=params)
+        assert resp.status_code == 200
+        return ImageStat.Stat(Image.open(io.BytesIO(resp.content)).convert("L")).stddev[0]
+
+    sharp = spread({"path": "adult.png", "scan_id": "scan"})
+    assert sharp > 100
+    assert spread({"path": "minor.png", "scan_id": "scan"}) < sharp / 4
+    assert spread({"path": "./minor.png"}) < sharp / 4
 
 
 def _png_bytes() -> bytes:
@@ -1383,6 +1480,30 @@ def test_scan_requiring_singguard_without_url_is_refused(contained: tuple[TestCl
         assert "ARGUS_CURATOR_SINGGUARD_URL is not set" in resp.json()["detail"]
 
 
+def test_scan_asking_for_a_mode_the_host_does_not_allow_is_refused(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refused with 422 naming the allowed modes, never silently downgraded (#180)."""
+    client, _exports = contained
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED", "fast,cascade")
+    for endpoint in ("/scan/folder", "/scan/folder/stream"):
+        resp = client.post(endpoint, json={"folder": "", "guard": {"thinking": "slow"}})
+        assert resp.status_code == 422, endpoint
+        detail = resp.json()["detail"]
+        assert "'slow'" in detail and "fast, cascade" in detail and "THINKING_ALLOWED" in detail
+
+
+def test_scan_with_a_misconfigured_mode_limit_is_refused(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _exports = contained
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.setenv("ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED", "turbo")
+    resp = client.post("/scan/folder", json={"folder": "", "guard": {"thinking": "fast"}})
+    assert resp.status_code == 400 and "ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED" in resp.json()["detail"]
+
+
 def test_unreadable_singguard_policy_is_refused_without_echoing_its_path(
     contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1641,8 +1762,12 @@ def test_faces_without_origin_works(client: TestClient, monkeypatch: pytest.Monk
 def test_faces_503_when_the_detector_fails(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """A detector error must not come back as 200 with no faces (fail-open age check)."""
 
+    seen: list[dict] = []
+
     def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
-        assert kwargs.get("strict") is True
+        # Recorded, not asserted here: the server turns any detector error into
+        # this 503, an AssertionError included.
+        seen.append(kwargs)
         raise RuntimeError("onnx exploded")
 
     monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
@@ -1651,6 +1776,7 @@ def test_faces_503_when_the_detector_fails(client: TestClient, monkeypatch: pyte
     resp = client.post("/faces", content=_png_bytes())
     assert resp.status_code == 503
     assert "face detection failed" in resp.json()["detail"]
+    assert len(seen) == 1 and seen[0].get("strict") is True  # fail-closed, and the fake is what ran
 
 
 def test_faces_413_when_the_body_is_too_large(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1725,6 +1851,7 @@ async def test_faces_burst_does_not_queue_past_a_free_slot(tmp_path: Path, monke
     in_detect = 0
     count_lock = threading.Lock()
     first_entered = threading.Event()
+    second_entered = threading.Event()
     release = threading.Event()
 
     def detect(results, items, cfg, **kwargs) -> None:  # noqa: ANN001, ANN003
@@ -1734,6 +1861,8 @@ async def test_faces_burst_does_not_queue_past_a_free_slot(tmp_path: Path, monke
             n = in_detect
         if n == 1:
             first_entered.set()
+        elif n == 2:
+            second_entered.set()
         assert release.wait(5)
 
     monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
@@ -1743,22 +1872,26 @@ async def test_faces_burst_does_not_queue_past_a_free_slot(tmp_path: Path, monke
     transport = httpx.ASGITransport(app=app)
     png = _png_bytes()
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-        holder = asyncio.create_task(ac.post("/faces", content=png))
-        assert await asyncio.to_thread(first_entered.wait, 5)
-        racers = [asyncio.create_task(ac.post("/faces", content=png)) for _ in range(8)]
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if sum(t.done() for t in racers) >= 7:
-                break
-            await asyncio.sleep(0.01)
-        else:
-            pytest.fail("expected 7 refusals while one slot stayed in flight")
-        with count_lock:
-            running = in_detect
-        assert running == 2
-        codes = [t.result().status_code for t in racers if t.done()]
-        assert codes.count(503) == 7
-        release.set()
+        try:
+            holder = asyncio.create_task(ac.post("/faces", content=png))
+            assert await asyncio.to_thread(first_entered.wait, 5)
+            racers = [asyncio.create_task(ac.post("/faces", content=png)) for _ in range(8)]
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if sum(t.done() for t in racers) >= 7:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("expected 7 refusals while one slot stayed in flight")
+            # The winner holds its slot before it reaches detect(): wait for it to get there.
+            assert await asyncio.to_thread(second_entered.wait, 5)
+            with count_lock:
+                running = in_detect
+            assert running == 2
+            codes = [t.result().status_code for t in racers if t.done()]
+            assert codes.count(503) == 7
+        finally:
+            release.set()  # a failed assertion must not leave the workers blocked
         rest = await asyncio.gather(holder, *racers)
     assert [r.status_code for r in rest].count(200) == 2
     assert [r.status_code for r in rest].count(503) == 7
@@ -1928,6 +2061,35 @@ def test_deleting_a_scan_removes_a_half_written_save(tmp_path: Path) -> None:
 
     assert store.delete("s") is False  # no finished scan went
     assert list(tmp_path.iterdir()) == []
+
+
+def test_overlapping_saves_of_one_scan_each_use_their_own_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    first, second = _summary("s", "/data/images", total=1), _summary("s", "/data/images", total=2)
+    real_replace = Path.replace
+    nested = {"done": False}
+
+    def replace(self: Path, target: Path) -> Path:
+        # A second save of the same scan lands between the first's write and its replace.
+        if not nested["done"]:
+            nested["done"] = True
+            store.save(second)
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    store.save(first)
+    loaded = store.load("s")
+    assert loaded is not None and loaded.total == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["s.json"]
+    # A temp file a killed save left behind goes with its scan, and only its own.
+    (tmp_path / "s.0123abcd.json.tmp").write_text("{")
+    (tmp_path / "s.v2.0123abcd.json.tmp").write_text("{")
+    assert store.delete("s") is True
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["s.v2.0123abcd.json.tmp"]
 
 
 def _store_with_a_killed_scan(cache: Path, scan_id: str = "killed") -> None:

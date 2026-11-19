@@ -18,6 +18,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import structlog
@@ -43,6 +44,8 @@ _APP_CACHE: dict[str, object] = {}
 # and the 3D-68 landmarks behind head pose. A pack's gender/age model (MiVOLO
 # replaces it) and its 2D-106 landmarks are never loaded.
 FACE_MODULES = ("detection", "recognition", "landmark_3d_68")
+# InsightFace's own default model root; packs are fetched there before FaceAnalysis reads them.
+INSIGHTFACE_ROOT = "~/.insightface"
 # A scan thread and POST /faces can ask for the same app at once; build it once.
 _APP_LOCK = threading.Lock()
 # FaceAnalysis.get is not thread-safe (bbox/result mix-ups under concurrent
@@ -79,15 +82,20 @@ def _get_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
 def _build_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
     try:
         from insightface.app import FaceAnalysis
+        from insightface.utils import ensure_available
     except Exception as exc:  # pragma: no cover - exercised only without deps
         raise FacesUnavailable("Face detection requires: pip install argus-curator[faces]  (or [gpu])") from exc
 
     provs = providers(cfg.device)
-    # FaceAnalysis() fetches the pack to disk; prepare() builds CUDA sessions.
-    # Keep the download off the GPU lease so a cold start does not block lens.
-    app = FaceAnalysis(name=cfg.model, providers=provs, allowed_modules=list(FACE_MODULES))
+    # FaceAnalysis() builds every onnxruntime session (on CUDA, the context and
+    # the weights); prepare() only sets sizes. So the app is built under the GPU
+    # lease, and only the pack download, fetched first, stays off it so a cold
+    # start does not block lens. FaceAnalysis finds the pack already there.
+    if not Path(cfg.model).expanduser().is_dir():
+        ensure_available("models", cfg.model, root=INSIGHTFACE_ROOT)
     ctx_id = 0 if "CUDAExecutionProvider" in provs else -1
     with gpu_lease(cfg.device, "faces", "load", wait_s=lease_wait_s):
+        app = FaceAnalysis(name=cfg.model, root=INSIGHTFACE_ROOT, providers=provs, allowed_modules=list(FACE_MODULES))
         app.prepare(ctx_id=ctx_id, det_size=(640, 640))
     return app
 
@@ -525,6 +533,10 @@ def _detect_one(
     image = Image.fromarray(bgr[:, :, ::-1])
     kept = 0
     kps_by_face: list[np.ndarray | None] = []
+    # Staged per image and committed with the raws at the end, so a face that fails
+    # partway never leaves found.embeddings/meta/raws out of step with each other.
+    embeddings: list[np.ndarray] = []
+    meta: list[tuple[str, int, list[float], float, float, float]] = []
     for face in detections:
         det_score = float(getattr(face, "det_score", 0.0))
         if det_score < cfg.min_det_score:
@@ -541,24 +553,23 @@ def _detect_one(
         yaw, pitch, roll = _extract_pose(face)
         lmk68 = getattr(face, "landmark_3d_68", None)
         eye_open, mouth_open = eye_mouth_openness(lmk68) if lmk68 is not None else (None, None)
-        found.embeddings.append(np.asarray(emb, dtype=np.float32))
-        found.meta.append((rel, kept, bbox, det_score, _centrality(bbox, w, h), area))
         kps = _points(getattr(face, "kps", None), 2)
         lmk = _points(lmk68, 3)
-        r.faces.append(
-            FaceDetection(
-                bbox=bbox,
-                det_score=round(det_score, 4),
-                yaw=round(yaw, 2) if yaw is not None else None,
-                pitch=round(pitch, 2) if pitch is not None else None,
-                roll=round(roll, 2) if roll is not None else None,
-                pose=classify_pose(yaw, cfg),
-                sharpness=face_sharpness(image, bbox),
-                eye_open=eye_open,
-                mouth_open=mouth_open,
-                landmarks=FaceLandmarks(kps=kps, landmark_3d_68=lmk) if kps or lmk else None,
-            )
+        detection = FaceDetection(
+            bbox=bbox,
+            det_score=round(det_score, 4),
+            yaw=round(yaw, 2) if yaw is not None else None,
+            pitch=round(pitch, 2) if pitch is not None else None,
+            roll=round(roll, 2) if roll is not None else None,
+            pose=classify_pose(yaw, cfg),
+            sharpness=face_sharpness(image, bbox),
+            eye_open=eye_open,
+            mouth_open=mouth_open,
+            landmarks=FaceLandmarks(kps=kps, landmark_3d_68=lmk) if kps or lmk else None,
         )
+        embeddings.append(np.asarray(emb, dtype=np.float32))
+        meta.append((rel, kept, bbox, det_score, _centrality(bbox, w, h), area))
+        r.faces.append(detection)
         kps_by_face.append(getattr(face, "kps", None))
         kept += 1
     r.face_count = kept
@@ -576,9 +587,11 @@ def _detect_one(
     for f, raw in zip(r.faces, raws, strict=True):
         f.attributes = to_attributes(raw)
         f.readings = to_readings(raw)
-    found.raws.extend(raws)
     _link_people(r, sessions[1], image, boxes_xyxy, cfg, rel)
     _assign_primary(r)
+    found.embeddings.extend(embeddings)
+    found.meta.extend(meta)
+    found.raws.extend(raws)
 
 
 def cluster_identities(
@@ -638,7 +651,8 @@ def cluster_identities(
                 attributes=pool(cluster_raw[cluster_id]),
             )
         )
-    clusters.sort(key=lambda c: -c.size)
+    # The order the ids were given in (size, then raw label): list position matches face_<n>.
+    clusters.sort(key=lambda c: int(c.cluster_id.removeprefix("face_")))
     return clusters
 
 
@@ -709,8 +723,8 @@ def repool_identities(clusters: list[FaceCluster], results: list[ImageResult]) -
 def infer_set_age(results: list[ImageResult], cfg: FaceConfig) -> tuple[SetAge | None, str | None]:
     """Give the passing frames with no face an age read off the set, when the scan looks like one subject.
 
-    The dominant identity must hold at least ``cfg.set_age_min_share`` of the
-    faces in *results* and have at least ``cfg.set_age_min_faces`` MiVOLO ages; its
+    The dominant identity must hold at least ``cfg.set_age_min_share`` of all the
+    faces in *results*, unclustered ones included, and have at least ``cfg.set_age_min_faces`` MiVOLO ages; its
     median age becomes each faceless frame's :class:`SetAge`. Returns the age
     and ``None``, or ``None`` and why nothing was given. Frames the hard
     filters rejected are left alone: face detection never looked at them.
@@ -720,7 +734,9 @@ def infer_set_age(results: list[ImageResult], cfg: FaceConfig) -> tuple[SetAge |
         return None, "no faces were found in this scan"
     # A tie goes to the lowest id, so it does not change with the order of the rows.
     top = min(sizes, key=lambda cluster_id: (-sizes[cluster_id], len(cluster_id), cluster_id))
-    share = sizes[top] / sum(sizes.values())
+    # Every face counts, clustered or not: the faces clustering left unassigned are
+    # other people too, and a set full of them is not one subject.
+    share = sizes[top] / sum(len(r.faces) for r in results)
     if share < cfg.set_age_min_share:
         return (
             None,

@@ -135,6 +135,12 @@ def test_bad_singguard_thinking_mode_fails_before_scanning(dataset: Path) -> Non
     assert "fast-slow" in result.output and "Scanning" not in result.output
 
 
+def test_unknown_guard_thinking_flag_fails_before_scanning(dataset: Path) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), "--singguard-url", "http://g:1", "--guard-thinking", "turbo"])
+    assert result.exit_code == 1, result.output
+    assert "fast-slow" in result.output and "Scanning" not in result.output
+
+
 def test_guard_policies_must_be_judged_before_scanning(dataset: Path) -> None:
     args = ["scan", str(dataset), "--singguard-url", "http://g:1", "--guard-policy", "adult", "--guard-unsafe"]
     result = runner.invoke(app, [*args, "--guard-policies", "adult,adult-cautious"])
@@ -216,3 +222,16 @@ def test_unknown_minor_exposed_env_fails_serve(monkeypatch: pytest.MonkeyPatch) 
     result = runner.invoke(app, ["serve"])
     assert result.exit_code == 2, result.output
     assert "must be one of frame, overlap" in result.output
+
+
+def test_singguard_summary_does_not_break_the_export_report(
+    dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SingGuard line once reused `mode`, so the "Copied N images" lookup raised KeyError."""
+    from argus_curator import guard as guard_mod
+
+    monkeypatch.setattr(guard_mod, "check_images", lambda *a, **k: True)
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["scan", str(dataset), "--singguard-url", "http://g:1", "--copy-to", str(out)])
+    assert result.exit_code == 0, result.output
+    assert "SingGuard:" in result.output and "Copied " in result.output

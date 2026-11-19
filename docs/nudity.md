@@ -11,17 +11,53 @@ AGPL-3.0, so running its server is a choice for whoever deploys it.
 Configure the server in the environment (or `.env`), never per request. `<LAN_HOST>` is a placeholder for the host that runs the server:
 
 ```bash
-ARGUS_CURATOR_NUDENET_URL=http://<LAN_HOST>:8080   # its origin; /infer is appended
+ARGUS_CURATOR_NUDENET_URL=http://<LAN_HOST>:8130   # its origin; /infer is appended
 ARGUS_CURATOR_NUDENET_TIMEOUT=30                     # seconds per image (default 30)
 ARGUS_CURATOR_NUDENET_WORKERS=4                      # concurrent requests (default 4)
-ARGUS_CURATOR_ERAX_URL=http://<LAN_HOST>:8081      # optional; empty turns EraX off
+ARGUS_CURATOR_ERAX_URL=http://<LAN_HOST>:8131      # optional; empty turns EraX off
 ARGUS_CURATOR_ERAX_TIMEOUT=30
 ARGUS_CURATOR_ERAX_WORKERS=4
 ```
 
-Any host speaking NudeNet's `/infer` API works, including the official
-`ghcr.io/notai-tech/nudenet` image (320n) or a 640m sidecar. `docker compose up`
-in argus-cull starts a 640m server and uses it unless `.env` says otherwise.
+Use the suite's shared server, [argus-retina](https://github.com/smk762/argus-retina)'s
+`ghcr.io/smk762/argus-retina-nudenet` (NudeNet's **640m** model; EraX on :8131).
+`docker compose up` here starts that same image as the bundled `nudenet`
+service, and uses it unless `.env` points elsewhere.
+
+Any host speaking NudeNet's `/infer` API works, but the model matters: **320n
+(the upstream `ghcr.io/notai-tech/nudenet` image) scores the same image
+differently from 640m, so a threshold tuned on one doesn't carry to the other.**
+Ask a server which model it runs with argus-cortex's
+`NudeNetClient(url).info()` (`model`, `resolution`), and record it alongside any
+scores you tune against.
+
+### Choosing a threshold
+
+**Use 0.2**, any exposure NudeNet reports (`DEFAULT_NSFW_THRESHOLD`, the same
+default as argus-darkroom). It's conservative on purpose and can drop the odd
+image that isn't exposed; raise it per class with `--nsfw-label` if that bites.
+The CLI's scan summary counts exposed images at 0.2 unless `--nsfw-threshold`
+says otherwise. Curator never filters by default: a request that sets no
+threshold drops nothing for nudity.
+
+How 0.2 was chosen (2026-11-16, #156). 300 random images of an adult test set
+were scored on both models, and the 38 images where they disagreed at 0.5 were
+reviewed by hand:
+
+| | 320n | 640m |
+|---|---|---|
+| Median exposed score | 0.43 | 0.54 |
+| Dropped at 0.5 | 133 | 153 |
+| Right on the 38 disagreements | 9 | 30 |
+
+- 640m was right on all 29 images only it dropped: 320n had missed them.
+- Of the 9 only 320n dropped, 8 were exposed. 640m scored them 0.27–0.49 (or 0,
+  where EraX fills in), so a 0.5 cutoff let them through. 0.35 would catch 7,
+  and 0.2 catches all 8.
+- On 300 random public-domain images from argus-quarry's pool, 640m scored none
+  at 0.2 or above, so the lower cutoff cost nothing on clean images there.
+
+Run EraX beside 640m: it fills in where NudeNet reports no exposure at all.
 
 ## Opt-out by default
 
@@ -45,8 +81,8 @@ report has `nsfw_exposed_score` and `nsfw_labels`.
 Filters drop an image when a score is **at or above** its threshold:
 
 ```bash
-# Total: drop anything whose exposed score is 0.5 or more
-argus-curator scan /data/inbox --nsfw-threshold 0.5 --copy-to /data/clean
+# Total: drop any image with a reported exposure (the recommended 0.2)
+argus-curator scan /data/inbox --nsfw-threshold 0.2 --copy-to /data/clean
 
 # Per class, alongside or instead of the total
 argus-curator scan /data/inbox \

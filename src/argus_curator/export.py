@@ -11,12 +11,14 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import shutil
 import unicodedata
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 import structlog
 from argus_cortex.moderation import rule_letter
@@ -43,6 +45,8 @@ ProgressFn = Callable[[dict[str, Any]], None]
 MANIFEST_NAME = "manifest.jsonl"
 REPORT_NAME = "curation_report.csv"
 RUN_STATS_NAME = "run_stats.json"
+# Internal hosts the export's caption_url hand-off may reach (see caption_allowed_hosts).
+CAPTION_HOSTS_ENV = "CURATOR_CAPTION_ALLOWED_HOSTS"
 
 # The XMP namings, the one to merge into first (see _source_sidecar).
 _XMP_NAMES: tuple[Callable[[Path], Path], ...] = (
@@ -107,14 +111,24 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_s
     def key(name: str) -> str:
         return _norm_name(PurePosixPath(name).stem if by_stem else name)
 
+    def dest_key(dest: str) -> tuple[str, str]:
+        # Collisions are per directory: a/IMG.jpg and b/IMG.jpg never meet.
+        p = PurePosixPath(dest)
+        return _norm_name(str(p.parent)), key(p.name)
+
     reserved = _RESERVED_STEMS if by_stem else frozenset()
     dests: dict[str, str] = {}
     digest_len: dict[str, int] = {}
     if preserve_structure:
         dests = {r.rel_path: r.rel_path for r in selected}
-        digest_len = dict.fromkeys((rel for rel in dests if "/" not in rel and key(rel) in reserved), 8)
-        for rel in digest_len:
-            logger.warning("export_basename_collision", basename=rel, rel_paths=[rel])
+        by_key: dict[tuple[str, str], list[str]] = {}
+        for rel in dests:
+            by_key.setdefault(dest_key(rel), []).append(rel)
+        for (parent, name), rels in by_key.items():
+            # Same directory, same key: a/IMG.jpg + a/IMG.png would carry to one a/IMG.txt.
+            if len(rels) > 1 or (parent == "." and name in reserved):
+                logger.warning("export_basename_collision", basename=PurePosixPath(rels[0]).name, rel_paths=rels)
+                digest_len.update(dict.fromkeys(rels, 8))
     else:
         by_name: dict[str, list[str]] = {}
         for r in selected:
@@ -129,9 +143,11 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_s
     pending = set(digest_len)
     while pending:
         for rel in pending:
-            dests[rel] = _suffixed(rel, digest_len[rel])
-        counts = Counter(key(d) for d in dests.values())
-        pending = {rel for rel in digest_len if counts[key(dests[rel])] > 1}
+            name = _suffixed(rel, digest_len[rel])
+            parent = PurePosixPath(rel).parent
+            dests[rel] = str(parent / name) if preserve_structure and str(parent) != "." else name
+        counts = Counter(dest_key(d) for d in dests.values())
+        pending = {rel for rel in digest_len if counts[dest_key(dests[rel])] > 1}
         stuck = sorted(rel for rel in pending if digest_len[rel] >= 40)
         if stuck:
             raise ValueError(f"cannot de-collide flattened basenames for: {stuck}")
@@ -145,9 +161,16 @@ def _transfer_one(src: Path, dst: Path, mode: ExportMode) -> None:
     if mode == "move":
         shutil.move(str(src), str(dst))
     elif mode == "symlink":
-        if dst.exists() or dst.is_symlink():
+        target = src.resolve()
+        if dst.is_symlink():
+            dst.unlink()  # removes only the link (e.g. an earlier symlink export's)
+        elif dst.exists():
+            # dst may *be* the source (dest == source folder, or a parent symlink):
+            # unlinking it would delete the original, as copy refuses to do.
+            if os.path.samefile(dst, target):
+                raise shutil.SameFileError(f"{dst} is the source file")
             dst.unlink()
-        dst.symlink_to(src.resolve())
+        dst.symlink_to(target)
     else:  # copy
         if dst.is_symlink():
             # A link left by an earlier symlink export: copying through it would overwrite its target.
@@ -510,10 +533,11 @@ def _write_export_sidecar(src: Path, dst: Path, data: XmpData, carried: bool = F
     """
     seed = (_source_sidecar(dst) if carried else None) or _source_sidecar(src)
     target = sidecar_path(dst)
-    created = False
-    if seed is not None and not target.exists():
+    # Whatever is at *target* after a failed merge and was not there before is ours
+    # to remove, whether the seed put it there or write_xmp started it from nothing.
+    created = not target.exists()
+    if seed is not None and created:
         shutil.copyfile(seed, target)
-        created = True
     try:
         write_xmp(dst, data)
     except Exception:
@@ -547,25 +571,100 @@ def write_source_sidecars(results: list[ImageResult], face_names: dict[str, str]
     return written
 
 
+def caption_allowed_hosts() -> list[str]:
+    """``CURATOR_CAPTION_ALLOWED_HOSTS``: the only hosts a ``caption_url`` may name.
+
+    Comma-separated ``host`` or ``host:port`` entries (a lens such as
+    ``lens:8100``). Empty by default, which turns the hand-off off. Read on every
+    call, so a test or a restart picks up a change.
+    """
+    return [v.strip() for v in os.environ.get(CAPTION_HOSTS_ENV, "").split(",") if v.strip()]
+
+
+def caption_host(caption_url: str) -> str:
+    """The host of *caption_url* for logs and messages: never the full URL, which may carry credentials."""
+    try:
+        return urlsplit(caption_url).hostname or "?"
+    except ValueError:
+        return "?"
+
+
+def caption_url_problem(caption_url: str) -> str | None:
+    """Why *caption_url* may not be sent the manifest, or ``None`` when its host is configured.
+
+    Only a host listed in ``CURATOR_CAPTION_ALLOWED_HOSTS`` is reached, public
+    or not: a ``host`` entry allows any port, a ``host:port`` entry that port.
+    Never names the URL, which may carry credentials.
+    """
+    allowed = caption_allowed_hosts()
+    if not allowed:
+        return f"no caption host is configured: set {CAPTION_HOSTS_ENV} (e.g. lens:8100)"
+    try:
+        parts = urlsplit(caption_url)
+        host, port = (parts.hostname or "").lower(), parts.port
+    except ValueError:
+        return "caption_url is not a valid URL"
+    if parts.scheme not in ("http", "https") or not host:
+        return "caption_url must be an http(s) URL"
+    port = port or (443 if parts.scheme == "https" else 80)
+    for entry in (e.lower() for e in allowed):
+        if entry.startswith("["):  # [::1] or [::1]:8100
+            name, _, rest = entry[1:].partition("]")
+            entry_port = rest.removeprefix(":")
+        elif entry.count(":") == 1:
+            name, _, entry_port = entry.partition(":")
+        else:  # a bare name, or a bare IPv6 address
+            name, entry_port = entry, ""
+        if name == host and (not entry_port or entry_port == str(port)):
+            return None
+    return f"{host}:{port} is not listed in {CAPTION_HOSTS_ENV}"
+
+
 def _post_manifest_to_lens(manifest_path: Path, caption_url: str) -> bool:
-    """Optionally POST the manifest to argus-lens for a one-click curate->caption run."""
+    """Optionally POST the manifest to argus-lens for a one-click curate->caption run.
+
+    Only a host listed in ``CURATOR_CAPTION_ALLOWED_HOSTS`` is sent it
+    (:func:`caption_url_problem`), public or not. It goes through
+    :func:`argus_cortex.net.fetch`, which pins the resolved address and never
+    re-sends the POST to a redirect. Any refusal or failure is logged (host
+    only) and returns False: the export itself has already succeeded.
+    """
+    host = caption_host(caption_url)
+    if (problem := caption_url_problem(caption_url)) is not None:
+        logger.warning("caption_handoff_failed", host=host, error=problem)
+        return False
     try:
         import httpx
     except Exception:
         logger.warning("caption_handoff_skipped", reason="httpx not installed")
         return False
     try:
-        with manifest_path.open("rb") as f:
-            resp = httpx.post(
-                caption_url,
-                files={"manifest": (MANIFEST_NAME, f, "application/x-ndjson")},
-                timeout=30.0,
-            )
-        resp.raise_for_status()
-        return True
-    except Exception as exc:
-        logger.warning("caption_handoff_failed", url=caption_url, error=str(exc))
+        from argus_cortex.net import fetch
+    except Exception:
+        logger.warning("caption_handoff_skipped", reason="argus-cortex>=0.8 (argus_cortex.net) not installed")
         return False
+    try:
+        # httpx encodes the multipart body; fetch sends it.
+        encoded = httpx.Request(
+            "POST",
+            "http://encode.invalid/",
+            files={"manifest": (MANIFEST_NAME, manifest_path.read_bytes(), "application/x-ndjson")},
+        )
+        reply = fetch(
+            caption_url,
+            method="POST",
+            content=encoded.read(),
+            headers={"Content-Type": encoded.headers["Content-Type"]},
+            allow_hosts=caption_allowed_hosts(),
+            timeout=30.0,
+        )
+    except Exception as exc:
+        logger.warning("caption_handoff_failed", host=host, error=str(exc))
+        return False
+    if not reply.ok:
+        logger.warning("caption_handoff_failed", host=host, error=f"{host} answered {reply.status}")
+        return False
+    return True
 
 
 def export_selection(

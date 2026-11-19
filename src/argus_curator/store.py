@@ -9,8 +9,10 @@ easy to wipe.
 from __future__ import annotations
 
 import contextlib
+import glob
 import json
 import os
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -45,11 +47,28 @@ class ScanStore:
 
     def save(self, summary: ScanSummary) -> Path:
         path = self._path(summary.scan_id)
-        # Replace atomically so a reader never sees a half-written summary.
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(summary.model_dump_json(context=STORE_CONTEXT), encoding="utf-8")
-        tmp.replace(path)
+        # Replace atomically so a reader never sees a half-written summary. Each
+        # writer has its own temp file: two saves of one scan (a running scan's
+        # snapshot and a delete, say) must not write into, or move, each other's.
+        tmp = self.cache_dir / f"{path.stem}.{uuid.uuid4().hex}.json.tmp"
+        try:
+            with tmp.open("x", encoding="utf-8") as fh:
+                fh.write(summary.model_dump_json(context=STORE_CONTEXT))
+            tmp.replace(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         return path
+
+    def _temps(self, scan_id: str) -> list[Path]:
+        """This scan's temp files: ``<id>.<random>.json.tmp``, and the older ``<id>.json.tmp``."""
+        stem = self._path(scan_id).stem
+        found = [self.cache_dir / f"{stem}.json.tmp"]
+        for tmp in self.cache_dir.glob(f"{glob.escape(stem)}.*.json.tmp"):
+            middle = tmp.name[len(stem) + 1 : -len(".json.tmp")]
+            if "." not in middle:  # not another scan's, e.g. "<id>.v2"
+                found.append(tmp)
+        return found
 
     def save_snapshot(self, summary: ScanSummary) -> Path:
         """Save a scan still running, so a server killed mid-scan can be told from one that finished.
@@ -129,7 +148,8 @@ class ScanStore:
     def delete(self, scan_id: str) -> bool:
         path = self._path(scan_id)
         # A save that failed part-way leaves this behind, and nothing else would remove it.
-        path.with_suffix(".json.tmp").unlink(missing_ok=True)
+        for tmp in self._temps(scan_id):
+            tmp.unlink(missing_ok=True)
         existed = path.exists()
         path.unlink(missing_ok=True)
         # Last: if the snapshot would not go, the next start still knows to drop it.

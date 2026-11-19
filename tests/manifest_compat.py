@@ -10,9 +10,12 @@ Seen from a consumer reading rows, a change is **breaking** when:
 
 - a field is removed, or is no longer always sent (it left ``required``);
 - a field's type changes (``type``, ``anyOf`` arms, ``format``, a ``const``, ...);
-- an enum loses a value.
+- an enum gains a value: a consumer validating the field (argus-forge reads
+  ``target_profile`` into the ``Literal`` fields of cortex's ``TargetProfile``)
+  rejects a row that carries it;
+- an enum loses a value: a consumer branching on it never sees it again.
 
-It is **additive** when it only adds a field or an enum value. Docs
+It is **additive** when it only adds a field. Docs
 (``title``/``description``) and ``default`` are ignored: ``RESPONSE_ONLY``
 always sends every field, and ``manifest_version``'s default is the version itself.
 
@@ -71,10 +74,12 @@ def breaking_changes(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     def walk(o: Any, n: Any, path: str) -> None:
         o, o_ref = resolve(o, old_defs)
         n, n_ref = resolve(n, new_defs)
-        if o_ref is not None:
-            if (o_ref, n_ref or "") in seen:
+        # Only a pair of refs can recurse. A ref the new schema inlined is compared
+        # at every use: each inline copy can differ.
+        if o_ref is not None and n_ref is not None:
+            if (o_ref, n_ref) in seen:
                 return
-            seen.add((o_ref, n_ref or ""))
+            seen.add((o_ref, n_ref))
         if not isinstance(o, dict) or not isinstance(n, dict):
             if o != n:
                 problems.append(f"{path}: changed from {o!r} to {n!r}")
@@ -102,6 +107,9 @@ def breaking_changes(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
                 for value in o["enum"]:
                     if value not in n["enum"]:
                         problems.append(f"{here}: lost {value!r}")
+                for value in n["enum"]:
+                    if value not in o["enum"]:
+                        problems.append(f"{here}: gained {value!r}")
             elif key == "anyOf" and len(o[key]) == len(n[key]):
                 for i, (a, b) in enumerate(zip(o[key], n[key], strict=True)):
                     walk(a, b, f"{here}[{i}]")

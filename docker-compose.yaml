@@ -23,9 +23,18 @@ services:
       # Fashionpedia garment detector (see `argus-curator garments-convert`).
       - ARGUS_CURATOR_GARMENTS_MODEL=/root/.cache/argus_curator/models/yolos_fashionpedia.onnx
       # NudeNet nudity check, on by default (opt-out). Unset: the nudenet service
-      # below. Point it elsewhere in .env (e.g. a LAN host running the same
-      # image), or set it empty (ARGUS_CURATOR_NUDENET_URL=) to switch it off.
+      # below. Point it at a shared argus-retina server in .env (e.g.
+      # http://<LAN_HOST>:8130) and run `docker compose up -d argus-curator` to
+      # leave the bundled one stopped, or set it empty (ARGUS_CURATOR_NUDENET_URL=)
+      # to switch the check off.
       - ARGUS_CURATOR_NUDENET_URL=${ARGUS_CURATOR_NUDENET_URL-http://nudenet:8080}
+      # EraX-NSFW, a second nudity opinion that fills in where NudeNet finds no
+      # exposure (argus-retina's argus-retina-erax, e.g. http://<LAN_HOST>:8131).
+      # Off unless .env sets a URL: no server is bundled.
+      - ARGUS_CURATOR_ERAX_URL=${ARGUS_CURATOR_ERAX_URL-}
+      # Watermark detector for --detect-watermarks / crops (argus-retina-watermark,
+      # e.g. http://<LAN_HOST>:8132). Off unless .env sets a URL.
+      - ARGUS_CURATOR_WATERMARK_URL=${ARGUS_CURATOR_WATERMARK_URL-}
       # SingGuard policy check, off unless .env sets a URL (no server is bundled:
       # it runs a vision language model). Opt-out once set, like NudeNet.
       - ARGUS_CURATOR_SINGGUARD_URL=${ARGUS_CURATOR_SINGGUARD_URL-}
@@ -55,6 +64,11 @@ services:
       # DNS names a browser UI reaches curator by (comma-separated), whose
       # same-host writes the write-guard allows. IPs and localhost need none.
       - CURATOR_TRUSTED_HOSTS=${CURATOR_TRUSTED_HOSTS-}
+      # Largest single uploaded file in MiB (POST /upload, a multipart POST /faces); empty = 50.
+      - CURATOR_MAX_UPLOAD_MB=${CURATOR_MAX_UPLOAD_MB-}
+      # The only hosts an export's caption_url may name, public or not (host or host:port,
+      # comma-separated), e.g. lens:8100. Empty: the hand-off is off (400).
+      - CURATOR_CAPTION_ALLOWED_HOSTS=${CURATOR_CAPTION_ALLOWED_HOSTS-}
     volumes:
       # Dataset mount the curator scans and serves /thumb from.
       - ${CURATOR_SOURCE_PATH:-./data}:/data/images
@@ -75,14 +89,11 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
-  # NudeNet detector server (AGPL-3.0, notAI-tech/NudeNet). Curator only talks to
-  # it over HTTP. Pinned by digest because upstream publishes only `latest`.
-  # Reachable from curator as http://nudenet:8080; no port is published.
+  # NudeNet 640m (AGPL-3.0), the suite's shared detector image from argus-retina:
+  # the same image the shared LAN servers run, so scores match them. Curator only
+  # talks to it over HTTP. CPU only. Reachable from curator as http://nudenet:8080;
+  # no port is published. /infer answers 503 until the model loads (/health says
+  # "loading"); the image's HEALTHCHECK waits for it.
   nudenet:
-    image: ghcr.io/notai-tech/nudenet@sha256:5d8fb3a20980680b73b7776745ee5b1983851c201a706cbdf3dd827c143783e9
-    # The image's start command runs `ulimit -n 1000000 && <worker> & <api>`.
-    # Where Docker's default limit is lower that ulimit fails, the inference
-    # worker never starts and the API waits for warmup forever.
-    ulimits:
-      nofile: 1000000
+    image: ghcr.io/smk762/argus-retina-nudenet:0.1.0@sha256:cbdc2d47171bf08f521981e0a962532ee2a25c4773f423e7eab2d36838f1adef
     restart: unless-stopped

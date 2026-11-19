@@ -224,7 +224,9 @@ def scan(
         help="Watermark detector origin, e.g. http://watermark:8080 (ARGUS_CURATOR_WATERMARK_URL)",
     ),
     nsfw_threshold: float | None = Option(
-        None, "--nsfw-threshold", help="Drop images whose exposed-nudity score is at or above this (0.2..1)"
+        None,
+        "--nsfw-threshold",
+        help="Drop images whose exposed-nudity score is at or above this (0.2..1; 0.2, any reported exposure, is recommended)",
     ),
     nsfw_label_thresholds: str | None = Option(
         None,
@@ -251,6 +253,11 @@ def scan(
         "default",
         "--guard-policy",
         help="SingGuard policy: default (the policy file, else SingGuard's rules) or adult (allows adult nudity)",
+    ),
+    guard_thinking: str | None = Option(
+        None,
+        "--guard-thinking",
+        help="SingGuard mode: fast, fast-slow, slow or cascade (default: ARGUS_CURATOR_SINGGUARD_THINKING, else cascade)",
     ),
     guard_variants: str | None = Option(
         None,
@@ -332,6 +339,7 @@ def scan(
 
     from argus_curator.export import export_selection
     from argus_curator.models import (
+        DEFAULT_NSFW_THRESHOLD,
         CropConfig,
         ExportRequest,
         FaceConfig,
@@ -566,7 +574,12 @@ def scan(
         if name not in guard_mod.POLICIES:
             typer.echo(f"Error: unknown SingGuard policy {name!r} (one of {', '.join(guard_mod.POLICIES)})", err=True)
             raise typer.Exit(1)
-    guard_cfg = GuardConfig(enabled=guard, policy=guard_policy, variants=variant_names)
+    if guard_thinking is not None and guard_thinking not in guard_mod.THINKING_MODES:
+        typer.echo(
+            f"Error: unknown SingGuard mode {guard_thinking!r} (one of {', '.join(guard_mod.THINKING_MODES)})", err=True
+        )
+        raise typer.Exit(1)
+    guard_cfg = GuardConfig(enabled=guard, policy=guard_policy, variants=variant_names, thinking=guard_thinking)
     ran = [guard_cfg.policy, *guard_cfg.variants]
     if not_run := [name for name in export_req.guard_policies or [] if name not in ran]:
         typer.echo(f"Error: --guard-policies {', '.join(not_run)} not judged (add them to --guard-variants)", err=True)
@@ -574,7 +587,7 @@ def scan(
     if guard_mod.resolve_enabled(guard_cfg):
         try:
             guard_mod.endpoint()
-            guard_mod.thinking()
+            guard_mod.thinking(guard_cfg)
             for name in (guard_cfg.policy, *guard_cfg.variants):
                 guard_mod.policy(name)
         except Exception as exc:
@@ -649,7 +662,7 @@ def scan(
         scored = [r for r in summary.results if r.nsfw is not None]
         checked = [r for r in scored if not r.nudenet_failed]
         # Count against the threshold the export will apply, over its classes.
-        at = export_req.nsfw_threshold if export_req.nsfw_threshold is not None else 0.5
+        at = export_req.nsfw_threshold if export_req.nsfw_threshold is not None else DEFAULT_NSFW_THRESHOLD
         exposed = sum(1 for r in scored if nsfw_mod.exposed_score(r.nsfw.labels, export_req.nsfw_exposed_labels) >= at)
         # A rejected frame is not sent, so its missing score is no failure.
         unchecked = sum(1 for r in summary.results if r.passed and (r.nsfw is None or r.nudenet_failed))
@@ -663,8 +676,9 @@ def scan(
         tail = f"  ({unchecked} could not be checked)" if unchecked else ""
         unsafe = sum(1 for g in judged if not g.safe)
         gc = summary.guard_config
-        mode = f", {gc.thinking}" + (" (refused, ran fast)" if gc.fell_back else "") if gc.thinking else ""
-        typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{mode}{tail}")
+        # Not `mode`: that is the export's copy/move/symlink, read again after the transfer.
+        thinking = f", {gc.thinking}" + (" (refused, ran fast)" if gc.fell_back else "") if gc.thinking else ""
+        typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{thinking}{tail}")
     typer.echo("=" * 56)
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")

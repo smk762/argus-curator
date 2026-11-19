@@ -497,3 +497,90 @@ def test_concept_ignores_faces_and_rewards_clean_high_res() -> None:
     clean = _scored("concept")
     noisy = _scored("concept", artifact=0.5, width=640, height=640)
     assert clean.score_breakdown["target_bonus"] > noisy.score_breakdown["target_bonus"]
+
+
+def test_collect_images_skips_symlinks_that_leave_the_root(tmp_path: Path) -> None:
+    from argus_curator.scanner import collect_images
+
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    (root / "sub").mkdir(parents=True)
+    outside.mkdir()
+    Image.new("RGB", (8, 8)).save(root / "inside.png")
+    Image.new("RGB", (8, 8)).save(outside / "secret.png")
+    (root / "leak.png").symlink_to(outside / "secret.png")
+    (root / "linked_dir").symlink_to(outside, target_is_directory=True)
+    (root / "sub" / "alias.png").symlink_to(root / "inside.png")
+    items = collect_images(root)
+    assert [rel for rel, _abs, _data in items] == ["inside.png", "sub/alias.png"]
+    assert all(Path(abs_path).is_relative_to(root.resolve()) for _rel, abs_path, _data in items)
+
+
+@pytest.mark.parametrize("field", ["sharpness_ref", "resolution_ref"])
+def test_a_negative_normalisation_ceiling_is_refused(field: str) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=field):
+        ScanConfig(**{field: -1})
+    assert getattr(ScanConfig(**{field: 0}), field) == 0  # 0 turns the term off
+
+
+def test_artifact_score_of_a_strip_averages_only_the_axis_it_measured() -> None:
+    from argus_curator.scanner import _artifact_score
+
+    # 12 px tall: only the horizontal axis can hold 8x8 block boundaries. Counting the
+    # vertical one as 0 halved the blocking and read this strip as nearly clean (0.71).
+    x = np.arange(2000)
+    row = (40 + (x % 8) * 4 + (x // 8) * 34) % 200  # a ramp in each 8-px block, a jump at each boundary
+    strip = np.stack([row + (2 if y % 2 else 0) for y in range(12)]).astype(np.uint8)
+    assert _artifact_score(Image.fromarray(strip)) < 0.5
+    assert _artifact_score(Image.new("L", (12, 12), 90)) == 1.0  # nothing to measure
+
+
+def test_a_representative_reassigned_away_gives_way_even_if_its_image_still_counts() -> None:
+    from argus_curator.models import FaceCluster, FaceDetection, ImageResult
+    from argus_curator.scanner import recount_identities
+
+    rep = FaceDetection(bbox=[0.0, 0.0, 50.0, 50.0], det_score=0.99, cluster_id="face_1")
+    other = FaceDetection(bbox=[100.0, 0.0, 40.0, 40.0], det_score=0.9, cluster_id="face_1")
+    r = ImageResult(rel_path="two.png", abs_path="/two.png", passed=True, faces=[rep, other], face_count=2)
+    cluster = FaceCluster(cluster_id="face_1", size=2, representative_rel_path="two.png", representative_bbox=rep.bbox)
+
+    rep.cluster_id = "face_2"  # the representative face now reads as someone else
+    (kept,) = (c for c in recount_identities([cluster], [r]) if c.cluster_id == "face_1")
+    assert kept.representative_rel_path == "two.png" and kept.representative_bbox == other.bbox
+
+
+def test_a_nudenet_failure_stops_face_detection_at_its_next_image(
+    dataset: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead NudeNet pass fails the scan; face detection must not run the rest of the set first."""
+    import threading
+
+    from argus_curator import faces as faces_mod
+    from argus_curator import nsfw as nsfw_mod
+    from argus_curator.models import NsfwConfig
+
+    faces_started = threading.Event()
+    reached: list[int] = []
+
+    def fake_faces(results, items, cfg, progress=None, on_done=None):
+        faces_started.set()
+        row = next(r for r in results if r.passed)
+        for i in range(500):  # far more images than the scan has time for
+            reached.append(i)
+            if on_done is not None:
+                on_done(row, i + 1, 500)
+            threading.Event().wait(0.01)
+        return faces_mod.DetectedFaces([], [], [])
+
+    def fake_nsfw(results, items, cfg, progress=None, on_done=None):
+        assert faces_started.wait(5)
+        raise RuntimeError("NudeNet answered 500")
+
+    monkeypatch.setattr(faces_mod, "detect_faces", fake_faces)
+    monkeypatch.setattr(nsfw_mod, "check_images", fake_nsfw)
+    monkeypatch.setattr(nsfw_mod, "resolve_enabled", lambda cfg: True)
+
+    with pytest.raises(RuntimeError, match="NudeNet answered 500"):
+        scan_folder(dataset, faces_cfg=FaceConfig(enabled=True), nsfw_cfg=NsfwConfig())
+    assert len(reached) < 500

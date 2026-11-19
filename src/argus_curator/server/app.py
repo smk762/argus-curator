@@ -18,6 +18,7 @@ Routes (section 4 of the brief):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import json
 import os
@@ -33,6 +34,8 @@ try:
     # behind its own [server] extra, so a stale cortex fails here too and must get the
     # same actionable message rather than a bare ModuleNotFoundError naming a package
     # the user never installed directly.
+    from argus_cortex.limits import BadInput, TooLarge, read_body, read_upload
+    from argus_cortex.net import UrlRefused, check_url
     from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
     from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
     from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -40,7 +43,7 @@ except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-curator[server]") from exc
 
 import structlog
-from PIL import Image
+from PIL import Image, ImageFilter
 from pydantic import BaseModel, Field
 
 from argus_curator import __version__, crops, export, scanner
@@ -187,7 +190,7 @@ def _busy_detail(active: dict[str, Any]) -> str:
 _LOCALHOST_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
-def _detectors() -> dict[str, bool | list[str]]:
+def _detectors() -> dict[str, bool | list[str] | str | None]:
     torch_ok = find_spec("torch") is not None
     cuda_ok = False
     if torch_ok:
@@ -197,6 +200,12 @@ def _detectors() -> dict[str, bool | list[str]]:
             cuda_ok = bool(torch.cuda.is_available())
         except Exception:
             cuda_ok = False
+    thinking_modes: list[str] = []
+    thinking_default: str | None = None
+    if guard_mod.configured():
+        # A misconfigured mode lists none; a scan asking for SingGuard gets the 400 naming the variable.
+        with contextlib.suppress(ModelUnavailable):
+            thinking_modes, thinking_default = guard_mod.allowed_thinking(), guard_mod.default_thinking()
     return {
         "torch": torch_ok,
         "cuda": cuda_ok,
@@ -215,6 +224,10 @@ def _detectors() -> dict[str, bool | list[str]]:
         "singguard": guard_mod.configured(),
         # Policy names a scan can pass as guard.policy; empty without a server.
         "singguard_policies": list(guard_mod.POLICIES) if guard_mod.configured() else [],
+        # Modes a scan can pass as guard.thinking, and the one it runs in when it
+        # names none; empty and null without a server or with a misconfigured mode.
+        "singguard_thinking_modes": thinking_modes,
+        "singguard_thinking_default": thinking_default,
     }
 
 
@@ -239,6 +252,63 @@ def _is_within(root: Path, candidate: Path) -> bool:
     except (ValueError, OSError):
         return False
     return candidate == root or root in candidate.parents
+
+
+class _MinorBlockList:
+    """Resolved paths of every file any cached scan reads as under-18 exposed.
+
+    ``/image`` and ``/thumb`` decide from the *resolved* target, never the raw
+    query string, so ``./x.jpg``, ``sub/../x.jpg``, a symlink, or omitting
+    ``scan_id`` all land on the same verdict. Every cached scan counts, not only
+    the one a request names. Each scan file is parsed once per mtime.
+    """
+
+    def __init__(self, store: ScanStore, rule: Any) -> None:
+        self._store = store
+        self._rule = rule
+        self._lock = threading.Lock()
+        self._by_file: dict[Path, tuple[float, frozenset[Path]]] = {}
+
+    def _scan_paths(self, summary: ScanSummary) -> frozenset[Path]:
+        blocked: set[Path] = set()
+        for r in summary.results:
+            if not minor_exposed(r, self._rule):
+                continue
+            for raw in (r.abs_path, str(Path(summary.folder) / r.rel_path)):
+                try:
+                    blocked.add(Path(raw).resolve())
+                except (ValueError, OSError):
+                    continue
+        return frozenset(blocked)
+
+    def blocked(self, target: Path) -> bool:
+        resolved = target.resolve()
+        seen: set[Path] = set()
+        for path in self._store.cache_dir.glob("*.json"):
+            seen.add(path)
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:  # removed meanwhile
+                continue
+            with self._lock:
+                cached = self._by_file.get(path)
+            if cached is None or cached[0] != mtime:
+                # Parsed outside the lock: a large scan re-saved every few seconds
+                # while it runs must not hold up every other /thumb and /image.
+                try:
+                    summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
+                    cached = (mtime, self._scan_paths(summary))
+                except Exception as exc:  # an unreadable cache file names no file to block
+                    logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
+                    cached = (mtime, frozenset())
+                with self._lock:
+                    self._by_file[path] = cached
+            if resolved in cached[1]:
+                return True
+        with self._lock:
+            for gone in set(self._by_file) - seen:
+                self._by_file.pop(gone, None)
+        return False
 
 
 def _count_images(directory: Path, cap: int = _COUNT_CAP) -> int:
@@ -267,12 +337,18 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
         for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
             if entry.is_dir() and not entry.name.startswith("."):
                 sub_rel = str(Path(rel) / entry.name) if rel else entry.name
-                subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                try:
+                    subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
+                    abs_path = str(entry.resolve())
+                except OSError as exc:
+                    # One unreadable child (lost+found, a dead mount) must not hide its siblings.
+                    logger.warning("browse_folder_unreadable", rel_path=sub_rel, error=str(exc))
+                    continue
                 folders.append(
                     {
                         "name": entry.name,
                         "rel_path": sub_rel,
-                        "abs_path": str(entry.resolve()),
+                        "abs_path": abs_path,
                         "image_count": _count_images(entry),
                         "subfolder_count": subfolders,
                     }
@@ -300,12 +376,38 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
 # Largest body POST /faces will buffer. It is held in memory and decoded, so an
 # unbounded body is a memory-exhaustion lever on any client that can reach it.
 _FACES_MAX_BYTES = 64 * 1024 * 1024
+# A multipart body's Content-Length counts its boundaries and part headers too, so
+# the declared-length pre-check allows this much over the cap; read_upload then
+# holds the file itself to the exact cap.
+_MULTIPART_OVERHEAD = 64 * 1024
 # POST /faces calls in flight at once. Each buffers and decodes up to
 # _FACES_MAX_BYTES; past this a call is refused (503, Retry-After) instead of queued.
 _FACES_CONCURRENCY = 2
 # Longest a POST /faces call waits for the host's GPU lease. A scan takes the
 # lease per image, so this is a few images' worth, not the whole scan.
 _FACES_LEASE_WAIT_S = 30.0
+
+
+# Largest single uploaded file (POST /upload, a multipart POST /faces), in MiB.
+_MAX_UPLOAD_ENV = "CURATOR_MAX_UPLOAD_MB"
+_MAX_UPLOAD_MB_DEFAULT = 50
+
+
+def _max_upload_bytes() -> int:
+    """The per-file upload cap from ``CURATOR_MAX_UPLOAD_MB`` (default 50), in bytes.
+
+    A value that is not a positive number fails the start rather than falling back.
+    """
+    raw = os.environ.get(_MAX_UPLOAD_ENV, "").strip()
+    if not raw:
+        return _MAX_UPLOAD_MB_DEFAULT * 1024 * 1024
+    try:
+        mb = float(raw)
+    except ValueError:
+        mb = 0.0
+    if not mb > 0 or mb == float("inf"):
+        raise ValueError(f"{_MAX_UPLOAD_ENV} must be a positive number of MiB")
+    return int(mb * 1024 * 1024)
 
 
 def _env_list(name: str) -> list[str]:
@@ -485,6 +587,10 @@ def create_app(
     # Fails the start on an unknown ARGUS_CURATOR_MINOR_EXPOSED, rather than a
     # first selection or delete: never a silent fallback to another rule.
     minor_rule = minor_exposed_mode()
+    minor_block = _MinorBlockList(store, minor_rule)
+    # Serialises the load-drop-save of a cached scan (delete, a move export's drop).
+    cache_lock = threading.Lock()
+    max_upload = _max_upload_bytes()
     if allow_delete is None:
         # Two flags, either one enough: devmode is the broad "this is my own
         # box" switch, allow-delete the narrow one for a deployment.
@@ -548,6 +654,9 @@ def create_app(
             # ScanRequest.crops: crops applied to the bytes in memory, so every
             # check sees the cropped frame; export writes it cropped (copy only).
             "crops": True,
+            # GuardConfig.thinking: a scan picks its SingGuard mode (options and
+            # default in GET /detectors). An older server replaced the value silently.
+            "guard_thinking": True,
             # CropConfig.detect: watermarks found by ARGUS_CURATOR_WATERMARK_URL and cut away at the edges.
             "watermark_detect": True,
             # ExportRequest.carry_sidecars / run_stats, ExportResult.sidecars_carried
@@ -567,7 +676,7 @@ def create_app(
         }
 
     @app.get("/detectors")
-    async def detectors() -> dict[str, bool | list[str]]:
+    async def detectors() -> dict[str, bool | list[str] | str | None]:
         return _detectors()
 
     # Semaphore.locked() is not a non-blocking acquire: when one slot remains,
@@ -596,28 +705,29 @@ def create_app(
                 faces_in_flight -= 1
 
     async def _faces(request: Request, body: bool) -> dict[str, Any]:
-        too_large = HTTPException(status_code=413, detail=f"image larger than {_FACES_MAX_BYTES} bytes")
+        # The upload cap applies here too; _FACES_MAX_BYTES stays the route's ceiling.
+        cap = min(_FACES_MAX_BYTES, max_upload)
         try:
-            declared = int(request.headers.get("content-length") or 0)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="bad Content-Length") from None
-        if declared > _FACES_MAX_BYTES:
-            raise too_large
-        content_type = (request.headers.get("content-type") or "").lower()
-        if content_type.startswith("multipart/"):
-            # The context manager closes the parsed parts (and any spooled temp file).
-            async with request.form() as form:
-                upload = next((v for v in form.values() if hasattr(v, "read")), None)
-                if upload is None:
-                    raise HTTPException(status_code=400, detail="no image")
-                data = await upload.read()  # type: ignore[union-attr]
-        else:
-            buf = bytearray()
-            async for chunk in request.stream():
-                buf += chunk
-                if len(buf) > _FACES_MAX_BYTES:
-                    raise too_large
-            data = bytes(buf)
+            content_type = (request.headers.get("content-type") or "").lower()
+            if content_type.startswith("multipart/"):
+                # Refused by its declared length before parsing; the file is then read up to the cap.
+                declared = (request.headers.get("content-length") or "").strip()
+                if declared and not (declared.isascii() and declared.isdigit()):
+                    raise BadInput("Content-Length is not a number")
+                if declared and int(declared) > cap + _MULTIPART_OVERHEAD:
+                    raise TooLarge("image", cap)
+                # The context manager closes the parsed parts (and any spooled temp file).
+                async with request.form() as form:
+                    upload = next((v for v in form.values() if hasattr(v, "read")), None)
+                    if upload is None:
+                        raise HTTPException(status_code=400, detail="no image")
+                    data = await read_upload(upload, cap, what="image")
+            else:
+                data = await read_body(request, cap, what="image")
+        except TooLarge as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from None
+        except BadInput as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
         return await asyncio.to_thread(_faces_from_bytes, data, body)
 
     @app.get("/guard/policies")
@@ -725,11 +835,18 @@ def create_app(
                     detail=f"SingGuard check requested but {guard_mod.URL_ENV} {state}",
                 )
             try:
-                guard_mod.thinking()
+                allowed = guard_mod.allowed_thinking()
                 for name in (req.guard.policy, *req.guard.variants):
                     guard_mod.policy(name)
             except ModelUnavailable as exc:  # these name no URL or path
                 raise HTTPException(status_code=400, detail=f"SingGuard check requested but {exc}") from exc
+            # Refused, never downgraded: the caller asked for this mode's cost and its reasons.
+            if req.guard.thinking is not None and req.guard.thinking not in allowed:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"SingGuard mode {req.guard.thinking!r} is not allowed here; "
+                    f"this server allows {', '.join(allowed)} ({guard_mod.THINKING_ALLOWED_ENV})",
+                )
 
     def _require_detector(req: ScanRequest) -> None:
         """Refuse a watermark scan while the detector is down.
@@ -1054,12 +1171,20 @@ def create_app(
             failure = exc
         if gone:
 
-            def _drop_and_save() -> None:
+            def _drop_and_save() -> ScanSummary:
                 # Regrouping near-duplicates is O(n^2) on pHash: off the event loop.
-                scanner.drop_results(summary, gone)
-                store.save(summary)
+                # Re-read under the lock: saving the copy loaded before the unlink
+                # would put back rows another delete or a move removed meanwhile.
+                with cache_lock:
+                    current = store.load(scan_id)
+                    if current is None:  # Deleted meanwhile: saving would bring the scan back.
+                        scanner.drop_results(summary, gone)
+                        return summary
+                    scanner.drop_results(current, gone)
+                    store.save(current)
+                    return current
 
-            await asyncio.to_thread(_drop_and_save)
+            summary = await asyncio.to_thread(_drop_and_save)
         if failure is not None:
             raise HTTPException(status_code=400, detail=f"could not delete: {failure}; deleted: {gone}") from failure
         body: dict[str, Any] = {"rel_paths": paths, "total": summary.total}
@@ -1078,6 +1203,9 @@ def create_app(
         target = _image_file(path, scan_id, _scan_root_or_400(summary) if summary else None)
         # A row's face boxes are of the frame the scan saw, so a viewer's thumbnail has to be that frame too.
         box = next((r.crop for r in summary.results if r.rel_path == path), None) if summary else None
+        # An under-18 exposed frame is blurred here, not only by the viewer, so the
+        # bytes /thumb sends are never the unblurred frame.
+        blur = await asyncio.to_thread(minor_block.blocked, target)
 
         def _render() -> bytes:
             with Image.open(target) as img:
@@ -1085,6 +1213,8 @@ def create_app(
                     img = crops.crop_image(img, box)
                 img = img.convert("RGB")
                 img.thumbnail((THUMB_MAX, THUMB_MAX))
+                if blur:
+                    img = img.filter(ImageFilter.GaussianBlur(radius=max(img.size) / 8))
                 buf = io.BytesIO()
                 img.save(buf, format="WEBP", quality=80)
                 return buf.getvalue()
@@ -1105,12 +1235,11 @@ def create_app(
         An under-18 image with an exposed score is not served. The grid keeps a
         blurred thumbnail, and the file itself is only removed by delete.
         """
-        if scan_id:
-            summary = store.load(scan_id)
-            match = next((r for r in summary.results if r.rel_path == path), None) if summary else None
-            if match is not None and minor_exposed(match, minor_rule):
-                raise HTTPException(status_code=403, detail="This image stays blurred.")
         target = _image_file(path, scan_id)
+        # Decided from the resolved file against every cached scan, so neither
+        # another spelling of the path nor omitting scan_id gets around it.
+        if await asyncio.to_thread(minor_block.blocked, target):
+            raise HTTPException(status_code=403, detail="This image stays blurred.")
         return FileResponse(target, media_type=_IMAGE_TYPES[target.suffix.lower()])
 
     @app.post("/upload")
@@ -1129,6 +1258,15 @@ def create_app(
         rel = "" if rel == "." else rel
         await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
 
+        # Refused before anything is saved when the parser already knows a file is over the cap;
+        # read_upload below is the guard for any it doesn't.
+        for item in files:
+            if isinstance(item.size, int) and item.size > max_upload:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{Path(item.filename or '').name or 'upload'} is larger than {max_upload} bytes",
+                )
+
         saved = 0
         skipped: list[str] = []
         errors: list[dict[str, str]] = []
@@ -1145,7 +1283,12 @@ def create_app(
                 skipped.append(name)
                 continue
             try:
-                data = await item.read()
+                data = await read_upload(item, max_upload, what=name)
+            except TooLarge as exc:
+                raise HTTPException(status_code=413, detail=str(exc)) from None
+            except BadInput as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            try:
                 await asyncio.to_thread(dest.write_bytes, data)
                 saved += 1
             except OSError as exc:
@@ -1199,6 +1342,27 @@ def create_app(
         dest = _resolve_within(root, req.dest)
         return summary, req.model_copy(update={"dest": str(dest)})
 
+    async def _check_caption_url(req: ExportRequest) -> None:
+        """Refuse (400) a ``caption_url`` the hand-off would refuse, before the export runs.
+
+        The same checks the hand-off makes when the manifest is sent (which
+        makes them again then): the host must be listed in
+        ``CURATOR_CAPTION_ALLOWED_HOSTS``, public or not, and its address must
+        pass :func:`argus_cortex.net.check_url`. The detail names the host only,
+        never the URL.
+        """
+        if not (req.caption_url and req.write_manifest):
+            return
+        if (problem := export.caption_url_problem(req.caption_url)) is not None:
+            raise HTTPException(status_code=400, detail=f"caption_url refused: {problem}")
+        try:
+            await asyncio.to_thread(check_url, req.caption_url, allow_hosts=export.caption_allowed_hosts())
+        except UrlRefused as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"caption_url refused: {exc} (an internal host must be listed in {export.CAPTION_HOSTS_ENV})",
+            ) from None
+
     def _drop_moved(summary: ScanSummary, moved: list[str]) -> None:
         """After a move export, drop the moved images from the cached scan, as delete does.
 
@@ -1213,11 +1377,12 @@ def create_app(
         try:
             # Re-read: the export can run for minutes, and saving the copy
             # loaded before it would put back rows a delete removed meanwhile.
-            current = store.load(summary.scan_id)
-            if current is None:  # Deleted meanwhile: saving would bring the scan back.
-                return
-            scanner.drop_results(current, moved)
-            store.save(current)
+            with cache_lock:
+                current = store.load(summary.scan_id)
+                if current is None:  # Deleted meanwhile: saving would bring the scan back.
+                    return
+                scanner.drop_results(current, moved)
+                store.save(current)
         except Exception as exc:
             logger.warning("export_cache_drop_failed", scan_id=summary.scan_id, error=str(exc))
 
@@ -1238,6 +1403,7 @@ def create_app(
     @app.post("/export", response_model=ExportResult)
     async def run_export(req: ExportRequest) -> ExportResult:
         summary, req = _validate_export(req)
+        await _check_caption_url(req)
         try:
             return await asyncio.to_thread(_export_and_drop, summary, req)
         except Exception as exc:
@@ -1252,6 +1418,7 @@ def create_app(
         ExportResult, or ``event: error``.
         """
         summary, req = _validate_export(req)
+        await _check_caption_url(req)
 
         events: queue.Queue[tuple[str, Any]] = queue.Queue()
         _DONE = "__done__"

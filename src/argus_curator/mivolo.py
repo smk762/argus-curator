@@ -101,6 +101,10 @@ def _channels(crop: Image.Image) -> np.ndarray:
 def preprocess(crops: list[Image.Image], bodies: list[Image.Image | None] | None = None) -> np.ndarray:
     """``(N, 6, 384, 384)``: normalised face channels + person channels (absent when no body)."""
     bodies = bodies if bodies is not None else [None] * len(crops)
+    if len(bodies) != len(crops):
+        raise ValueError(f"{len(bodies)} body crops for {len(crops)} face crops")
+    if not crops:
+        return np.empty((0, 6, INPUT_SIZE, INPUT_SIZE), dtype=np.float32)
     faces = np.stack([_channels(c) for c in crops])
     persons = np.stack([_ABSENT if b is None else _channels(b) for b in bodies])
     return np.concatenate([faces, persons], axis=1).astype(np.float32)

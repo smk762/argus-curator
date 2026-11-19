@@ -115,10 +115,11 @@ def postprocess(logits: np.ndarray, boxes: np.ndarray, width: int, height: int, 
     for lbl, conf, (cx, cy, bw, bh) in zip(labels, scores, boxes, strict=True):
         if lbl >= len(GARMENT_LABELS) or conf < min_conf:
             continue
-        x1 = max(0.0, (cx - bw / 2) * width)
-        y1 = max(0.0, (cy - bh / 2) * height)
-        x2 = min(float(width), (cx + bw / 2) * width)
-        y2 = min(float(height), (cy + bh / 2) * height)
+        # float() each: an unclipped edge is otherwise the model's np.float32, which JSON can't encode.
+        x1 = max(0.0, float((cx - bw / 2) * width))
+        y1 = max(0.0, float((cy - bh / 2) * height))
+        x2 = min(float(width), float((cx + bw / 2) * width))
+        y2 = min(float(height), float((cy + bh / 2) * height))
         if x2 - x1 < 1 or y2 - y1 < 1:
             continue
         out.append((int(lbl), float(conf), [x1, y1, x2 - x1, y2 - y1]))

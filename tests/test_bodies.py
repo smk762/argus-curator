@@ -41,10 +41,47 @@ def test_only_the_insightface_modules_curator_reads_are_loaded(monkeypatch: pyte
 
     app_mod = types.ModuleType("insightface.app")
     app_mod.FaceAnalysis = _FaceAnalysis  # type: ignore[attr-defined]
+    utils_mod = types.ModuleType("insightface.utils")
+    utils_mod.ensure_available = lambda *a, **k: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "insightface", types.ModuleType("insightface"))
     monkeypatch.setitem(sys.modules, "insightface.app", app_mod)
+    monkeypatch.setitem(sys.modules, "insightface.utils", utils_mod)
     faces._build_app(FaceConfig(enabled=True, device="cpu"))
     assert seen["allowed_modules"] == ["detection", "recognition", "landmark_3d_68"]
+
+
+def test_face_sessions_are_built_under_the_gpu_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FaceAnalysis() builds the onnxruntime (CUDA) sessions; only the pack download stays off the lease."""
+    import contextlib
+    import sys
+    import types
+
+    events: list[str] = []
+
+    class _FaceAnalysis:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            events.append("sessions")
+
+        def prepare(self, **kwargs) -> None:  # noqa: ANN003
+            events.append("prepare")
+
+    @contextlib.contextmanager
+    def lease(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        events.append("lease")
+        yield
+        events.append("release")
+
+    app_mod = types.ModuleType("insightface.app")
+    app_mod.FaceAnalysis = _FaceAnalysis  # type: ignore[attr-defined]
+    utils_mod = types.ModuleType("insightface.utils")
+    utils_mod.ensure_available = lambda *a, **k: events.append("download")  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "insightface", types.ModuleType("insightface"))
+    monkeypatch.setitem(sys.modules, "insightface.app", app_mod)
+    monkeypatch.setitem(sys.modules, "insightface.utils", utils_mod)
+    monkeypatch.setattr(faces, "providers", lambda device: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    monkeypatch.setattr(faces, "gpu_lease", lease)
+    faces._build_app(FaceConfig(enabled=True, device="cuda"))
+    assert events == ["download", "lease", "sessions", "prepare", "release"]
 
 
 def test_each_face_gets_its_own_body() -> None:
@@ -270,3 +307,73 @@ def test_associate_nsfw_gives_each_detection_to_the_overlapping_person(monkeypat
     )
     bodies.associate_nsfw([r])
     assert minor_exposed(r) is True
+
+
+def test_overlap_rule_counts_a_young_face_on_a_person_whose_body_reads_adult() -> None:
+    """Face and body ages disagree: the young face's own person box is young."""
+    from argus_cortex.moderation import NsfwDetection, NsfwResult
+
+    from argus_curator.models import FaceAttributes, FaceDetection, PersonDetection
+    from argus_curator.selection import minor_exposed
+
+    young = PersonDetection(bbox=[0, 0, 100, 200], det_score=0.9, age_years=16.0, age_source="mivolo", age_body=True)
+    # MiVOLO reads this body as adult, but the face matched to it reads 15.
+    disputed = PersonDetection(bbox=[200, 0, 100, 200], det_score=0.8, age_years=30.0, age_source="mivolo")
+    r = ImageResult(
+        rel_path="x.png",
+        abs_path="/d/x.png",
+        passed=True,
+        people=[young, disputed],
+        faces=[
+            FaceDetection(
+                bbox=[220, 10, 30, 30],
+                det_score=0.9,
+                person_index=1,
+                attributes=FaceAttributes(age_years=15.0, age_source="mivolo"),
+            )
+        ],
+        nsfw=NsfwResult(
+            detections=[NsfwDetection(label="FEMALE_BREAST_EXPOSED", score=0.8, bbox=[210, 80, 40, 40])],
+            labels={"FEMALE_BREAST_EXPOSED": 0.8},
+            exposed_score=0.8,
+        ),
+    )
+    assert minor_exposed(r, "overlap") is True
+
+
+def test_sub_threshold_pairs_do_not_outbid_a_valid_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Face 0 matches body 0 at 0.6; the two cross pairs (0.45 each) are no match and must not win."""
+    table = {(0, 0): 0.6, (0, 100): 0.45, (100, 0): 0.45, (100, 100): 0.0}
+    monkeypatch.setattr(bodies, "match_score", lambda body, face: table[(int(body[0]), int(face[0]))])
+    people = np.array([[0, 0, 50, 50], [100, 0, 150, 50]], np.float32)
+    faces_xywh = [[0.0, 0.0, 10.0, 10.0], [100.0, 0.0, 10.0, 10.0]]
+    assert bodies.assign(people, faces_xywh, 0.5) == [0, None]
+
+
+def test_body_crop_ignores_boxes_that_meet_it_only_off_the_image() -> None:
+    """A body box running past the image edge: a face in the off-image part masks nothing."""
+    body = np.array([[-50, -50, 150, 400]], np.float32)  # the crop is x 0..150, y 0..400
+    off_left, off_top = [-40.0, 10.0, 30.0, 30.0], [10.0, -40.0, 30.0, 30.0]
+    crop = bodies.body_crop(_white(), body, 0, [off_left, off_top], min_size=50, min_visible=0.1)
+    assert crop is not None and crop.size == (150, 400)
+    assert np.asarray(crop).min() == 255
+
+
+def test_associate_nsfw_prefers_the_person_holding_the_detection_over_a_higher_iou() -> None:
+    from argus_cortex.moderation import NsfwDetection, NsfwResult
+
+    from argus_curator.models import PersonDetection
+
+    close_up = PersonDetection(bbox=[0, 0, 300, 400], det_score=0.9)
+    behind = PersonDetection(bbox=[250, 0, 60, 100], det_score=0.8)
+    # Wholly inside the close-up; a quarter of it pokes out over the smaller box (higher IoU there).
+    det = NsfwDetection(label="FEMALE_BREAST_EXPOSED", score=0.8, bbox=[240, 20, 40, 40])
+    r = ImageResult(
+        rel_path="x.png",
+        abs_path="/d/x.png",
+        passed=True,
+        people=[close_up, behind],
+        nsfw=NsfwResult(detections=[det], labels={"FEMALE_BREAST_EXPOSED": 0.8}, exposed_score=0.8),
+    )
+    bodies.associate_nsfw([r])
+    assert r.people[0].exposed_score == 0.8 and r.people[1].exposed_score == 0.0

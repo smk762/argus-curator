@@ -148,6 +148,13 @@ TargetProfile = _CortexTargetProfile
 # lower this.
 MIN_SHORT_SIDE = 512
 
+# The exposed-score threshold to use when filtering nudity (#156): any exposure
+# NudeNet reports at all. It's NudeNet's reporting floor, and darkroom's default.
+# Conservative on purpose: on 640m, a 0.5 cutoff let through exposed images
+# scored 0.27-0.49, and no clean public-domain image scored 0.2 or more. Only a
+# default value: a request that sets no nsfw_threshold still filters nothing.
+DEFAULT_NSFW_THRESHOLD = MIN_REPORTED_SCORE
+
 _INCLUDE_REJECTED_IGNORED = "Ignored: a rejected image is never kept. Accepted so older clients still validate."
 
 
@@ -168,9 +175,10 @@ class ScanConfig(BaseModel):
     weight_artifact: float = 0.15
     weight_subject: float = 0.20
 
-    # Normalisation ceilings
-    sharpness_ref: float = 800.0
-    resolution_ref: int = 1024
+    # Normalisation ceilings. 0 turns the term off (it scores 0); a negative
+    # ceiling would invert the ranking, so it is refused.
+    sharpness_ref: float = Field(800.0, ge=0.0)
+    resolution_ref: int = Field(1024, ge=0)
 
     # Diversity blend used by the optional selection cap (0=score, 1=spread)
     diversity_weight: float = 0.40
@@ -342,6 +350,14 @@ class GuardConfig(BaseModel):
 
     Like NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) is process
     configuration. A request picks a policy by name, never by text.
+
+    ``thinking``: a request may pick the SingGuard mode (``fast``,
+    ``fast-slow``, ``slow`` or ``cascade``); null runs the server's default
+    (ARGUS_CURATOR_SINGGUARD_THINKING). The server refuses a mode outside
+    ARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED with 422. A finished scan records
+    the mode it ran in, whichever set it. ``fell_back`` is recorded by the scan
+    only (a value a request sends is replaced): whether the server refused the
+    mode so checks dropped to ``fast``.
     """
 
     # Same opt-out semantics as NsfwConfig.enabled.
@@ -351,9 +367,10 @@ class GuardConfig(BaseModel):
     # Extra policies to judge every image under too, for comparison: one more
     # SingGuard pass per image each. Results land in ImageResult.guard_variants.
     variants: list[GuardPolicy] = Field(default_factory=list)
-    # Recorded by the scan, never chosen by a request (a value sent is replaced):
-    # the SingGuard mode the scan asked for (ARGUS_CURATOR_SINGGUARD_THINKING),
-    # and whether the server refused it so checks dropped to "fast". Each
+    # The SingGuard mode the scan asks for: the request's, else the server's
+    # default (ARGUS_CURATOR_SINGGUARD_THINKING); the scan records the one it
+    # ran in. fell_back is the scan's alone (a value sent is replaced): whether
+    # the server refused the mode so checks dropped to "fast". Each
     # verdict's own GuardResult.thinking says which mode judged it; under
     # cascade that is "fast" for every frame not escalated, so only this field
     # tells a cascade scan from a fast one. None until the check has run.
@@ -818,19 +835,30 @@ class ScanSummary(BaseModel):
     reference_skipped: str | None = None
     results: list[ImageResult] = Field(default_factory=list)
 
+    # The min_short_side a scan cached before MIN_SHORT_SIDE existed actually ran
+    # with, when it was below the floor; None otherwise. ``config`` reads the
+    # floor (it is a valid config to scan with again), so this is what says the
+    # pass/reject counts were made with the lower threshold.
+    legacy_min_short_side: int | None = None
+
     # Pagination metadata (server fills these when slicing ``results``)
     offset: int = 0
     limit: int | None = None
     returned: int = 0
 
-    @field_validator("config", mode="before")
+    @model_validator(mode="before")
     @classmethod
     def _config_below_the_floor(cls, value: object) -> object:
-        # The floor governs new scans. One cached with a lower value must still load.
-        if isinstance(value, dict):
-            side = value.get("min_short_side")
+        # The floor governs new scans. One cached with a lower value must still load,
+        # and must still say what it ran with: that moves to legacy_min_short_side.
+        if isinstance(value, dict) and isinstance(config := value.get("config"), dict):
+            side = config.get("min_short_side")
             if isinstance(side, int) and side < MIN_SHORT_SIDE:
-                return {**value, "min_short_side": MIN_SHORT_SIDE}
+                return {
+                    **value,
+                    "config": {**config, "min_short_side": MIN_SHORT_SIDE},
+                    "legacy_min_short_side": side,
+                }
         return value
 
 

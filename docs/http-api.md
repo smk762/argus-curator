@@ -41,8 +41,8 @@ anonymous reads from anywhere but no cross-site writes; name an origin with
 Same-origin passes on its own only when the server is reached by an IP address
 or `localhost`. Under DNS rebinding a browser sends the attacker's DNS name as
 both `Origin` and `Host`, so a matching name proves nothing. A UI proxied onto
-this server under a DNS name (`http://morpheus:8101`) must list that name with
-`--trusted-host morpheus` (`CURATOR_TRUSTED_HOSTS=morpheus`, comma-separated,
+this server under a DNS name (`http://<LAN_HOST>:8101`) must list that name with
+`--trusted-host <LAN_HOST>` (`CURATOR_TRUSTED_HOSTS=<LAN_HOST>`, comma-separated,
 no port), or its writes get 403.
 
 ## Routes
@@ -51,7 +51,7 @@ no port), or its writes get 403.
 |---|---|
 | `GET  /health` | Liveness. `faces` is true when `POST /faces` can run (InsightFace and MiVOLO). `minor_exposed` is the under-18 rule in use, `frame` or `overlap` (`ARGUS_CURATOR_MINOR_EXPOSED`). |
 | `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, bodies, places365, garments, nudenet, erax, watermark, singguard, … }` |
-| `POST /faces` | One image in memory (raw bytes or multipart). `{ source: mivolo, faces: [{ age_estimate_years, bbox }] }`. Writes nothing. |
+| `POST /faces` | One image in memory (raw bytes or multipart), at most `CURATOR_MAX_UPLOAD_MB` (else 413). `{ source: mivolo, faces: [{ age_estimate_years, bbox }] }`. Writes nothing. |
 | `GET  /guard/policies` | Each SingGuard policy a scan can name: `{ singguard, policies: [{ name, recorded, source, text, error }] }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
 | `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
@@ -60,7 +60,7 @@ no port), or its writes get 403.
 | `GET  /image?path=<rel>&scan_id=<id>` | Original image bytes, same containment as `/thumb` |
 | `POST /scan/{scan_id}/select` | Dry-run of the export filter → `{total, kept, rows: [{rel_path, abs_path, keep_reason}]}`. Writes nothing |
 | `POST /scan/{scan_id}/delete` | Delete source files in the scan (`rel_path` or `rel_paths`, all or nothing: a path not in the scan is a 404, a running scan a 409) and drop their rows → `{rel_paths, total}`. Any image needs `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1` (else 403 unless under-18 exposed); `/health` reports `delete_any` |
-| `POST /upload` | Multipart image upload (`files` + `folder`) into a folder under the source root |
+| `POST /upload` | Multipart image upload (`files` + `folder`) into a folder under the source root. Each file is capped at `CURATOR_MAX_UPLOAD_MB` (default 50); a larger one is a 413 and nothing is saved |
 | `POST /export` | Structure-preserving transfer + manifest → `ExportResult` |
 | `POST /scan/folder/stream` | Same as `/scan/folder`, streaming live progress over SSE |
 | `POST /export/stream` | Same as `/export`, streaming per-file transfer progress over SSE |
@@ -138,14 +138,19 @@ has it.
   "garments": ["dress"], "exclude_garments": ["bag_wallet"],  // optional: Fashionpedia
   "min_garment_conf": 0.5, "garments_uncropped": false, "diversify_outfits": true,
   "write_manifest": true,
-  "caption_url": null,              // optional: POST manifest to argus-lens
+  "caption_url": null,              // optional: POST manifest to argus-lens (internal hosts: CURATOR_CAPTION_ALLOWED_HOSTS)
   "carry_sidecars": false,          // optional: transfer .txt / .xmp / .json sidecars with each image
   "run_stats": null                 // optional: client JSON written to <dest>/run_stats.json
 }
 ```
 
 `write_manifest` writes `manifest.jsonl` into the destination; see
-[Manifest](manifest.md) for its rows. `carry_sidecars` and `run_stats` are
+[Manifest](manifest.md) for its rows. `caption_url` then POSTs it to argus-lens
+through argus-cortex's `net.fetch`, and only to a host listed in
+`CURATOR_CAPTION_ALLOWED_HOSTS`, public or not (comma-separated `host`, any
+port, or `host:port`, e.g. `lens:8100`). Any other host, or any `caption_url`
+while the variable is empty, is refused with 400 before anything is transferred. A POST is never re-sent to a redirect; a hand-off that
+fails after the export leaves `captioned: false` and logs the host only. `carry_sidecars` and `run_stats` are
 covered in [Sidecars and run stats](sidecars.md), and every filter field in its
 feature's page ([Face attributes](face-attributes.md), [Scene tags](scene-tags.md),
 [Garments](garments.md), [Nudity detection](nudity.md),

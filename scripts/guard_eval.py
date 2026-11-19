@@ -239,9 +239,11 @@ def run(
             out.write(json.dumps(row) + "\n")
             out.flush()
 
-    trials = {c.name: c for c in candidates or []}
-    for name in [*policies, *trials]:
-        trial = trials.get(name)
+    # Pair each name with its candidate up front: a candidate sharing a policy's
+    # name must never stand in for that policy's own pass.
+    passes: list[tuple[str, Candidate | None]] = [(p, None) for p in policies]
+    passes += [(c.name, c) for c in candidates or []]
+    for name, trial in passes:
         text = trial.text if trial else guard.policy(name)[1]
         scored_as = trial.parent if trial else name
         client = SingGuardClient(url, timeout=timeout, thinking=thinking, policy=text)
