@@ -283,27 +283,31 @@ class _MinorBlockList:
 
     def blocked(self, target: Path) -> bool:
         resolved = target.resolve()
-        with self._lock:
-            seen: set[Path] = set()
-            for path in self._store.cache_dir.glob("*.json"):
-                seen.add(path)
-                try:
-                    mtime = path.stat().st_mtime
-                except OSError:  # removed meanwhile
-                    continue
+        seen: set[Path] = set()
+        for path in self._store.cache_dir.glob("*.json"):
+            seen.add(path)
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:  # removed meanwhile
+                continue
+            with self._lock:
                 cached = self._by_file.get(path)
-                if cached is None or cached[0] != mtime:
-                    try:
-                        summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
-                        cached = (mtime, self._scan_paths(summary))
-                    except Exception as exc:  # an unreadable cache file names no file to block
-                        logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
-                        cached = (mtime, frozenset())
+            if cached is None or cached[0] != mtime:
+                # Parsed outside the lock: a large scan re-saved every few seconds
+                # while it runs must not hold up every other /thumb and /image.
+                try:
+                    summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
+                    cached = (mtime, self._scan_paths(summary))
+                except Exception as exc:  # an unreadable cache file names no file to block
+                    logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
+                    cached = (mtime, frozenset())
+                with self._lock:
                     self._by_file[path] = cached
-                if resolved in cached[1]:
-                    return True
+            if resolved in cached[1]:
+                return True
+        with self._lock:
             for gone in set(self._by_file) - seen:
-                del self._by_file[gone]
+                self._by_file.pop(gone, None)
         return False
 
 
@@ -372,6 +376,10 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
 # Largest body POST /faces will buffer. It is held in memory and decoded, so an
 # unbounded body is a memory-exhaustion lever on any client that can reach it.
 _FACES_MAX_BYTES = 64 * 1024 * 1024
+# A multipart body's Content-Length counts its boundaries and part headers too, so
+# the declared-length pre-check allows this much over the cap; read_upload then
+# holds the file itself to the exact cap.
+_MULTIPART_OVERHEAD = 64 * 1024
 # POST /faces calls in flight at once. Each buffers and decodes up to
 # _FACES_MAX_BYTES; past this a call is refused (503, Retry-After) instead of queued.
 _FACES_CONCURRENCY = 2
@@ -706,7 +714,7 @@ def create_app(
                 declared = (request.headers.get("content-length") or "").strip()
                 if declared and not (declared.isascii() and declared.isdigit()):
                     raise BadInput("Content-Length is not a number")
-                if declared and int(declared) > cap:
+                if declared and int(declared) > cap + _MULTIPART_OVERHEAD:
                     raise TooLarge("image", cap)
                 # The context manager closes the parsed parts (and any spooled temp file).
                 async with request.form() as form:

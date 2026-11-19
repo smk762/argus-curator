@@ -635,9 +635,13 @@ def _post_manifest_to_lens(manifest_path: Path, caption_url: str) -> bool:
         return False
     try:
         import httpx
-        from argus_cortex.net import fetch
     except Exception:
         logger.warning("caption_handoff_skipped", reason="httpx not installed")
+        return False
+    try:
+        from argus_cortex.net import fetch
+    except Exception:
+        logger.warning("caption_handoff_skipped", reason="argus-cortex>=0.8 (argus_cortex.net) not installed")
         return False
     try:
         # httpx encodes the multipart body; fetch sends it.

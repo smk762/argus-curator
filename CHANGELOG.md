@@ -42,15 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   64 MiB ceiling). A larger file gets 413 (`POST /upload` saves none of the batch), a
   malformed `Content-Length` 400. A `CURATOR_MAX_UPLOAD_MB` that is not a
   positive number stops the server starting.
-- **The export's `caption_url` hand-off uses argus-cortex 0.8's `net.fetch`, and
-  internal hosts must be listed in `CURATOR_CAPTION_ALLOWED_HOSTS`**
-  (comma-separated `host` or `host:port`, the same shape as argus-lens's
-  `LENS_URL_ALLOWED_HOSTS`; empty by default). An export whose `caption_url`
-  names a host that resolves to a non-public address (an internal lens such as
-  `http://lens:8100/caption`, or `localhost`) and isn't listed is refused with
-  400 before anything is transferred. A POST is no longer sent on to a redirect,
-  and the `caption_handoff_failed` log names the host, not the URL. Deployments
-  that hand off to an internal lens need the variable set.
+- **The export's `caption_url` hand-off uses argus-cortex 0.8's `net.fetch`**
+  (`CURATOR_CAPTION_ALLOWED_HOSTS` is comma-separated `host` or `host:port`, the
+  same shape as argus-lens's `LENS_URL_ALLOWED_HOSTS`; empty by default). An
+  export whose `caption_url` names an unlisted host is refused with 400 before
+  anything is transferred (see the first entry above). A POST is no longer sent
+  on to a redirect, and the `caption_handoff_failed` log names the host, not the URL.
+- **The bundled NudeNet is argus-retina's 640m image** (#156). `docker compose`
+  ran the upstream `ghcr.io/notai-tech/nudenet` (320n); the `nudenet` service is
+  now `ghcr.io/smk762/argus-retina-nudenet:0.1.0`, pinned by digest, the same
+  image as the suite's shared server. NudeNet stays on by default. **640m scores
+  higher than 320n**: on a 300-image sample, the 0.5 default dropped 153 images
+  instead of 133, which is why 0.2 is now the recommended threshold (below); see
+  `docs/nudity.md`. `.env.example` and the docs point at retina's shared ports
+  (NudeNet :8130, EraX :8131, watermark :8132).
 - **0.2 is the recommended NudeNet exposure threshold** (#156). The new
   `DEFAULT_NSFW_THRESHOLD` (0.2, any exposure NudeNet reports, darkroom's
   default) replaces 0.5 in the CLI scan summary's exposed count, the
@@ -151,17 +156,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   container** (#156). The compose passed neither into `argus-curator`, so
   setting them in `.env` did nothing and EraX and the watermark detector stayed
   off. Both stay off unless `.env` sets a URL (argus-retina's :8131 and :8132).
-
-### Changed
-
-- **The bundled NudeNet is argus-retina's 640m image** (#156). `docker compose`
-  ran the upstream `ghcr.io/notai-tech/nudenet` (320n); the `nudenet` service is
-  now `ghcr.io/smk762/argus-retina-nudenet:0.1.0`, pinned by digest, the same
-  image as the suite's shared server. NudeNet stays on by default. **640m scores
-  higher than 320n**: on a 300-image sample, the 0.5 default dropped 153 images
-  instead of 133. The default stays 0.5; see `docs/nudity.md`. `.env.example`
-  and the docs point at retina's shared ports (NudeNet :8130, EraX :8131,
-  watermark :8132).
 
 ## [0.17.0] - 2026-11-16
 
