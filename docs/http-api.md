@@ -169,7 +169,8 @@ images, in the same order, in the same parts.
 - **`rank`** orders the kept images, best first. `"score"` (the default): the
   curation score, then the primary face's identity distance. `"identity"`: the
   identity distance (the face's `reference_distance` when the scan had
-  `faces.reference_paths`, else its `cluster_distance`; an image with no face or
+  a reference, `faces.reference_paths` or `faces.reference_embedding`, else its
+  `cluster_distance`; an image with no face or
   no distance comes last), then the score. Ties end on `rel_path`. `"identity"`
   needs a scan that ran face detection (else 400). The manifest is written in
   this order, and each select row's `rank` is its 1-based position.

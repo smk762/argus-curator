@@ -34,14 +34,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`selection.SPLIT_GROUP_KEYS`) over a generic `split_held_out`, so other
   kinds of item can reuse it. This replaces argus-mint's own ranking and split.
 - **Manifest 2.4: rows carry `split`** (`train` / `held_out`, or null). Additive.
+- **A caller-supplied identity reference (#130).** `faces.reference_embedding`
+  takes a centroid instead of `faces.reference_paths`, and
+  `faces.reference_embedding()` builds one from images outside the set (a
+  consenting person's reference photos, #133); `faces.reference_distance()`
+  compares any embedding with it. `--face-reference` accepts a file outside the
+  scanned folder. The centroid is never stored: `ScanSummary` drops it from
+  `faces_config`.
 
 ### Changed
 
 - **Kept images are always ranked.** Exports without `face_source` used to
   write the manifest in scan order (or the diversity pick's order with
   `max_keep`); every manifest is now in `rank` order.
+- **`guard_eval.py` runs are repeatable and its reports weigh noise (#113).**
+  Expectations moved out of the script into `eval/guard_cases.toml`: per
+  bucket and policy, a correct verdict is `flag`, `pass` or `either`, an
+  `[[override]]` carves out one case or a pattern (with a reason), and a
+  stable held-out share keeps wording from being tuned on its own test set
+  (`--split tune|heldout|all`, `tune` by default). Each `--repeat` is a whole
+  pass in a shuffled order, interleaving cases and policies. `--cache FILE`
+  keys every verdict by the bytes sent, policy text, context, mode, model
+  digest and pass number, so a dead run resumes; the digest comes from
+  `--model-digest`, Ollama's `/api/tags` or the guard server's `/health`, and
+  a run stops if it changes between passes. Connection failures are retried,
+  and a server that stays down stops the run. Text probes go through
+  `check_text`, never beside a grey image; the `folder` context kind is
+  refused; frames sent with no context are counted apart. A run with
+  `--scan-json` first lists frames to review (anything `minor_exposed`
+  catches, exposed readings in `safe`) and waits for `--preflight-ok`. A
+  candidate whose rule letters skip one is refused. The report scores frames
+  (a split counts as flagged), gives per-frame noise and per-subfolder tables,
+  lists frames that keep splitting, marks each change between a candidate and
+  its parent as within or beyond noise, and exits 1 when a candidate passes a
+  `hard` frame its parent flagged. `--report ROWS` reprints it from a saved
+  run. `--prompt-cache-check` measures Ollama's prompt cache straight against
+  Ollama.
 
 ### Fixed
+
+- **A rejected reference image is still a reference.** A `reference_paths`
+  image the scan's filters rejected (often a studio portrait failing the blur
+  check) used to give no distances; it is now embedded from the bytes the scan
+  read, and its row stays rejected.
 
 - **GPU memory stays near what curator's leases ask for (#189).** ONNX Runtime's
   default CUDA arena grows in power-of-two steps with no ceiling and keeps what

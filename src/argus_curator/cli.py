@@ -88,6 +88,27 @@ def _invalid(exc: ValidationError) -> typer.Exit:
     return typer.Exit(2)
 
 
+def _outside_references(source: Path, refs: list[str]) -> list[Path] | None:
+    """The reference files when any of *refs* is not an image in *source*, else None.
+
+    References in the scanned folder stay rel paths (``FaceConfig.reference_paths``).
+    One outside it (a portrait or consent photo kept apart from the set) makes all of
+    them files, read here and averaged into ``FaceConfig.reference_embedding``.
+    """
+
+    def in_scan(ref: str) -> bool:
+        return not Path(ref).is_absolute() and (source / ref).is_file()
+
+    if all(in_scan(ref) for ref in refs):
+        return None
+    files = [source / ref if in_scan(ref) else Path(ref) for ref in refs]
+    for f in files:
+        if not f.is_file():
+            typer.echo(f"Error: --face-reference {f}: no such file", err=True)
+            raise typer.Exit(2)
+    return files
+
+
 @app.command()
 def scan(
     source: Path = Argument(..., help="Root folder to scan (recurses into sub-folders)"),
@@ -154,7 +175,8 @@ def scan(
     face_reference: list[str] = Option(
         [],
         "--face-reference",
-        help="An image in the scan (relative path) whose face is the identity reference; repeatable. "
+        help="An image whose face is the identity reference: a path relative to the scanned folder, "
+        "or any image file outside it; repeatable (several are averaged). "
         "Each face then gets a reference_distance (implies --faces)",
     ),
     face_source: bool = Option(
@@ -436,8 +458,11 @@ def scan(
         )
     except ValidationError as exc:
         raise _invalid(exc) from exc
+    outside_refs = _outside_references(source, face_reference) if face_reference else None
     faces_cfg = FaceConfig(
-        enabled=faces,
+        # An outside reference is embedded just before the scan, once every
+        # other check has passed; it needs face detection all the same.
+        enabled=faces or outside_refs is not None,
         model=faces_model,
         min_det_score=min_det_score,
         cluster_eps=cluster_eps,
@@ -446,7 +471,7 @@ def scan(
         mivolo=mivolo,
         set_age=set_age,
         mivolo_body=mivolo_body,
-        reference_paths=face_reference,
+        reference_paths=face_reference if outside_refs is None else [],
     )
     if diversify_semantic and not embeddings:
         typer.echo("Error: --diversify-semantic needs --embeddings", err=True)
@@ -625,6 +650,16 @@ def scan(
         why = "--no-guard was given" if guard is False else f"no SingGuard server is configured ({guard_mod.URL_ENV})"
         typer.echo(f"Error: SingGuard filters need the SingGuard check, but {why}", err=True)
         raise typer.Exit(1)
+
+    if outside_refs is not None:
+        from argus_curator.faces import FacesUnavailable, reference_embedding
+
+        try:
+            centroid = reference_embedding([f.read_bytes() for f in outside_refs], faces_cfg)
+        except (FacesUnavailable, ValueError, OSError) as exc:
+            typer.echo(f"Error: --face-reference: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        faces_cfg = faces_cfg.model_copy(update={"reference_embedding": centroid})
 
     typer.echo(f"Scanning {source} (recursive) ...")
     summary = _scan(

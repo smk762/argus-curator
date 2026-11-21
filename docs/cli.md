@@ -78,7 +78,7 @@ $ argus-curator scan [OPTIONS] {source}
 * `--embeddings`: Compute CLIP image embeddings (memory only) for --diversify-semantic
 * `--embeddings-model <path>`: Converted CLIP image-tower ONNX model (ARGUS_CURATOR_EMBEDDINGS_MODEL)
 * `--face-clusters <str>`: Comma-separated cluster ids to export
-* `--face-reference <list[str]>`: An image in the scan (relative path) whose face is the identity reference; repeatable. Each face then gets a reference_distance (implies --faces)
+* `--face-reference <list[str]>`: An image whose face is the identity reference: a path relative to the scanned folder, or any image file outside it; repeatable (several are averaged). Each face then gets a reference_distance (implies --faces)
 * `--face-source`: Export only face-source images (one identity, frontal and level, large, sharp, eyes open, mouth closed, adult; needs --mivolo), ranked best first
 * `--landmarks`: Write the primary face&#x27;s landmarks into the manifest
 * `--pose <str>`: Export only these primary-face poses (comma-separated: frontal,three_quarter,profile)

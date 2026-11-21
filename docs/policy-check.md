@@ -119,12 +119,26 @@ the keep reason (`guard-unsafe:adult-granular`). The CSV report adds a
 `guard_variants` column.
 
 `scripts/guard_eval.py --url <singguard>` scores every policy on the text
-probes in `eval/guard_probes.jsonl` and on an optional folder of images
-sorted by expected verdict. `--scan-json <scan_id>.json --context age,scene`
-sends each image with the context and crop of its row in a saved scan, since
-context changes verdicts and a bare image may not reproduce what a scan saw.
-`--candidate NAME=PARENT:FILE` tries a policy wording from a file, scored as
-its parent policy. Rows and the table record the pass that decided each verdict.
+probes in `eval/guard_probes.jsonl` (sent through the text-only check) and on
+an optional folder of images sorted by bucket. What a correct verdict is per
+bucket and policy, carve-outs for single cases (`flag`, `pass` or `either`),
+and a held-out split all live in `eval/guard_cases.toml`, so none of them
+needs a code change; runs use the tune split unless `--split heldout`.
+`--scan-json <scan_id>.json --context age,scene` sends each image with the
+context and crop of its row in a saved scan, since context changes verdicts
+and a bare image may not reproduce what a scan saw (the `folder` kind is
+refused: over a sorted set it is the label). `--candidate NAME=PARENT:FILE`
+tries a policy wording from a file, scored as its parent policy.
+
+`--repeat N` runs N whole passes, each a shuffled interleaving of every case
+under every policy. `--cache FILE` keeps each verdict keyed by the bytes sent,
+policy text, context, mode, model digest and pass number, so a rerun resumes
+and a later comparison reuses passes already judged. The report scores frames
+(a frame that splits across passes counts as flagged), gives per-frame noise
+and per-subfolder tables, lists frames that keep splitting, marks each change
+between a candidate and its parent as within or beyond that frame's noise, and
+exits 1 when a candidate passes a `hard` frame its parent flagged. Text probes
+measure prompt moderation and don't prove image behaviour.
 
 ## Results and filters
 
