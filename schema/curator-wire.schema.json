@@ -414,6 +414,34 @@
           ],
           "default": null,
           "title": "Transcript Source"
+        },
+        "vad": {
+          "anyOf": [
+            {
+              "enum": [
+                "energy",
+                "silero"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vad"
+        },
+        "vad_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vad Error"
         }
       },
       "required": [
@@ -437,6 +465,8 @@
         "trailing_silence_s",
         "snr_db",
         "speech_ratio",
+        "vad",
+        "vad_error",
         "transcript",
         "transcript_source",
         "chars_per_s",
@@ -5372,6 +5402,15 @@
             "common_voice"
           ],
           "title": "Transcripts",
+          "type": "string"
+        },
+        "vad": {
+          "default": "energy",
+          "enum": [
+            "energy",
+            "silero"
+          ],
+          "title": "Vad",
           "type": "string"
         },
         "weight_mos": {

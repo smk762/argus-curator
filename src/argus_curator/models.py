@@ -1136,6 +1136,10 @@ SPEECH_CHECKS: tuple[SpeechCheck, ...] = SpeechCheck.__args__
 TranscriptSource = Literal["sidecar", "ljspeech", "common_voice"]
 TranscriptLayout = Literal["auto", "sidecar", "ljspeech", "common_voice"]
 
+# Which voice activity detector marks a clip's speech frames (#204): the energy
+# VAD (numpy, no model) or Silero VAD (a pinned ONNX model, on CPU).
+SpeechVad = Literal["energy", "silero"]
+
 # Ceilings a request cannot raise: they bound what decoding one clip costs.
 MAX_CLIP_SECONDS = 120.0
 MAX_CLIP_CHANNELS = 2
@@ -1169,6 +1173,10 @@ class SpeechConfig(BaseModel):
     max_chars_per_s: float | None = Field(30.0, gt=0.0)
     min_snr_db: float | None = None
     min_speech_ratio: float | None = Field(None, ge=0.0, le=1.0)
+    # The VAD whose speech mask the speech ratio and the SNR split read (#204).
+    # "energy" needs no model; "silero" runs Silero VAD (ARGUS_CURATOR_VAD_MODEL)
+    # on CPU in the first pass, on every clip that gets that far.
+    vad: SpeechVad = "energy"
 
     # DNSMOS (ARGUS_CURATOR_DNSMOS_MODEL), run on each clip that passed the
     # checks above. min_mos is on its overall (OVRL) score, 1-5.
@@ -1258,6 +1266,10 @@ class ClipResult(BaseModel):
     trailing_silence_s: float | None = None
     snr_db: float | None = None
     speech_ratio: float | None = None
+    # The VAD that produced speech_ratio and snr_db (SpeechConfig.vad), and why
+    # Silero gave no mask for a clip it was asked to read, else None.
+    vad: SpeechVad | None = None
+    vad_error: str | None = None
 
     transcript: str | None = None
     transcript_source: TranscriptSource | None = None

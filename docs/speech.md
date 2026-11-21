@@ -11,6 +11,7 @@ pip install "argus-curator[speech]"           # soundfile (WAV/FLAC) + onnxrunti
 argus-curator scan ./LJSpeech-1.1 --modality speech -v
 argus-curator dnsmos-fetch                    # once, for --mos
 argus-curator speaker-fetch                   # once, for --speakers
+argus-curator vad-fetch                       # once, for --vad silero
 argus-curator scan ./corpus --modality speech --mos --speakers --speech-config thresholds.json
 ```
 
@@ -69,8 +70,8 @@ one, and `reject_detail` says what was measured. `null` turns a threshold off.
 | `leading_silence`, `trailing_silence` | time before the first and after the last 30 ms frame within `silence_db` (-40) of the loudest | 1 s each |
 | `transcript` | no transcript found | `require_transcript` true |
 | `speaking_rate` | letters and digits per second of the clip less its edge silence | 4-30 chars/s |
-| `snr` | speech frames' power over the rest (energy VAD) | off (`min_snr_db`) |
-| `speech_ratio` | share of 10 ms frames the energy VAD marks as speech (a model VAD is [#204](https://github.com/smk762/argus-curator/issues/204)) | off (`min_speech_ratio`) |
+| `snr` | speech frames' power over the rest (the `vad`'s mask, [below](#silero-vad)) | off (`min_snr_db`) |
+| `speech_ratio` | share of 10 ms frames the `vad` marks as speech: the energy VAD (default) or Silero | off (`min_speech_ratio`) |
 | `mos` | DNSMOS OVRL, 1-5 (with `mos: true`) | off (`min_mos`); with it set, a clip DNSMOS couldn't score is rejected |
 | `cer` | CER of the transcript against an STT pass | off (`max_cer`); needs an STT engine, see below |
 
@@ -85,6 +86,96 @@ resampled to 32 steps, with the 8x8 lowest DCT coefficients against their median
 disables) whose lengths are within 10% group together, and the best-scoring
 one is kept as the representative. A re-encode, resample or gain change of a
 clip lands within a few bits. A different take of the same line doesn't.
+
+## Silero VAD
+
+The default VAD is the energy VAD: a 30 ms frame is speech when it sits 10 dB
+over the clip's 10th-percentile frame and within `silence_db` of its loudest,
+with gaps under ~200 ms closed. It needs no model, but loudness is all it
+reads, so noise hides speech from it and loud non-speech counts as speech.
+
+With `vad: "silero"` (CLI `--vad silero`), the speech ratio and the SNR read
+[Silero VAD](https://github.com/snakers4/silero-vad) instead (Silero Team,
+MIT). `argus-curator vad-fetch` downloads its `silero_vad.onnx` (2.3 MB) from
+release `v6.2.3`, pinned by commit `5cd79456` and sha256 `1a153a22...88e3`; a
+file that doesn't hash to that is refused at load. Set
+`ARGUS_CURATOR_VAD_MODEL` to keep it elsewhere. Every row records the VAD that
+produced its numbers in `ClipResult.vad` (`energy` or `silero`). If Silero
+can't read a clip, `vad_error` says why and `speech_ratio` and `snr_db` stay
+null: the energy VAD is never swapped in, and with `min_snr_db` or
+`min_speech_ratio` set the clip is rejected.
+
+- **Input:** the clip is resampled to 16 kHz and read in 32 ms windows (512
+  samples, with the previous window's last 64 before them). Each pass is one
+  window, batch 1, carrying the model's state to the next, so every pass has
+  the same shape.
+- **Mask:** Silero's defaults. A window starts speech at probability 0.5 and
+  speech ends below 0.35. Gaps under 100 ms are closed, and speech runs under
+  250 ms are dropped. Each 10 ms scan frame takes the window its centre falls
+  in.
+- **SNR split:** the speech side is the mask. The noise side leaves out every
+  window Silero gives 0.35 or more (a word too short to count as speech still
+  isn't noise) and 50 ms either side of them. Without that guard band, the
+  decay at the end of each word counted as noise, and clean clips read about
+  20 dB low.
+- **CPU only, no GPU lease.** Silero runs on onnxruntime's CPU provider alone,
+  with one intra-op thread per session (the scan's `max_workers` clip threads
+  are the parallelism). It never touches the GPU, so it takes no lease, holds
+  no CUDA arena and has no `gpu-tenant.yaml` kind. One pass is launch-bound
+  on CUDA: on a 3090 (onnxruntime-gpu 1.32) a pass took 1.6-2.0 ms, against
+  0.12-0.24 ms on one CPU thread. Each pass needs the last one's state, so
+  nothing can be batched to win that back. In a scan it costs about 5 ms per
+  second of audio (~0.1 s for a 20 s clip), against ~0.05 ms for the energy
+  VAD.
+
+**Calibration.** 49 real takes (studio-style recordings, 24 kHz mono, 2-23 s,
+770 s in all, read up to 20 s each) were measured clean. Each was then mixed
+with white noise, pink noise and a non-speech "music" bed (a sustained chord
+with tremolo and percussive clicks) at a known SNR, set over the clean
+clip's speech frames. The music bed and pink noise were also measured alone,
+at speech level. The medians, with the 10th-90th percentile for SNR:
+
+| Condition | Speech ratio, energy | Speech ratio, Silero | SNR dB, energy | SNR dB, Silero |
+|---|---|---|---|---|
+| clean | 0.80 | 0.80 | 44.2 [39.9, 52.6] | 42.4 [33.6, 60.1] |
+| white noise 30 dB | 0.77 | 0.80 | 28.8 [28.3, 29.5] | 29.7 [28.7, 30.0] |
+| white noise 20 dB | 0.73 | 0.80 | 18.8 [18.2, 19.2] | 19.9 [19.8, 20.0] |
+| white noise 10 dB | 0.48 | 0.80 | 7.6 [6.9, 8.5] | 9.9 [9.8, 10.1] |
+| white noise 5 dB | 0.13 | 0.80 | 4.5 [3.6, 5.8] | 4.9 [4.8, 5.1] |
+| white noise 0 dB | 0.00 | 0.81 | null on 42 of 49 | -0.1 [-0.4, 0.1] |
+| pink noise 20 dB | 0.74 | 0.80 | 19.4 [18.9, 20.0] | 19.9 [19.3, 20.6] |
+| pink noise 10 dB | 0.61 | 0.80 | 8.6 [7.8, 9.5] | 10.1 [9.2, 10.8] |
+| pink noise 0 dB | 0.03 | 0.81 | 4.0 [2.9, 5.0] | 0.1 [-1.4, 1.9] |
+| music bed 20 dB | 0.75 | 0.81 | 19.2 [18.2, 21.3] | 19.8 [18.8, 21.6] |
+| music bed 10 dB | 0.67 | 0.79 | 9.3 [8.3, 11.9] | 9.8 [8.6, 11.7] |
+| music bed 0 dB | 0.34 | 0.78 | 2.8 [2.0, 4.8] | 0.1 [-2.9, 2.6] |
+| music bed alone | 0.46 | 0.00 | 5.5 [5.2, 5.6] | null on all 49 |
+| pink noise alone | 0.00 | 0.00 | 6.2 on 32 of 49 | null on all 49 |
+
+- On clean clips the two agree on the speech ratio: the median per-clip
+  difference is 0.01, and the largest is 0.07.
+- Under noise, Silero's speech ratio holds within 0.02 of the clean clip's
+  down to 0 dB. The energy VAD's falls (0.48 at 10 dB white noise, 0.13 at
+  5 dB), so `min_speech_ratio` on the energy VAD rejects noisy clips for
+  noise, not for lacking speech.
+- Silero's median SNR is within 0.5 dB of the mixed SNR from 30 dB down to
+  0 dB. The energy VAD's reads 1-2.5 dB low at 10-20 dB, and at 0 dB it reads
+  3-7 dB high, or nothing.
+- Loud non-speech alone: the energy VAD calls 46% of the music bed speech, and
+  gives pink noise alone an SNR. Silero finds no speech in either, so neither
+  gets an SNR.
+- The two VADs' SNRs aren't interchangeable at the top end. On takes padded
+  with digital silence, Silero's noise side is all zero samples and its SNR
+  reads the 100 dB cap, while the energy VAD's noise side takes in a word's
+  onset and reads 49-58 dB. Set `min_snr_db` for the VAD you run. On 2 of the
+  49 clean takes Silero read under 30 dB (16 and 27 dB) where the energy VAD
+  read 52 and 31. On the first, a 60 ms click at the start of the take falls
+  outside Silero's speech and counts as noise.
+
+Those mixed SNRs were set over Silero's speech frames on the clean clip,
+but the two VADs mark the same share of a clean clip (0.80 each), so the
+reference barely favours either. The takes were copied to scratch for the
+run and deleted afterwards. No audio is committed.
 
 ## DNSMOS
 

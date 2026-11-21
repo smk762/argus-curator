@@ -9,7 +9,8 @@ duration caps are checked before a sample is decoded) and gets:
   rate, channels, clipping ratio, and leading or trailing silence.
 * **Quality**: an SNR estimate, and with ``SpeechConfig.mos`` a DNSMOS score
   (:mod:`argus_curator.dnsmos`, under the GPU lease).
-* **Speech ratio**: the share of the clip an energy VAD marks as speech.
+* **Speech ratio**: the share of the clip a VAD marks as speech: the energy VAD
+  by default, or Silero VAD with ``SpeechConfig.vad = "silero"`` (:mod:`argus_curator.silero`).
 * **Transcript fit**: the speaking rate (letters and digits per second of the
   clip less its edge silence) and, given an STT engine, the CER between the
   transcript and its pass (the :class:`Transcriber` hook; argus-echo#4).
@@ -40,7 +41,7 @@ import numpy as np
 import structlog
 from argus_cortex.limits import DEFAULT_SAMPLE_RATES, BadInput, TooLarge, open_audio
 
-from argus_curator import dnsmos, speakers
+from argus_curator import dnsmos, silero, speakers
 from argus_curator.models import (
     MAX_CLIP_CHANNELS,
     SPEECH_CHECKS,
@@ -128,6 +129,8 @@ def problem(cfg: SpeechConfig, transcriber: Transcriber | None = None) -> str | 
         return "max_cer needs a speech-to-text engine (argus-echo#4), and none is configured"
     if cfg.mos and not dnsmos.dnsmos_available():
         return f"DNSMOS requested but the model is not in place (argus-curator dnsmos-fetch, or {dnsmos.MODEL_ENV})"
+    if cfg.vad == "silero" and (why := silero.problem()) is not None:
+        return why
     if cfg.speakers:
         return speakers.problem()
     return None
@@ -174,10 +177,14 @@ def vad(db: np.ndarray, silence_db: float) -> np.ndarray:
     return mask
 
 
-def snr_db(db: np.ndarray, mask: np.ndarray) -> float | None:
-    """SNR of the speech frames over the rest (or the quietest tenth when the VAD left too few)."""
+def snr_db(db: np.ndarray, mask: np.ndarray, not_noise: np.ndarray | None = None) -> float | None:
+    """SNR of the speech frames over the rest (or the quietest tenth when the VAD left too few).
+
+    *not_noise* (default *mask*) marks the frames kept out of the noise side:
+    a model VAD's speech plus what it is unsure of (:func:`speech_mask`).
+    """
     power = 10.0 ** (db / 10.0)
-    speech, noise = power[mask], power[~mask]
+    speech, noise = power[mask], power[~(mask if not_noise is None else not_noise)]
     if speech.size == 0:
         return None
     noise_p = float(noise.mean()) if noise.size >= 5 else float(np.percentile(power, 10))
@@ -311,8 +318,37 @@ def _settle(row: ClipResult, failed: dict[SpeechCheck, str]) -> None:
     row.reject_detail = (known[ordered[0]] or None) if ordered else None
 
 
-def measure_clip(rel: str, path: Path, transcript: Transcript | None, cfg: SpeechConfig) -> ClipResult:
-    """Decode one clip, measure it, and apply every first-pass threshold of *cfg*."""
+def speech_mask(
+    mono: np.ndarray, rate: int, db: np.ndarray, cfg: SpeechConfig, vad_session: Any = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(speech, not_noise)`` masks over the frames of *db*, from the VAD *cfg* names.
+
+    ``speech`` is what the speech ratio counts and the SNR's speech side;
+    ``not_noise`` is kept off the SNR's noise side. For the energy VAD they are
+    the same. For Silero (run on *vad_session*) ``not_noise`` adds every window
+    it gives at least :data:`silero.NEG_THRESHOLD` (a word too short to count
+    as speech is not noise either) and a guard band around them.
+    """
+    if cfg.vad == "silero":
+        if vad_session is None:
+            raise ModelUnavailable("the Silero VAD was requested but no session was given")
+        probs = silero.probabilities(vad_session, mono, rate)
+        speech = silero.speech_windows(probs)
+        return (
+            silero.frame_mask(speech, len(db), FRAME_S, HOP_S),
+            silero.guarded(silero.frame_mask(speech | (probs >= silero.NEG_THRESHOLD), len(db), FRAME_S, HOP_S)),
+        )
+    mask = vad(db, cfg.silence_db)
+    return mask, mask
+
+
+def measure_clip(
+    rel: str, path: Path, transcript: Transcript | None, cfg: SpeechConfig, vad_session: Any = None
+) -> ClipResult:
+    """Decode one clip, measure it, and apply every first-pass threshold of *cfg*.
+
+    *vad_session* is the Silero VAD session when ``cfg.vad`` is ``"silero"``.
+    """
     row = ClipResult(rel_path=rel, abs_path=str(path))
     if transcript is not None:
         row.transcript = transcript.text or None
@@ -367,10 +403,17 @@ def measure_clip(rel: str, path: Path, transcript: Transcript | None, cfg: Speec
             f"{row.trailing_silence_s:g} s; max_trailing_silence_s is {cfg.max_trailing_silence_s:g}",
         )
 
-    mask = vad(db, cfg.silence_db)
-    row.speech_ratio = round(float(mask.mean()), 4)
-    snr = snr_db(db, mask)
-    row.snr_db = round(snr, 2) if snr is not None else None
+    try:
+        mask, not_noise = speech_mask(mono, rate, db, cfg, vad_session)
+    except Exception as exc:
+        # Neither measured: the energy VAD is not swapped in behind the request's back.
+        row.vad_error = str(exc) or type(exc).__name__
+        logger.warning("speech_vad_failed", rel_path=rel, vad=cfg.vad, error=row.vad_error)
+    else:
+        row.vad = cfg.vad
+        row.speech_ratio = round(float(mask.mean()), 4)
+        snr = snr_db(db, mask, not_noise)
+        row.snr_db = round(snr, 2) if snr is not None else None
 
     if row.transcript is None:
         if cfg.require_transcript:
@@ -386,10 +429,21 @@ def measure_clip(rel: str, path: Path, transcript: Transcript | None, cfg: Speec
             failed.setdefault(
                 "speaking_rate", f"{row.chars_per_s:g} chars/s is over max_chars_per_s {cfg.max_chars_per_s:g}"
             )
+    no_vad = f"the {cfg.vad} VAD could not read it" if row.vad_error is not None else None
     if cfg.min_snr_db is not None and (row.snr_db is None or row.snr_db < cfg.min_snr_db):
-        failed.setdefault("snr", f"SNR {row.snr_db} dB is under min_snr_db {cfg.min_snr_db:g}")
-    if cfg.min_speech_ratio is not None and row.speech_ratio < cfg.min_speech_ratio:
-        failed.setdefault("speech_ratio", f"{row.speech_ratio:g} is under min_speech_ratio {cfg.min_speech_ratio:g}")
+        failed.setdefault(
+            "snr",
+            f"{no_vad}, and min_snr_db is set"
+            if no_vad
+            else f"SNR {row.snr_db} dB is under min_snr_db {cfg.min_snr_db:g}",
+        )
+    if cfg.min_speech_ratio is not None:
+        if row.speech_ratio is None:
+            failed.setdefault("speech_ratio", f"{no_vad or 'no speech ratio'}, and min_speech_ratio is set")
+        elif row.speech_ratio < cfg.min_speech_ratio:
+            failed.setdefault(
+                "speech_ratio", f"{row.speech_ratio:g} is under min_speech_ratio {cfg.min_speech_ratio:g}"
+            )
 
     row.fingerprint = fingerprint(mono, rate)
     _settle(row, failed)
@@ -612,12 +666,16 @@ def scan_speech_folder(
             },
         )
 
-    # Phase 1: decode, measure and the first-pass thresholds.
+    # Phase 1: decode, measure and the first-pass thresholds. Silero VAD, when
+    # asked for, runs here on CPU (no GPU lease: see argus_curator.silero).
+    vad_session = silero.get_session() if cfg.vad == "silero" else None
     emit("scoring", 0, total)
     done = 0
     batch: list[ClipResult] = []
     with ThreadPoolExecutor(max_workers=cfg.max_workers) as pool:
-        futures = {pool.submit(measure_clip, rel, path, transcripts.get(rel), cfg): rel for rel, path in clips}
+        futures = {
+            pool.submit(measure_clip, rel, path, transcripts.get(rel), cfg, vad_session): rel for rel, path in clips
+        }
         try:
             for fut in as_completed(futures):
                 row = fut.result()

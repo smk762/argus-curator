@@ -170,6 +170,12 @@ def scan(
     speaker_model: Path | None = Option(
         None, "--speaker-model", help="Speech: speaker-embedding ONNX model (ARGUS_CURATOR_SPEAKER_MODEL)"
     ),
+    vad: str | None = Option(
+        None, "--vad", help="Speech: energy (default) or silero, the VAD for speech ratio and SNR (see vad-fetch)"
+    ),
+    vad_model: Path | None = Option(
+        None, "--vad-model", help="Speech: Silero VAD ONNX model (ARGUS_CURATOR_VAD_MODEL)"
+    ),
     speech_config: Path | None = Option(
         None, "--speech-config", help="Speech: a JSON SpeechConfig with the thresholds (the flags above override it)"
     ),
@@ -613,6 +619,8 @@ def scan(
             dnsmos_model=dnsmos_model,
             speakers=speech_speakers,
             speaker_model=speaker_model,
+            vad=vad,
+            vad_model=vad_model,
             speech_config=speech_config,
             device=device,
             max_workers=max_workers,
@@ -623,10 +631,10 @@ def scan(
         if speech_req is not None:
             _export_speech(summary, speech_req)
         return
-    if transcripts or mos or dnsmos_model or speech_config or speech_speakers or speaker_model:
+    if transcripts or mos or dnsmos_model or speech_config or speech_speakers or speaker_model or vad or vad_model:
         typer.echo(
-            "Error: --transcripts, --mos, --dnsmos-model, --speakers, --speaker-model and --speech-config "
-            "need --modality speech",
+            "Error: --transcripts, --mos, --dnsmos-model, --speakers, --speaker-model, --vad, --vad-model and "
+            "--speech-config need --modality speech",
             err=True,
         )
         raise typer.Exit(2)
@@ -1307,6 +1315,8 @@ def _scan_speech(
     dnsmos_model: Path | None,
     speakers: bool,
     speaker_model: Path | None,
+    vad: str | None,
+    vad_model: Path | None,
     speech_config: Path | None,
     device: str,
     max_workers: int,
@@ -1332,6 +1342,10 @@ def _scan_speech(
         from argus_curator import speakers as speakers_mod
 
         os.environ[speakers_mod.MODEL_ENV] = str(speaker_model)
+    if vad_model is not None:
+        from argus_curator import silero as silero_mod
+
+        os.environ[silero_mod.MODEL_ENV] = str(vad_model)
     try:
         base = json.loads(speech_config.read_text(encoding="utf-8")) if speech_config is not None else {}
     except (OSError, ValueError) as exc:
@@ -1347,6 +1361,8 @@ def _scan_speech(
         overrides.update(mos=True, mos_device=device)
     if speakers:
         overrides.update(speakers=True, speaker_device=device)
+    if vad is not None:
+        overrides["vad"] = vad
     if no_cluster:
         overrides["duplicate_distance"] = -1
     try:
@@ -1662,6 +1678,26 @@ def speaker_fetch(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"Speaker model in place -> {written}")
+
+
+@app.command("vad-fetch")
+def vad_fetch(
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the model (default: model cache)"),
+) -> None:
+    """Fetch the Silero VAD model a speech scan's --vad silero runs.
+
+    snakers4/silero-vad (MIT), pinned by release commit and sha256; 2.3 MB,
+    runs on onnxruntime on CPU (argus-curator[speech]).
+    """
+    from argus_curator.runtime import ModelUnavailable
+    from argus_curator.silero import fetch_model
+
+    try:
+        written = fetch_model(output)
+    except (ModelUnavailable, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Silero VAD model in place -> {written}")
 
 
 @app.command()

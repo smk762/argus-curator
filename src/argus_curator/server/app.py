@@ -56,6 +56,7 @@ from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator import prefilter as prefilter_mod
+from argus_curator import silero as silero_mod
 from argus_curator import speakers as speakers_mod
 from argus_curator import speech as speech_mod
 from argus_curator import watermarks as watermarks_mod
@@ -243,6 +244,8 @@ def _detectors() -> dict[str, bool | list[str] | str | None]:
         "dnsmos": dnsmos_mod.dnsmos_available(),
         # SpeechConfig.speakers: the WeSpeaker ECAPA-TDNN model is in place (#187).
         "speaker_model": speakers_mod.speaker_model_available(),
+        # SpeechConfig.vad = "silero": the Silero VAD model is in place (#204).
+        "silero_vad": silero_mod.vad_model_available(),
     }
 
 
