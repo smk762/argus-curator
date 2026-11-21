@@ -23,6 +23,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   half-given provenance, an image filter, or a speech flag on an image scan is
   refused before a clip is read.
 
+### Changed
+
+- **A consented voice export binds by voice, not by cluster (#209).** Under
+  `speech.consent_record`, a clip is kept only when its speaker embedding is
+  within `speech.consent_max_distance` (cosine, default 0.25) of the centroid
+  of the record's reference recordings, whatever speaker cluster it joined
+  (`consent:other-speaker`; no embedding, `consent:no-embedding`). The
+  distance is reported per clip (`consent_distance` in the CSV report, and
+  `SelectRow.consent_distance`); the CLI sets the ceiling with
+  `--voice-consent-max-distance`. Select and export refuse when no reference
+  recording has an embedding held (a scan without `speakers`, or a restart
+  since the scan), and never fall back to the clusters. The centroid is a
+  voiceprint and is never stored or served. `SpeechManifestRow` and
+  `SPEECH_MANIFEST_VERSION` (1.0) are unchanged. A clip with a second voice
+  in it isn't refused yet: the cheap signal measured too weak
+  ([#217](https://github.com/smk762/argus-curator/issues/217); see
+  docs/speech.md).
+
 ## [0.19.0] - 2026-11-21
 
 **For downstream consumers (argus-lens, argus-forge, argus-proof, argus-mint).**

@@ -14,8 +14,10 @@ corpus (``speech.corpus`` and ``speech.license``), or a cortex
 ``ConsentRecord`` for a real person's voice outside one
 (``speech.consent_record``): it is read and checked at export, for
 ``training`` of the ``voice`` at ``speech.consent_delivery``, and binds the
-export to the speaker clusters of the record's reference recordings (found
-in the scan by sha256). Clips of anyone else are left out.
+export to the voice of the record's reference recordings (found in the scan
+by sha256): each clip's speaker embedding must be within
+``speech.consent_max_distance`` of their centroid (#209). Clips of anyone
+else are left out.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ import structlog
 from argus_cortex.consent import consent_valid, subject_ref
 from argus_cortex.provenance import Provenance
 
+from argus_curator import speakers
 from argus_curator.consent import ConsentRefused, read_record
 from argus_curator.export import REPORT_NAME, RUN_STATS_NAME, ProgressFn, _plan_dest_paths, _transfer_one
 from argus_curator.models import (
@@ -68,27 +71,47 @@ def _sha256_file(path: Path) -> str | None:
 
 @dataclass(frozen=True)
 class VoiceConsentHold:
-    """A voice consent record as checked for one export: its hashes, the provenance, and who it binds."""
+    """A voice consent record as checked for one export: its hashes, the provenance, and who it binds.
+
+    ``distances`` holds each clip's cosine distance to the reference voice (a
+    plain number, for review); ``excluded`` the clips the record does not
+    cover, with their keep reason. The reference centroid itself is never held.
+    """
 
     release_sha256: str
     record_sha256: str
     provenance: Provenance
-    clusters: frozenset[str]
+    max_distance: float
+    references: tuple[str, ...]
+    distances: dict[str, float] = field(default_factory=dict)
     excluded: dict[str, str] = field(default_factory=dict)
+
+
+# Why no reference voice could be built. It never falls back to the speaker
+# clusters: a cluster can hold a similar voice (its threshold is loose on purpose).
+NO_REFERENCE_VOICE = (
+    "the record's reference recordings have no speaker embedding in this process (the scan ran without "
+    "speech.speakers, embedding them failed, or a restart since the scan dropped the embeddings, which "
+    "are held in memory only); rescan with speech.speakers on"
+)
 
 
 def voice_consent_gate(
     summary: ScanSummary, speech: SpeechSelection, *, at: datetime | None = None
 ) -> VoiceConsentHold | None:
-    """Read and check ``speech.consent_record`` now; None without one.
+    """Read and check ``speech.consent_record`` now, and bind every clip to its voice; None without one.
 
     The record must cover ``training`` of the subject's ``voice`` at
     ``speech.consent_delivery``, and at least one of its reference recordings
-    must be a clip in the scan, by sha256, with a speaker cluster. The
-    consented speaker is that cluster (or those clusters); every other clip is
-    excluded as ``consent:other-speaker``. Raises :class:`ConsentRefused`
-    with the reason otherwise. The CLI takes the record path as given; the
-    server resolves it under the scan's folder first.
+    must be a passing clip in the scan, by sha256, with a speaker embedding
+    held for the scan. The centroid of those embeddings is the consented
+    voice (#209): a clip is bound when its own embedding is within
+    ``speech.consent_max_distance`` of it, whatever cluster it joined. Every
+    other clip is excluded, as ``consent:other-speaker`` (too far) or
+    ``consent:no-embedding`` (nothing to measure). Raises
+    :class:`ConsentRefused` with the reason otherwise, and never falls back to
+    the clusters. The CLI takes the record path as given; the server resolves
+    it under the scan's folder first.
     """
     if speech.consent_record is None:
         return None
@@ -100,20 +123,27 @@ def voice_consent_gate(
     verdict = consent_valid(record, use=VOICE_USE, likeness="voice", at=at, delivery=speech.consent_delivery)
     if not verdict.ok:
         raise ConsentRefused(f"the consent record does not cover this set ({verdict.reason}): {verdict.detail}")
-    if not summary.speaker_clusters:
-        raise ConsentRefused("a consented voice set is bound by speaker clusters; rescan with speech.speakers on")
     wanted = set(record.reference_recordings)
     references = [c for c in summary.clips if c.passed and _sha256_file(Path(c.abs_path)) in wanted]
     if not references:
         raise ConsentRefused(
             f"none of the record's {len(wanted)} reference recording(s) is a passing clip in the scanned folder"
         )
-    clusters = frozenset(c.speaker_cluster for c in references if c.speaker_cluster)
-    if not clusters:
-        raise ConsentRefused(
-            "the record's reference recordings have no speaker cluster; rescan with speech.speakers on"
-        )
-    excluded = {c.rel_path: "consent:other-speaker" for c in summary.clips if c.speaker_cluster not in clusters}
+    held = summary.embeddings
+    centroid = speakers.reference_centroid([held[c.rel_path] for c in references if c.rel_path in held])
+    if centroid is None:
+        raise ConsentRefused(NO_REFERENCE_VOICE)
+    distances: dict[str, float] = {}
+    excluded: dict[str, str] = {}
+    for c in summary.clips:
+        vector = held.get(c.rel_path)
+        distance = speakers.reference_distance(vector, centroid) if vector is not None else None
+        if distance is None:
+            excluded[c.rel_path] = "consent:no-embedding"
+            continue
+        distances[c.rel_path] = distance
+        if distance > speech.consent_max_distance:
+            excluded[c.rel_path] = "consent:other-speaker"
     # It names no one: the subject is cortex's subject ref (consent:<release_sha256>), and the
     # source leaves out who collected the release. Every row of the export carries it.
     provenance = Provenance(
@@ -124,7 +154,15 @@ def voice_consent_gate(
         release_sha256=record.release_sha256,
     )
     assert read.record_sha256 is not None  # a parsed record was read from bytes
-    return VoiceConsentHold(record.release_sha256, read.record_sha256, provenance, clusters, excluded)
+    return VoiceConsentHold(
+        record.release_sha256,
+        read.record_sha256,
+        provenance,
+        speech.consent_max_distance,
+        tuple(sorted(c.rel_path for c in references)),
+        distances,
+        excluded,
+    )
 
 
 def provenance_problem(req: ExportRequest) -> str | None:
@@ -175,8 +213,14 @@ def write_report(
     exported: dict[str, str],
     split: dict[str, SplitPart],
     path: Path,
+    consent_distance: dict[str, float] | None = None,
 ) -> None:
-    """The per-clip CSV report: every clip, kept or not, and why."""
+    """The per-clip CSV report: every clip, kept or not, and why.
+
+    *consent_distance* (a consented voice, #209) is each clip's distance to
+    the reference voice, so the borderline ones can be reviewed.
+    """
+    consent_distance = consent_distance or {}
     fields = [
         "rel_path",
         "score",
@@ -187,6 +231,7 @@ def write_report(
         "speaker_id",
         "speaker_cluster",
         "speaker_mismatch",
+        "consent_distance",
         "accent",
         "language",
         "gender",
@@ -213,6 +258,7 @@ def write_report(
                     "speaker_id": speaker_id(c) or "",
                     "speaker_cluster": c.speaker_cluster or "",
                     "speaker_mismatch": c.speaker_mismatch,
+                    "consent_distance": consent_distance.get(c.rel_path, ""),
                     "accent": c.accent or "",
                     "language": c.language or "",
                     "gender": c.gender or "",
@@ -271,7 +317,7 @@ def export_speech(
                     keep_reason[c.rel_path] = f"split-{split[c.rel_path].replace('_', '-')}"
             selected = [c for c in selected if split[c.rel_path] == req.split_part]
     if hold is not None and not selected:
-        raise ConsentRefused("no clip of the consented speaker qualifies; nothing was exported")
+        raise ConsentRefused("no clip of the consented voice qualifies; nothing was exported")
 
     corpus = speech.corpus or CONSENTED_CORPUS
     licence = speech.license or (hold.provenance.license if hold is not None else "")
@@ -357,7 +403,9 @@ def export_speech(
             )
         manifest_path = dest_root / SPEECH_MANIFEST_NAME
         write_manifest(rows, manifest_path)
-        write_report(clips, keep_reason, exported, split, dest_root / REPORT_NAME)
+        write_report(
+            clips, keep_reason, exported, split, dest_root / REPORT_NAME, hold.distances if hold is not None else None
+        )
 
     run_stats_path: Path | None = None
     if req.run_stats is not None and (transferred or req.write_manifest):

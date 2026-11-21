@@ -23,6 +23,7 @@ from argus_curator import runtime, speakers, speech, speech_select
 from argus_curator.consent import ConsentRefused
 from argus_curator.export import export_selection
 from argus_curator.models import (
+    VOICE_CONSENT_MAX_DISTANCE,
     ExportRequest,
     ScanSummary,
     SpeechConfig,
@@ -34,7 +35,7 @@ from argus_curator.runtime import ModelUnavailable
 from argus_curator.selection import SplitError, split_held_out
 from argus_curator.server.app import create_app
 from argus_curator.speech import scan_speech_folder
-from argus_curator.speech_export import SPEECH_MANIFEST_NAME, export_speech
+from argus_curator.speech_export import SPEECH_MANIFEST_NAME, export_speech, voice_consent_gate
 from argus_curator.store import ScanStore
 
 LINE = "the quick brown fox jumps over"
@@ -625,6 +626,141 @@ def test_a_voice_consent_needs_its_reference_recording_in_the_scan(
 
 
 # ---------------------------------------------------------------------------
+# Binding a consented voice by distance to its reference recordings (#209)
+# ---------------------------------------------------------------------------
+
+CONSENT = {"consent_record": "consent.json", "consent_delivery": "neutral"}
+
+
+def _at_distance(centroid: np.ndarray, distance: float, seed: int) -> np.ndarray:
+    """A unit vector whose cosine distance to the unit *centroid* is *distance* (a synthetic voice)."""
+    other = np.random.default_rng(seed).standard_normal(len(centroid))
+    other -= (other @ centroid) * centroid
+    other /= np.linalg.norm(other)
+    cos = 1.0 - distance
+    return (cos * centroid + np.sqrt(max(0.0, 1.0 - cos * cos)) * other).astype(np.float32)
+
+
+def _consented_scan(root: Path, distances: dict[str, float], **cfg: object) -> ScanSummary:
+    """Two speakers in one loose cluster; s2_0 is the reference, every other clip at the given distance from it."""
+    _corpus(root, SPEAKERS[:2])
+    _record(root / "consent.json", [root / "clips" / "s2_0.wav"])
+    summary = _scan(root, speakers=True, speaker_threshold=1.9, **cfg)
+    reference = _vector(2)
+    for i, rel in enumerate(sorted(summary.embeddings)):
+        if rel != "clips/s2_0.wav":
+            summary.embeddings[rel] = _at_distance(reference, distances.get(rel, 0.05), seed=i)
+    return summary
+
+
+def _report(dest: Path) -> dict[str, dict[str, str]]:
+    import csv
+
+    with (dest / "curation_report.csv").open(encoding="utf-8") as fh:
+        return {row["rel_path"]: row for row in csv.DictReader(fh)}
+
+
+def test_a_consented_voice_is_bound_by_distance_not_by_cluster(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    """Must never: a clip of another voice kept under a voice record because it shares the subject's cluster."""
+    root = tmp_path / "src"
+    similar = {f"clips/s1_{i}.wav": 0.45 for i in range(CLIPS_PER_SPEAKER)}
+    summary = _consented_scan(root, similar)
+    speakers.assign_clusters(summary.clips, summary.embeddings, 1.9)
+    assert len({c.speaker_cluster for c in summary.clips}) == 1  # the clustering merged the two voices
+    dest = tmp_path / "out"
+    result = export_selection(summary, ExportRequest(scan_id=summary.scan_id, dest=str(dest), speech=CONSENT))
+    rows = _rows(Path(result.manifest_path))
+    assert {r.speaker_label for r in rows} == {"s2"} and len(rows) == CLIPS_PER_SPEAKER
+    report = _report(dest)
+    for rel in similar:
+        assert report[rel]["keep_reason"] == "consent:other-speaker"
+        assert float(report[rel]["consent_distance"]) == pytest.approx(0.45, abs=1e-3)
+    assert float(report["clips/s2_0.wav"]["consent_distance"]) == pytest.approx(0.0, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    ("distance", "ceiling", "kept"),
+    [(0.2, None, True), (0.28, None, False), (0.2, 0.15, False), (0.28, 0.3, True)],
+)
+def test_consent_max_distance_is_the_ceiling(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]], distance: float, ceiling: float | None, kept: bool
+) -> None:
+    probe = "clips/s2_1.wav"
+    summary = _consented_scan(tmp_path / "src", {probe: distance})
+    speech = {**CONSENT, **({"consent_max_distance": ceiling} if ceiling is not None else {})}
+    hold = voice_consent_gate(summary, SpeechSelection(**speech))
+    assert hold is not None and hold.distances[probe] == pytest.approx(distance, abs=1e-3)
+    assert (probe not in hold.excluded) is kept
+    assert hold.max_distance == (ceiling if ceiling is not None else VOICE_CONSENT_MAX_DISTANCE)
+
+
+def test_the_reference_voice_is_the_centroid_of_every_reference_recording(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    root = _corpus(tmp_path / "src", SPEAKERS[:2])
+    _record(root / "consent.json", [root / "clips" / "s2_0.wav", root / "clips" / "s2_1.wav"])
+    summary = _scan(root, speakers=True)
+    a, b = _vector(2), _vector(3)
+    summary.embeddings["clips/s2_0.wav"], summary.embeddings["clips/s2_1.wav"] = a, b
+    summary.embeddings["clips/s2_2.wav"] = (a + b) / np.linalg.norm(a + b)
+    hold = voice_consent_gate(summary, SpeechSelection(**CONSENT))
+    assert hold is not None and hold.references == ("clips/s2_0.wav", "clips/s2_1.wav")
+    assert hold.distances["clips/s2_2.wav"] == pytest.approx(0.0, abs=1e-3)
+    # The references themselves are measured against the centroid too, like every clip.
+    assert hold.distances["clips/s2_0.wav"] > 0.0
+
+
+def test_a_voice_consent_never_falls_back_to_clusters_without_a_reference_embedding(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    """Must never: a consented voice export bound by speaker cluster because no reference voice could be built."""
+    root = tmp_path / "src"
+    summary = _consented_scan(root, {})
+    assert summary.speaker_clusters  # the clusters are there to fall back on, and are not used
+    speech = SpeechSelection(**CONSENT)
+    # The reference recording's embedding alone is gone (it failed, or was dropped).
+    del summary.embeddings["clips/s2_0.wav"]
+    with pytest.raises(ConsentRefused, match="no speaker embedding"):
+        voice_consent_gate(summary, speech)
+    # All of them gone: a restart drops the in-memory embeddings.
+    summary.embeddings.clear()
+    with pytest.raises(ConsentRefused, match="rescan with speech.speakers on"):
+        export_speech(summary, ExportRequest(dest=str(tmp_path / "out"), speech=speech))
+    assert not (tmp_path / "out").exists()
+    # A scan that never embedded speakers.
+    plain = _scan(root)
+    with pytest.raises(ConsentRefused, match="no speaker embedding"):
+        voice_consent_gate(plain, speech)
+    # An embedding that is not a usable vector is no reference either.
+    summary = _consented_scan(root, {})
+    summary.embeddings["clips/s2_0.wav"] = np.zeros(speakers.EMBEDDING_DIM, dtype=np.float32)
+    with pytest.raises(ConsentRefused, match="no speaker embedding"):
+        voice_consent_gate(summary, speech)
+
+
+def test_a_clip_with_no_speaker_embedding_is_never_bound(tmp_path: Path, fake_speakers: list[tuple[int, ...]]) -> None:
+    summary = _consented_scan(tmp_path / "src", {})
+    del summary.embeddings["clips/s2_2.wav"]
+    hold = voice_consent_gate(summary, SpeechSelection(**CONSENT))
+    assert hold is not None and hold.excluded["clips/s2_2.wav"] == "consent:no-embedding"
+    assert "clips/s2_2.wav" not in hold.distances and "clips/s2_1.wav" not in hold.excluded
+
+
+def test_a_voice_binding_keeps_plain_distances_and_never_the_voiceprint(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    """Must never: the reference voice's centroid (a voiceprint) held, stored or served; only distances are."""
+    summary = _consented_scan(tmp_path / "src", {"clips/s1_0.wav": 0.6})
+    hold = voice_consent_gate(summary, SpeechSelection(**CONSENT))
+    assert hold is not None
+    for value in vars(hold).values():
+        assert not isinstance(value, np.ndarray)
+    assert all(type(d) is float for d in hold.distances.values())
+
+
+# ---------------------------------------------------------------------------
 # The server: select and export a speech scan
 # ---------------------------------------------------------------------------
 
@@ -700,6 +836,40 @@ def test_speech_move_needs_the_gate_and_drops_the_moved_clips(tmp_path: Path, fa
     assert resp.status_code == 200, resp.text
     remaining = client.get(f"/scan/{scan_id}").json()
     assert {c["speaker"] for c in remaining["clips"]} == {"s2"} and remaining["total"] == CLIPS_PER_SPEAKER
+
+
+def test_select_and_export_routes_bind_a_consented_voice_and_refuse_after_a_restart(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    """The routes bind by distance, report it per row, and refuse once a restart has dropped the embeddings."""
+    source = _corpus(tmp_path / "corpus", SPEAKERS[:2])
+    _record(source / "consent.json", [source / "clips" / "s2_0.wav"])
+    exports = tmp_path / "exports"
+    exports.mkdir()
+
+    def app() -> TestClient:
+        return TestClient(
+            create_app(cache_dir=str(tmp_path / "cache"), source_root=str(source), export_root=str(exports))
+        )
+
+    client = app()
+    scan = {"folder": "", "target_profile": {"modality": "speech"}, "speech": {"speakers": True}}
+    scan_id = client.post("/scan/folder", json=scan).json()["scan_id"]
+    resp = client.post(f"/scan/{scan_id}/select", json={"speech": CONSENT})
+    assert resp.status_code == 200, resp.text
+    rows = {r["rel_path"]: r for r in resp.json()["rows"]}
+    assert {rel for rel, r in rows.items() if not r["keep_reason"]} == {f"clips/s2_{i}.wav" for i in range(3)}
+    assert rows["clips/s2_1.wav"]["consent_distance"] == pytest.approx(0.0, abs=1e-3)
+    assert rows["clips/s1_0.wav"]["keep_reason"] == "consent:other-speaker"
+    assert rows["clips/s1_0.wav"]["consent_distance"] > VOICE_CONSENT_MAX_DISTANCE
+    served = client.get(f"/scan/{scan_id}").text
+    assert "consent_distance" not in served  # the binding is the select's, never the stored scan's
+
+    restarted = app()
+    for path, body in ((f"/scan/{scan_id}/select", {"speech": CONSENT}), ("/export", {"speech": CONSENT})):
+        resp = restarted.post(path, json={**body, "scan_id": scan_id, "dest": "set"})
+        assert resp.status_code == 400 and "rescan with speech.speakers on" in resp.text, resp.text
+    assert not (exports / "set").exists()
 
 
 def test_speech_select_refuses_an_impossible_split(served: tuple[TestClient, str, Path]) -> None:

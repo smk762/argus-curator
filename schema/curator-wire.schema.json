@@ -5030,6 +5030,18 @@
           "title": "Abs Path",
           "type": "string"
         },
+        "consent_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Distance"
+        },
         "keep_reason": {
           "default": "",
           "title": "Keep Reason",
@@ -5086,7 +5098,8 @@
         "keep_reason",
         "rank",
         "split",
-        "speaker_id"
+        "speaker_id",
+        "consent_distance"
       ],
       "title": "SelectRow",
       "type": "object"
@@ -5714,7 +5727,7 @@
       "type": "object"
     },
     "SpeechSelection": {
-      "description": "How a speech scan's clips are selected, and where they came from (#187).\n\nThe speech part of :class:`ExportRequest` and :class:`SelectRequest`, and\nthe only part a speech scan reads besides ``min_score``, ``keep_similar``,\n``max_keep``, ``split`` and the transfer fields; the image filters are\nrefused on a speech scan.\n\nFilters: ``speakers`` (by ``speaker_id``), ``accents`` and ``languages``\n(the corpus labels, exact). ``exclude_speaker_mismatch`` drops clips whose\ncorpus speaker label the clustering disputes. Caps, in hours of audio,\nbest-scoring clips first: ``min_hours_per_speaker`` drops a speaker with\nless, ``max_hours_per_speaker`` caps one, ``max_hours_per_accent`` caps an\naccent, and ``balance_accents`` caps every accent at the smallest one's\nhours. An accent cap takes clips from its speakers in turn, so it keeps\nthem as even as it can.\n\nProvenance, required to export (not to select): ``corpus`` and\n``license`` name the licensed corpus every clip comes from; or\n``consent_record`` names a cortex ``ConsentRecord`` (a path under the\nscanned folder, as ``ConsentConfig.record``) for a real person's voice\noutside a licensed corpus, checked for ``training`` of the ``voice`` at\n``consent_delivery``. Nothing estimates a speaker's age: the corpus's\nlabel is carried, and an unknown age stays unknown.",
+      "description": "How a speech scan's clips are selected, and where they came from (#187).\n\nThe speech part of :class:`ExportRequest` and :class:`SelectRequest`, and\nthe only part a speech scan reads besides ``min_score``, ``keep_similar``,\n``max_keep``, ``split`` and the transfer fields; the image filters are\nrefused on a speech scan.\n\nFilters: ``speakers`` (by ``speaker_id``), ``accents`` and ``languages``\n(the corpus labels, exact). ``exclude_speaker_mismatch`` drops clips whose\ncorpus speaker label the clustering disputes. Caps, in hours of audio,\nbest-scoring clips first: ``min_hours_per_speaker`` drops a speaker with\nless, ``max_hours_per_speaker`` caps one, ``max_hours_per_accent`` caps an\naccent, and ``balance_accents`` caps every accent at the smallest one's\nhours. An accent cap takes clips from its speakers in turn, so it keeps\nthem as even as it can.\n\nProvenance, required to export (not to select): ``corpus`` and\n``license`` name the licensed corpus every clip comes from; or\n``consent_record`` names a cortex ``ConsentRecord`` (a path under the\nscanned folder, as ``ConsentConfig.record``) for a real person's voice\noutside a licensed corpus, checked for ``training`` of the ``voice`` at\n``consent_delivery``. The record binds the export to its reference\nrecordings' voice (#209): a clip is kept only when its speaker embedding\nis within ``consent_max_distance`` (cosine distance) of their centroid.\nNothing estimates a speaker's age: the corpus's label is carried, and an\nunknown age stays unknown.",
       "properties": {
         "accents": {
           "anyOf": [
@@ -5750,6 +5763,13 @@
           ],
           "default": null,
           "title": "Consent Delivery"
+        },
+        "consent_max_distance": {
+          "default": 0.25,
+          "exclusiveMaximum": 2.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Consent Max Distance",
+          "type": "number"
         },
         "consent_record": {
           "anyOf": [
