@@ -127,7 +127,7 @@ landmarks are in the cropped image's pixels.
 | `eye_open` | number or null | The eye aspect ratio from the 68 landmarks; the face-source preset counts 0.18 and over as open. |
 | `mouth_open` | number or null | The inner-lip gap over the mouth width; the preset counts 0.1 and under as closed. |
 | `cluster_distance` | number or null | Cosine distance from the face's embedding to its identity's centroid. |
-| `reference_distance` | number or null | Cosine distance to the reference identity (the centroid of the reference images' primary faces), when the scan named references (`--face-reference`). |
+| `reference_distance` | number or null | Cosine distance to the reference identity, when the scan had one: the centroid of the reference images' primary faces (`--face-reference`, `faces.reference_paths`), or a centroid the caller supplied (`faces.reference_embedding`). |
 | `age_years` | number or null | MiVOLO's apparent age in years, when MiVOLO ran. A model's estimate, not a fact. |
 | `landmarks` | object or null | Null unless the export asked (`--landmarks`, `"landmarks": true`). Then `kps`, the detector's 5 keypoints (eyes, nose tip, mouth corners) as `[x, y]`, and `landmark_3d_68`, the 68 iBUG points as `[x, y, z]`; either can be null. |
 

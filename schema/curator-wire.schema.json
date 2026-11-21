@@ -1239,6 +1239,22 @@
           "title": "Profile Min Yaw",
           "type": "number"
         },
+        "reference_embedding": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Embedding"
+        },
         "reference_paths": {
           "items": {
             "type": "string"

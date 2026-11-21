@@ -10,6 +10,7 @@ verbatim with no remapping. The style and category literals come from
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Literal
 
 from argus_cortex.moderation import (  # re-exported: part of curator's wire contract
@@ -269,25 +270,46 @@ class FaceConfig(BaseModel):
     # for a face to be given a body.
     body_face_match: float = Field(0.0001, ge=0.0, le=1.0)
 
-    # Images in this scan (rel_paths) whose primary faces are the identity
-    # reference: each face's reference_distance is the cosine distance from the
-    # centroid of their embeddings. A frontal portrait for a multi-view set, or
-    # a consenting person's reference photos. Empty = no reference distance.
-    # A reference must pass the scan's filters: a rejected image is never
-    # face-checked. Embeddings are never stored: the distance is measured
-    # during the scan.
+    # The identity reference: each face's reference_distance is the cosine
+    # distance from it. Either images in this scan (rel_paths), whose primary
+    # faces' embeddings are averaged (a frontal portrait for a multi-view set),
+    # or a centroid the caller supplies (reference_embedding), such as
+    # faces.reference_embedding() over a consenting person's reference photos
+    # that are not part of the set. Not both. None = no reference distance.
+    # A reference image the scan's filters rejected is still embedded (from the
+    # bytes the scan read) but stays rejected. Embeddings are never stored: the
+    # distance is measured during the scan, and ScanSummary drops
+    # reference_embedding from its faces_config, so neither the scan cache nor
+    # GET /scan/{id} ever holds it.
     reference_paths: list[str] = Field(default_factory=list)
+    reference_embedding: list[float] | None = Field(default=None, min_length=1)
+
+    @field_validator("reference_embedding")
+    @classmethod
+    def _usable_embedding(cls, value: list[float] | None) -> list[float] | None:
+        if value is None:
+            return None
+        if not all(math.isfinite(v) for v in value) or not any(value):
+            raise ValueError("reference_embedding must be finite and not all zero")
+        return value
 
     @model_validator(mode="after")
     def _attributes_need_faces(self) -> FaceConfig:
+        if self.reference_paths and self.reference_embedding is not None:
+            raise ValueError("give reference_paths or reference_embedding, not both")
         # Attributes are read off detected faces; asking for them without
         # detection would otherwise silently yield nothing. A set age is read
         # off MiVOLO ages.
         if self.set_age or self.mivolo_body:
             self.mivolo = True
-        if self.fairface or self.mivolo or self.reference_paths:
+        if self.fairface or self.mivolo or self.has_reference:
             self.enabled = True
         return self
+
+    @property
+    def has_reference(self) -> bool:
+        """Whether this config asks for reference distances."""
+        return bool(self.reference_paths) or self.reference_embedding is not None
 
 
 class SceneConfig(BaseModel):
@@ -602,7 +624,8 @@ class FaceDetection(BaseModel):
     eye_open: float | None = None
     mouth_open: float | None = None
     # Cosine distance from this face's embedding to its identity's centroid,
-    # and to FaceConfig.reference_paths' centroid (None without a reference).
+    # and to the scan's reference (FaceConfig.reference_paths or
+    # reference_embedding; None without one).
     cluster_distance: float | None = None
     reference_distance: float | None = None
     attributes: FaceAttributes | None = None
@@ -860,8 +883,10 @@ class ScanSummary(BaseModel):
     # face, or why none was (``set_age_skipped``). Both None when not asked.
     set_age: SetAge | None = None
     set_age_skipped: str | None = None
-    # Why FaceConfig.reference_paths gave no reference distances (no such image
-    # in the scan, or none with a face), else None.
+    # Why the scan's reference (FaceConfig.reference_paths or
+    # reference_embedding) gave no reference distances (no such image in the
+    # scan, none with a face, or an embedding of the wrong length), else None.
+    # Set only when a reference was asked for.
     reference_skipped: str | None = None
     results: list[ImageResult] = Field(default_factory=list)
 
@@ -875,6 +900,16 @@ class ScanSummary(BaseModel):
     offset: int = 0
     limit: int | None = None
     returned: int = 0
+
+    @field_validator("faces_config")
+    @classmethod
+    def _no_reference_template(cls, value: FaceConfig) -> FaceConfig:
+        # A caller's reference_embedding is a biometric template: a summary is
+        # stored and served, so it never carries one (reference_skipped and
+        # each face's reference_distance say what it measured).
+        if value.reference_embedding is None:
+            return value
+        return value.model_copy(update={"reference_embedding": None})
 
     @model_validator(mode="before")
     @classmethod
@@ -924,7 +959,7 @@ class FaceSourceFilter(BaseModel):
     """
 
     # The identity to keep (a face cluster id). None = the scan's largest, or
-    # with FaceConfig.reference_paths any (the reference distance names it).
+    # with a scan reference any (the reference distance names it).
     cluster: str | None = None
     # Exactly one face in the frame.
     single_face: bool = True
@@ -940,7 +975,8 @@ class FaceSourceFilter(BaseModel):
     min_eye_open: float | None = Field(0.18, ge=0.0)
     max_mouth_open: float | None = Field(0.1, ge=0.0)
     # Ceiling on the identity distance: reference_distance when the scan had
-    # FaceConfig.reference_paths, else cluster_distance.
+    # a reference (FaceConfig.reference_paths or reference_embedding), else
+    # cluster_distance.
     max_identity_distance: float | None = Field(0.4, ge=0.0, le=2.0)
     # A MiVOLO age of at least 18 on the face, and an adult set age when the
     # scan read one. An image with no age is kept out.

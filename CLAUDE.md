@@ -50,6 +50,8 @@ Each rule names what enforces it. A new rule nothing checks yet is marked **UNEN
 | A server that starts with an unknown `minor-exposed` mode (no fallback) | `tests/test_server.py::test_unknown_minor_exposed_mode_refuses_to_start` |
 | A speech `TargetProfile` scored as an image one (the face-count rules have no speech category), or a speech category in a manifest | `tests/test_scanner.py::test_a_speech_target_profile_is_refused_before_scoring`, `tests/test_server.py::test_scan_with_a_speech_target_profile_is_422`; the manifest snapshot's image-only `target_category` enum |
 | A prefiltered image kept or exported | `tests/test_server.py::test_prefiltered_images_are_never_kept_or_exported` |
+| A train/held-out split putting one group (identity, or any `SPLIT_GROUP_KEYS` key) in both parts | `tests/test_rank_split.py::test_no_group_lands_in_both_parts` |
+| `/scan/{id}/select` and export keeping different rows, or the same rows in a different order, for the same fields (both run `selection.plan_selection`) | `tests/test_rank_split.py::test_select_and_export_keep_the_same_rows_in_the_same_order` |
 | Moderation filters applied to a scan that never ran the check | `tests/test_server.py::test_select_refuses_moderation_filters_on_unchecked_scan` |
 | XMP sidecars writing an age | `tests/test_xmp.py::test_xmp_data_names_only_named_clusters_and_never_writes_age` |
 | `POST /faces` (darkroom's age check) writing anything to disk | `tests/test_server.py::test_faces_returns_estimates_and_writes_nothing` |
