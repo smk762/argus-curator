@@ -646,7 +646,7 @@ def scan_items(
     # The SingGuard mode the scan asks for (its own, else the server's), recorded with its guard_config.
     guard_mode = guard_mod.thinking(guard_cfg) if guard_mod.resolve_enabled(guard_cfg) else None
     # The set age given to the frames with no face, or why none was, and why
-    # FaceConfig.reference_paths gave no reference distances.
+    # the scan's reference gave no reference distances.
     # Until the identities phase a saved snapshot says the age is still to come.
     set_age: dict[str, Any] = {
         "age": None,
@@ -992,7 +992,7 @@ def scan_items(
 
         emit("identities", 0, total)
         face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
-        set_age["reference_skipped"] = faces_mod.measure_reference(results, detected_faces, faces_cfg)
+        set_age["reference_skipped"] = faces_mod.measure_reference(results, detected_faces, faces_cfg, items)
         if set_age["reference_skipped"]:
             logger.warning("reference_skipped", reason=set_age["reference_skipped"])
         if faces_cfg.set_age:

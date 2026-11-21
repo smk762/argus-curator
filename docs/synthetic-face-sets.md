@@ -132,13 +132,14 @@ Choose against the mask guide's table and checklist by eye. Then run the look-al
 
 Some splat routes train on several views. The mask guide gives two synthetic-only ways to make them. Either way, every view has to stay the same person.
 
-Curator measures how far each view is from the frontal portrait. Put the portrait in the folder with the views, and name it as the reference:
+Curator measures how far each view is from the frontal portrait. Name the portrait as the reference, either in the folder with the views (a path relative to it) or anywhere else:
 
 ```bash
 argus-curator scan views/ --faces --face-reference portrait.png --blur-threshold 0 --csv views.csv
+argus-curator scan views/ --faces --face-reference ../source/portrait.png --blur-threshold 0 --csv views.csv
 ```
 
-Each face gets a `reference_distance`: the cosine distance between its InsightFace embedding and the portrait's. The CSV has it as `primary_face_reference_distance`, and so does each manifest row's `primary_face`. Sort the views by it: the portrait reads 0, and a view that has drifted reads higher than the rest. `--face-source` keeps only views within 0.4 of the reference. That's a starting point, not a calibrated value, so compare the views with each other rather than trusting it alone. The reference has to pass the scan's own filters, because a rejected image is never face-checked. A portrait on a plain mid-grey background can score under the default `--blur-threshold 100` (see section 2), hence `--blur-threshold 0` above. If the reference is rejected, the summary's `reference_skipped` says so and every `reference_distance` stays empty.
+Each face gets a `reference_distance`: the cosine distance between its InsightFace embedding and the portrait's. The CSV has it as `primary_face_reference_distance`, and so does each manifest row's `primary_face`. Sort the views by it: the portrait reads 0, and a view that has drifted reads higher than the rest. `--face-source` keeps only views within 0.4 of the reference. That's a starting point, not a calibrated value, so compare the views with each other rather than trusting it alone. A portrait in the folder that the scan's filters reject (a plain mid-grey background can score under the default `--blur-threshold 100`, see section 2) is still used as the reference; `--blur-threshold 0` above is for the views, whose backgrounds are just as plain. If no reference face is found, the summary's `reference_skipped` says why and every `reference_distance` stays empty.
 
 Keep lighting and background identical across views. No tool here compares them.
 

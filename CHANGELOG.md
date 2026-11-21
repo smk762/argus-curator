@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`selection.SPLIT_GROUP_KEYS`) over a generic `split_held_out`, so other
   kinds of item can reuse it. This replaces argus-mint's own ranking and split.
 - **Manifest 2.4: rows carry `split`** (`train` / `held_out`, or null). Additive.
+- **A caller-supplied identity reference (#130).** `faces.reference_embedding`
+  takes a centroid instead of `faces.reference_paths`, and
+  `faces.reference_embedding()` builds one from images outside the set (a
+  consenting person's reference photos, #133); `faces.reference_distance()`
+  compares any embedding with it. `--face-reference` accepts a file outside the
+  scanned folder. The centroid is never stored: `ScanSummary` drops it from
+  `faces_config`.
 
 ### Changed
 
@@ -53,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Ollama.
 
 ### Fixed
+
+- **A rejected reference image is still a reference.** A `reference_paths`
+  image the scan's filters rejected (often a studio portrait failing the blur
+  check) used to give no distances; it is now embedded from the bytes the scan
+  read, and its row stays rejected.
 
 - **GPU memory stays near what curator's leases ask for (#189).** ONNX Runtime's
   default CUDA arena grows in power-of-two steps with no ceiling and keeps what

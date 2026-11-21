@@ -462,7 +462,9 @@ def face_source_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
         )
     if fs.cluster is not None and fs.cluster not in {c.cluster_id for c in summary.face_clusters}:
         return f"face_source.cluster {fs.cluster!r} is not an identity in this scan"
-    if fs.max_identity_distance is not None and summary.faces_config.reference_paths and summary.reference_skipped:
+    # reference_skipped is set only when the scan asked for a reference (its
+    # reference_embedding, never stored, cannot be read back here).
+    if fs.max_identity_distance is not None and summary.reference_skipped:
         # The identity check would fall back to the cluster distance: another
         # person's identity could pass as the reference's.
         return (
