@@ -39,7 +39,6 @@ from argus_curator.models import (
     SplitPart,
 )
 from argus_curator.selection import (
-    SPEECH_EXPORT_PROBLEM,
     consent_set_problem,
     hard_exclusion,
     plan_selection,
@@ -420,6 +419,7 @@ def write_report(
         "reject_reason",
         "is_duplicate",
         "duplicate_of",
+        "duplicate_kind",
         "sharpness",
         "artifact_score",
         "face_count",
@@ -493,6 +493,7 @@ def write_report(
                     "reject_reason": r.reject_reason or "",
                     "is_duplicate": r.is_duplicate,
                     "duplicate_of": r.duplicate_of or "",
+                    "duplicate_kind": r.duplicate_kind or "",
                     "sharpness": round(r.sharpness, 2),
                     "artifact_score": round(r.artifact_score, 4),
                     "face_count": r.face_count,
@@ -746,8 +747,10 @@ def export_selection(
     :class:`ExportResult` comes back.
     """
     if summary.is_speech:
-        # Never a manifest row for a clip until #187 gives speech its own row shape.
-        raise ValueError(SPEECH_EXPORT_PROBLEM)
+        # A speech scan's clips get their own rows (SpeechManifestRow) in their own file (#187).
+        from argus_curator.speech_export import export_speech
+
+        return export_speech(summary, req, progress=progress, moved=moved)
     results = summary.results
     split: dict[str, SplitPart] = {}
     gate: FaceSourceGate | None = None

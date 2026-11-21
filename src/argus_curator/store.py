@@ -38,7 +38,8 @@ class ScanStore:
     def __init__(self, cache_dir: str | Path | None = None) -> None:
         self.cache_dir = Path(cache_dir) if cache_dir else default_cache_dir()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        # scan_id -> {rel_path: semantic embedding}, in memory only (#188): never
+        # scan_id -> {rel_path: semantic embedding, or a speech scan's speaker
+        # embedding (#187)}, in memory only (#188): never
         # written to the cache dir, gone on restart, and dropped with the scan
         # or its rows by delete, delete_all and save.
         self._embeddings: dict[str, dict[str, Any]] = {}
@@ -52,7 +53,8 @@ class ScanStore:
         dropped) prunes the held set to its rows, so a deleted or moved image's
         vector goes with its row.
         """
-        rows = {r.rel_path for r in summary.results}
+        # A speech scan's rows are its clips, and its embeddings speaker ones (#187).
+        rows = {r.rel_path for r in (summary.clips if summary.is_speech else summary.results)}
         with self._embeddings_lock:
             source = summary.embeddings or self._embeddings.get(summary.scan_id)
             if not source:

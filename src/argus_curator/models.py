@@ -140,6 +140,13 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # Additive (#133).
 MANIFEST_VERSION = "2.6"
 
+# Version of a speech export's manifest (#187), its own row shape
+# (SpeechManifestRow) in its own file (speech_manifest.jsonl). It moves
+# independently of MANIFEST_VERSION and of the package version, under the same
+# rule: the major for a breaking row change, the minor for an additive one
+# (schema/speech-manifest-row.snapshot.json, `make manifest-snapshot`).
+SPEECH_MANIFEST_VERSION = "1.0"
+
 # Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
 # written to disk verbatim, so a runaway payload must not fill the export root.
 RUN_STATS_MAX_BYTES = 5 * 1024 * 1024
@@ -236,6 +243,9 @@ DEFAULT_NSFW_THRESHOLD = MIN_REPORTED_SCORE
 _INCLUDE_REJECTED_IGNORED = "Ignored: a rejected image is never kept. Accepted so older clients still validate."
 
 
+SEMANTIC_DUPLICATES_NEED_EMBEDDINGS = "config.semantic_duplicates needs the scan's embeddings: turn embeddings on"
+
+
 class ScanConfig(BaseModel):
     """Tunable parameters for a training-suitability scan."""
 
@@ -246,6 +256,17 @@ class ScanConfig(BaseModel):
 
     # Near-duplicate clustering (pHash Hamming distance). -1 disables grouping.
     cluster_distance: int = 10
+    # Semantic near-duplicates (#196): also group images whose CLIP embeddings
+    # have a cosine similarity of at least ``semantic_duplicate_cosine`` (mirrors,
+    # small crops and rescans that pHash puts far apart). Off by default. Needs
+    # the scan's embeddings (EmbeddingConfig.enabled): a scan asking for it
+    # without them is refused. Either test links an image to a group's
+    # representative (see scanner._mark_duplicates); a -1 cluster_distance turns
+    # off the pHash test only. 0.95 sits above every pair of distinct shots
+    # measured (same person or same scene: at most 0.944) and below rescans of
+    # one photo (0.98+) and most mirrors (median 0.989); see docs/scoring.md.
+    semantic_duplicates: bool = False
+    semantic_duplicate_cosine: float = Field(0.95, ge=0.0, le=1.0)
 
     # Composite score weights
     weight_sharpness: float = 0.35
@@ -876,6 +897,10 @@ def rate_content(nsfw: NsfwResult | None) -> ContentRating | None:
     return "safe"
 
 
+# Which near-duplicate test linked an image to its group's representative (#196).
+DuplicateKind = Literal["phash", "semantic", "both"]
+
+
 class ImageResult(BaseModel):
     """Per-image curation record — superset of imogen's scanner output.
 
@@ -899,6 +924,10 @@ class ImageResult(BaseModel):
     is_representative: bool = True
     is_duplicate: bool = False
     duplicate_of: str | None = None
+    # Which test tied this image to ``duplicate_of`` (None when not a duplicate):
+    # "phash" (Hamming distance within cluster_distance), "semantic" (embedding
+    # cosine at least semantic_duplicate_cosine, with semantic_duplicates on) or "both".
+    duplicate_kind: DuplicateKind | None = None
     keep_reason: str = ""
 
     # Raw metrics
@@ -1063,6 +1092,14 @@ class SpeechConfig(BaseModel):
     # fingerprints, among clips whose lengths are within 10%. -1 disables.
     duplicate_distance: int = Field(6, ge=-1, le=64)
 
+    # Speaker embeddings (WeSpeaker ECAPA-TDNN, ARGUS_CURATOR_SPEAKER_MODEL),
+    # run on each clip that passed, then clustered into speakers: a clip joins
+    # the nearest speaker whose centroid is within speaker_threshold (cosine
+    # distance). The embeddings stay in memory only (ScanSummary.embeddings).
+    speakers: bool = False
+    speaker_device: str = "auto"
+    speaker_threshold: float = Field(0.5, gt=0.0, lt=2.0)
+
     # Composite score weights (a term the scan did not measure drops out and
     # the rest are renormalised), and the SNR that scores 1.
     weight_mos: float = Field(0.5, ge=0.0)
@@ -1146,10 +1183,42 @@ class ClipResult(BaseModel):
     accent: str | None = None
     language: str | None = None
     age: str | None = None
+    # The corpus's gender (sex) label, verbatim (Common Voice's ``gender``).
+    gender: str | None = None
+
+    # SpeechConfig.speakers (#187): the speaker cluster the clip's embedding
+    # joined (``spk_1`` is the largest), its cosine distance to that cluster's
+    # centroid, and whether the corpus's speaker label disagrees with the
+    # clustering (the label's clips span clusters, or the cluster holds more
+    # than one label). None and False when no clustering ran.
+    speaker_cluster: str | None = None
+    speaker_distance: float | None = None
+    speaker_mismatch: bool = False
+    # Why no speaker embedding was made for a clip that passed, else None.
+    speaker_error: str | None = None
 
     # 64-bit spectrogram fingerprint (hex), the counterpart of ImageResult.phash.
     fingerprint: str = ""
     score_breakdown: dict[str, float] = Field(default_factory=dict)
+
+
+class SpeakerCluster(BaseModel):
+    """A speaker found by clustering a speech scan's embeddings (#187).
+
+    ``corpus_speakers`` counts the corpus speaker labels among its clips (empty
+    when the corpus names none). ``mismatch`` is True when the clustering and
+    the corpus disagree about it: it holds more than one label, or a label it
+    holds also has clips in another cluster. A centroid is a voiceprint, so
+    none is stored.
+    """
+
+    model_config = RESPONSE_ONLY
+
+    cluster_id: str
+    clips: int
+    seconds: float
+    corpus_speakers: dict[str, int] = Field(default_factory=dict)
+    mismatch: bool = False
 
 
 class FaceCluster(BaseModel):
@@ -1197,6 +1266,12 @@ class ScanSummary(BaseModel):
     rejected: int
     duplicates: int
     similar_clusters: int
+    # True once rows were dropped (a delete or a move) after this process lost
+    # the scan's embeddings (a restart) and some image's semantic representative
+    # went with them: the groups were rebuilt from pHash and the semantic links
+    # the rows recorded, and such an image may have a semantic near-duplicate the
+    # regroup could no longer see. Rescan with embeddings on to group it afresh.
+    semantic_groups_stale: bool = False
 
     reject_reasons: dict[str, int] = Field(default_factory=dict)
     face_clusters: list[FaceCluster] = Field(default_factory=list)
@@ -1217,6 +1292,10 @@ class ScanSummary(BaseModel):
     # image scan. ``total``, ``passed`` ... count clips on a speech scan.
     speech_config: SpeechConfig | None = None
     clips: list[ClipResult] = Field(default_factory=list)
+    # SpeechConfig.speakers (#187): the speakers found, largest first, and how
+    # many clips' corpus speaker labels disagree with them.
+    speaker_clusters: list[SpeakerCluster] = Field(default_factory=list)
+    speaker_mismatches: int = 0
 
     # The min_short_side a scan cached before MIN_SHORT_SIDE existed actually ran
     # with, when it was below the floor; None otherwise. ``config`` reads the
@@ -1229,8 +1308,8 @@ class ScanSummary(BaseModel):
     limit: int | None = None
     returned: int = 0
 
-    # Each passing image's unit semantic embedding (a numpy vector), by rel_path.
-    # Memory only: a private attribute is neither serialised nor in the schema,
+    # Each passing image's unit semantic embedding (a numpy vector), by rel_path;
+    # on a speech scan each passing clip's unit speaker embedding. Memory only: a private attribute is neither serialised nor in the schema,
     # so it never reaches the store's JSON or a response. ScanStore holds it per
     # scan and drops it with the scan (#188).
     _embeddings: dict[str, Any] = PrivateAttr(default_factory=dict)
@@ -1301,6 +1380,15 @@ class ScanRequest(BaseModel):
         return self.target_profile.modality == "speech"
 
     @model_validator(mode="after")
+    def _semantic_duplicates_need_embeddings(self) -> ScanRequest:
+        # Refused, never silently pHash-only: the grouping needs the vectors.
+        if self.is_speech:
+            return self  # refused below as an image check
+        if self.config.semantic_duplicates and not self.embeddings.enabled:
+            raise ValueError(SEMANTIC_DUPLICATES_NEED_EMBEDDINGS)
+        return self
+
+    @model_validator(mode="after")
     def _no_image_checks_on_speech(self) -> ScanRequest:
         if not self.is_speech:
             return self
@@ -1311,6 +1399,7 @@ class ScanRequest(BaseModel):
                 ("scenes", self.scenes.enabled),
                 ("garments", self.garments.enabled),
                 ("embeddings", self.embeddings.enabled),
+                ("config.semantic_duplicates", self.config.semantic_duplicates),
                 ("nsfw", self.nsfw.enabled is True),
                 ("guard", self.guard.enabled is True),
                 ("crops", self.crops.enabled),
@@ -1383,8 +1472,10 @@ SplitPart = Literal["train", "held_out"]
 # What keeps images together across a split (selection.SPLIT_GROUP_KEYS):
 # "image" = every image is its own group; "face_cluster" = the primary face's
 # identity, so one identity never lands in both parts (an image with no
-# clustered face is a group of its own).
-SplitGroup = Literal["image", "face_cluster"]
+# clustered face is a group of its own). "speaker" (speech scans only, and the
+# only grouping a speech split takes): a speaker never lands in both parts (see
+# speech_select.speaker_groups).
+SplitGroup = Literal["image", "face_cluster", "speaker"]
 
 
 class SplitConfig(BaseModel):
@@ -1412,6 +1503,65 @@ class SplitConfig(BaseModel):
         if (self.held_out is None) == (self.held_out_fraction is None):
             raise ValueError("split needs exactly one of held_out or held_out_fraction")
         return self
+
+
+class SpeechSelection(BaseModel):
+    """How a speech scan's clips are selected, and where they came from (#187).
+
+    The speech part of :class:`ExportRequest` and :class:`SelectRequest`, and
+    the only part a speech scan reads besides ``min_score``, ``keep_similar``,
+    ``max_keep``, ``split`` and the transfer fields; the image filters are
+    refused on a speech scan.
+
+    Filters: ``speakers`` (by ``speaker_id``), ``accents`` and ``languages``
+    (the corpus labels, exact). ``exclude_speaker_mismatch`` drops clips whose
+    corpus speaker label the clustering disputes. Caps, in hours of audio,
+    best-scoring clips first: ``min_hours_per_speaker`` drops a speaker with
+    less, ``max_hours_per_speaker`` caps one, ``max_hours_per_accent`` caps an
+    accent, and ``balance_accents`` caps every accent at the smallest one's
+    hours. An accent cap takes clips from its speakers in turn, so it keeps
+    them as even as it can.
+
+    Provenance, required to export (not to select): ``corpus`` and
+    ``license`` name the licensed corpus every clip comes from; or
+    ``consent_record`` names a cortex ``ConsentRecord`` (a path under the
+    scanned folder, as ``ConsentConfig.record``) for a real person's voice
+    outside a licensed corpus, checked for ``training`` of the ``voice`` at
+    ``consent_delivery``. Nothing estimates a speaker's age: the corpus's
+    label is carried, and an unknown age stays unknown.
+    """
+
+    speakers: list[str] | None = Field(None, min_length=1)
+    accents: list[str] | None = Field(None, min_length=1)
+    languages: list[str] | None = Field(None, min_length=1)
+    exclude_speaker_mismatch: bool = False
+
+    min_hours_per_speaker: float | None = Field(None, gt=0.0)
+    max_hours_per_speaker: float | None = Field(None, gt=0.0)
+    max_hours_per_accent: float | None = Field(None, gt=0.0)
+    balance_accents: bool = False
+
+    corpus: str | None = Field(None, min_length=1, max_length=200)
+    license: str | None = Field(None, min_length=1, max_length=200)
+    consent_record: str | None = Field(None, min_length=1)
+    consent_delivery: str | None = Field(None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def _provenance(self) -> SpeechSelection:
+        if (self.corpus is None) != (self.license is None):
+            raise ValueError("speech.corpus and speech.license go together: name the corpus and its licence")
+        if (self.consent_record is None) != (self.consent_delivery is None):
+            raise ValueError("speech.consent_record needs speech.consent_delivery (the voice delivery it covers)")
+        if self.corpus is not None and self.consent_record is not None:
+            raise ValueError("a speech export is from a licensed corpus or under a consent record, not both")
+        low, high = self.min_hours_per_speaker, self.max_hours_per_speaker
+        if low is not None and high is not None and low > high:
+            raise ValueError("speech.min_hours_per_speaker is above speech.max_hours_per_speaker")
+        return self
+
+    @property
+    def has_provenance(self) -> bool:
+        return self.corpus is not None or self.consent_record is not None
 
 
 class ExportRequest(BaseModel):
@@ -1541,6 +1691,8 @@ class ExportRequest(BaseModel):
     # orphaned in the source folder. With
     # write_xmp, curator's data is merged onto the carried <file>.xmp.
     carry_sidecars: bool = False
+    # A speech scan's selection and provenance (#187); refused on an image scan.
+    speech: SpeechSelection | None = None
     # Opaque client JSON (e.g. a cull session's stats), written pretty-printed
     # to <dest>/run_stats.json when the export produced a destination folder
     # (a file was transferred, or write_manifest is on). At most
@@ -1695,6 +1847,62 @@ class ManifestRow(BaseModel):
     provenance: Provenance | None = None
 
 
+class SpeechManifestRow(BaseModel):
+    """One line of a speech export's ``speech_manifest.jsonl`` (#187; ``speech_export.write_manifest``).
+
+    Its own shape and version (:data:`SPEECH_MANIFEST_VERSION`), never mixed
+    with image rows: a consumer reads ``speech_manifest_version`` and refuses a
+    major it does not know. Rows exist only for clips whose transfer and
+    transcript sidecar both succeeded.
+
+    Paths follow :class:`ManifestRow`: ``exported_path`` and
+    ``exported_abs_path`` are the de-collided files on disk, ``abs_path`` is
+    where the clip can be read (the destination under ``mode="move"``), and
+    ``transcript_path`` / ``transcript_abs_path`` name the ``<stem>.txt``
+    beside the exported clip holding ``transcript``.
+
+    ``speaker_id`` is the corpus's speaker label when it has one, else the
+    speaker cluster; ``speaker_label`` and ``speaker_cluster`` are each on its
+    own. A split keeps every speaker (label and cluster alike) in one
+    part. ``accent``, ``language``, ``gender`` and ``age`` are the corpus's
+    labels verbatim; ``age`` is null when the corpus gives none, and is never
+    estimated. ``corpus``, ``license`` and ``provenance`` say where every clip
+    came from; a clip used under a consent record also names its hashes.
+    """
+
+    model_config = RESPONSE_ONLY
+
+    speech_manifest_version: str = SPEECH_MANIFEST_VERSION
+    modality: Literal["speech"] = "speech"
+    rel_path: str
+    abs_path: str
+    exported_path: str
+    exported_abs_path: str
+    transcript_path: str
+    transcript_abs_path: str
+    target_profile: SpeechTargetProfile
+    transcript: str
+    duration_s: float
+    sample_rate: int
+    channels: int
+    speaker_id: str | None = None
+    speaker_label: str | None = None
+    speaker_cluster: str | None = None
+    speaker_mismatch: bool = False
+    accent: str | None = None
+    language: str | None = None
+    gender: str | None = None
+    age: str | None = None
+    score: float
+    similar_group: int
+    split: SplitPart | None = None
+    corpus: str
+    license: str
+    provenance: Provenance
+    consent_release_sha256: str | None = None
+    consent_record_sha256: str | None = None
+
+
 class ExportResult(BaseModel):
     model_config = RESPONSE_ONLY
 
@@ -1739,6 +1947,14 @@ class ExportResult(BaseModel):
     # Where run_stats was written (<dest>/run_stats.json), or None when the
     # request carried none, nothing was exported, or the write failed.
     run_stats_path: str | None = None
+    # What was exported: an image scan's images, or a speech scan's clips
+    # (#187), whose manifest is speech_manifest.jsonl, versioned by
+    # speech_manifest_version (declared whatever was exported, as
+    # manifest_version is).
+    modality: Literal["image", "speech"] = "image"
+    speech_manifest_version: str = SPEECH_MANIFEST_VERSION
+    # Speech: the <stem>.txt transcripts written beside the exported clips.
+    transcripts_written: int = 0
 
 
 class SelectRow(BaseModel):
@@ -1759,6 +1975,8 @@ class SelectRow(BaseModel):
     rank: int | None = None
     # Its part of SelectRequest.split; None without a split or when left out.
     split: SplitPart | None = None
+    # A speech scan's clip (#187): its speaker_id (SpeechManifestRow), else None.
+    speaker_id: str | None = None
 
 
 class SelectRequest(BaseModel):
@@ -1809,6 +2027,7 @@ class SelectRequest(BaseModel):
     guard_policies: list[GuardPolicy] | None = Field(None, min_length=1)
 
     face_source: FaceSourceFilter | None = None
+    speech: SpeechSelection | None = None
 
     @model_validator(mode="after")
     def _valid_as_export(self) -> SelectRequest:
@@ -1824,6 +2043,20 @@ class SelectRequest(BaseModel):
         ``export_selection``.
         """
         return ExportRequest.model_validate({**self.model_dump(), "dest": "."})
+
+
+class SpeechSelectStats(BaseModel):
+    """What a speech selection keeps, in hours of audio (#187)."""
+
+    model_config = RESPONSE_ONLY
+
+    hours: float
+    hours_by_speaker: dict[str, float] = Field(default_factory=dict)
+    # Keyed by the corpus accent label; "" for clips without one.
+    hours_by_accent: dict[str, float] = Field(default_factory=dict)
+    # With a split: hours and speakers in each part.
+    hours_by_split: dict[str, float] = Field(default_factory=dict)
+    speakers_by_split: dict[str, int] = Field(default_factory=dict)
 
 
 class SelectResult(BaseModel):
@@ -1843,6 +2076,8 @@ class SelectResult(BaseModel):
     train: int | None = None
     held_out: int | None = None
     rows: list[SelectRow] = Field(default_factory=list)
+    # A speech scan's selection: hours by speaker, accent and split part.
+    speech: SpeechSelectStats | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1858,6 +2093,7 @@ WIRE_MODELS: tuple[type[BaseModel], ...] = (
     ExportRequest,
     ExportResult,
     ManifestRow,
+    SpeechManifestRow,
     SelectRequest,
     SelectResult,
 )

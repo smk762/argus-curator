@@ -14,6 +14,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Speech export (#187).** `POST /scan/{id}/select` and `POST /export` take a
+  speech scan, through `ExportRequest.speech` / `SelectRequest.speech`
+  (`SpeechSelection`).
+  - **Speakers:** `SpeechConfig.speakers` (CLI `--speakers`;
+    `argus-curator speaker-fetch`) embeds each passing clip with WeSpeaker's
+    ECAPA-TDNN (VoxCeleb2, CC BY 4.0; pinned by Hugging Face revision and
+    sha256), ONNX under the GPU lease (kind `speakers` in `gpu-tenant.yaml`)
+    with the capped arena, one fixed-shape batch of 4 windows of 3 s per clip.
+    The clips are clustered into speakers (`ClipResult.speaker_cluster`,
+    `ScanSummary.speaker_clusters`), and where the corpus names speakers the
+    clips its labels and the clusters disagree on are flagged
+    (`speaker_mismatch`). The embeddings stay in memory and go with the scan.
+  - **Selection:** speaker, accent and language filters, hours per speaker
+    (floor and cap) and per accent, accent balance, and a `max_keep` that takes
+    speakers in turn. `SelectResult.speech` reports the hours by speaker,
+    accent and split part.
+  - **A speaker-disjoint split:** `split.group_by: "speaker"` (required on a
+    speech scan). A corpus speaker label and a speaker cluster that share a
+    clip are one group, so neither spans both parts; stratified by accent and
+    gender. `selection.split_held_out` gains an optional `strata`.
+  - **Export:** each clip with a `<stem>.txt` transcript beside it, and
+    `speech_manifest.jsonl`: `SpeechManifestRow`, its own row shape and version
+    (`SPEECH_MANIFEST_VERSION` 1.0, snapshot
+    `schema/speech-manifest-row.snapshot.json`, checked by
+    `make manifest-snapshot`). The image `ManifestRow` and `MANIFEST_VERSION`
+    are unchanged.
+  - **Provenance:** an export names the licensed corpus (`speech.corpus`,
+    `speech.license`) or a cortex `ConsentRecord` for a real person's voice
+    (`speech.consent_record`, checked for `training` of the `voice` at
+    `speech.consent_delivery`, bound to its reference recordings' speaker
+    clusters). The corpus's `gender` label is carried with `speaker`,
+    `accent`, `language` and `age`; age is never estimated.
+- **Semantic near-duplicates (#196).** With embeddings on, `ScanConfig.semantic_duplicates`
+  (CLI `--semantic-dupes`) also groups images whose CLIP embeddings reach
+  `semantic_duplicate_cosine` (default 0.95, `--semantic-dupes-cosine`): mirrors,
+  small crops and rescans that pHash misses. One leader grouping over both
+  tests, so the keep-best rule and the `similar-to:` keep reason are unchanged,
+  and a scan without it groups exactly as before. `ImageResult.duplicate_kind`
+  (`phash`, `semantic` or `both`; also a CSV report column) says which test
+  linked the image to `duplicate_of`. Asking without embeddings is refused.
+  The vectors stay memory-only; a regroup after a restart keeps the recorded
+  semantic links, and `ScanSummary.semantic_groups_stale` says when a dropped
+  representative left one that could not be regrouped. `ManifestRow` is
+  unchanged.
 - **Consented face sets of a real person (#133).** A scan can read a consent
   record (`ScanRequest.consent`: `ConsentConfig` with `record`, a path under
   the scanned folder, and `max_distance`; CLI `--consent`,

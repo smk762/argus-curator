@@ -49,13 +49,14 @@ import structlog
 from PIL import Image, ImageFilter
 from pydantic import BaseModel, Field
 
-from argus_curator import __version__, crops, export, scanner
+from argus_curator import __version__, crops, export, scanner, speech_export, speech_select
 from argus_curator import consent as consent_mod
 from argus_curator import dnsmos as dnsmos_mod
 from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator import prefilter as prefilter_mod
+from argus_curator import speakers as speakers_mod
 from argus_curator import speech as speech_mod
 from argus_curator import watermarks as watermarks_mod
 from argus_curator.attributes import fairface_available, mivolo_available
@@ -66,6 +67,7 @@ from argus_curator.faces import faces_available
 from argus_curator.garments import garments_available
 from argus_curator.models import (
     MANIFEST_VERSION,
+    SPEECH_MANIFEST_VERSION,
     SUPPORTED_EXTS,
     ExportRequest,
     ExportResult,
@@ -238,6 +240,8 @@ def _detectors() -> dict[str, bool | list[str] | str | None]:
         # Speech scans (#186): clips can be decoded (argus-curator[speech]), and DNSMOS is in place.
         "speech": speech_mod.speech_available(),
         "dnsmos": dnsmos_mod.dnsmos_available(),
+        # SpeechConfig.speakers: the WeSpeaker ECAPA-TDNN model is in place (#187).
+        "speaker_model": speakers_mod.speaker_model_available(),
     }
 
 
@@ -684,6 +688,10 @@ def create_app(
             # ScanRequest.target_profile.modality "speech" scans WAV/FLAC clips (#186);
             # False when this install cannot decode them (argus-curator[speech]).
             "speech_scan": speech_mod.speech_available(),
+            # Select and export take a speech scan (#187): speaker-disjoint split,
+            # speech_manifest.jsonl rows at this version.
+            "speech_export": True,
+            "speech_manifest_version": SPEECH_MANIFEST_VERSION,
             # The host-wide GPU lease curator takes on CUDA: "none" or "lease" (ARGUS_GPU_COORDINATOR).
             "gpu_coordinator": gpu_coordinator().name,
         }
@@ -1156,6 +1164,54 @@ def create_app(
         fs = req.face_source
         if fs is not None and fs.consent and summary.consent is not None:
             _resolve_within(_scan_root_or_400(summary), summary.consent.record)
+        # A speech export's voice consent record is a request path: under the scan's folder too (#187).
+        if summary.is_speech and req.speech is not None and req.speech.consent_record is not None:
+            _resolve_within(_scan_root_or_400(summary), req.speech.consent_record)
+
+    async def _select_speech(scan_id: str, summary: ScanSummary, export_req: ExportRequest) -> SelectResult:
+        """``POST /scan/{id}/select`` on a speech scan: the plan a speech export runs (#187)."""
+        try:
+            hold = None
+            if export_req.speech is not None:
+                hold = await asyncio.to_thread(speech_export.voice_consent_gate, summary, export_req.speech)
+            plan = await asyncio.to_thread(
+                speech_select.plan_speech_selection, summary.clips, export_req, hold.excluded if hold else None
+            )
+        except SplitError as exc:
+            raise HTTPException(status_code=400, detail=f"split refused: {exc}") from None
+        except ConsentRefused as exc:
+            raise HTTPException(status_code=400, detail=f"consent refused: {exc}") from None
+        kept = [
+            SelectRow(
+                rel_path=c.rel_path,
+                abs_path=c.abs_path,
+                rank=i,
+                split=plan.split.get(c.rel_path),
+                speaker_id=speech_select.speaker_id(c),
+            )
+            for i, c in enumerate(plan.chosen, 1)
+        ]
+        kept_rel = {c.rel_path for c in plan.chosen}
+        left_out = [
+            SelectRow(
+                rel_path=c.rel_path,
+                abs_path=c.abs_path,
+                keep_reason=plan.keep_reason.get(c.rel_path) or "left-out",
+                speaker_id=speech_select.speaker_id(c),
+            )
+            for c in summary.clips
+            if c.rel_path not in kept_rel
+        ]
+        held = sum(1 for part in plan.split.values() if part == "held_out")
+        return SelectResult(
+            scan_id=scan_id,
+            total=len(summary.clips),
+            kept=len(kept),
+            train=len(kept) - held if export_req.split is not None else None,
+            held_out=held if export_req.split is not None else None,
+            rows=[*kept, *left_out],
+            speech=plan.stats,
+        )
 
     @app.post("/scan/{scan_id}/select", response_model=SelectResult)
     async def select_scan(scan_id: str, req: SelectRequest) -> SelectResult:
@@ -1176,6 +1232,8 @@ def create_app(
         if (problem := selection_problem(export_req, summary)) is not None:
             raise HTTPException(status_code=400, detail=problem)
         _require_consent_record_of(summary, export_req)
+        if summary.is_speech:
+            return await _select_speech(scan_id, summary, export_req)
         try:
             gate = await asyncio.to_thread(consent_mod.face_source_gate, export_req, summary)
             plan = await asyncio.to_thread(
@@ -1411,6 +1469,8 @@ def create_app(
             )
         if (problem := selection_problem(req, summary)) is not None:
             raise HTTPException(status_code=400, detail=problem)
+        if summary.is_speech and (problem := speech_export.provenance_problem(req)) is not None:
+            raise HTTPException(status_code=400, detail=problem)
         if req.mode != "copy" and any(r.crop is not None for r in summary.results):
             # Its cropped images must be written cropped; a link or a move would pass on the watermark.
             raise HTTPException(
@@ -1471,7 +1531,10 @@ def create_app(
                 current = store.load(summary.scan_id)
                 if current is None:  # Deleted meanwhile: saving would bring the scan back.
                     return
-                scanner.drop_results(current, moved)
+                if current.is_speech:
+                    speech_mod.drop_clips(current, moved)
+                else:
+                    scanner.drop_results(current, moved)
                 store.save(current)
         except Exception as exc:
             logger.warning("export_cache_drop_failed", scan_id=summary.scan_id, error=str(exc))

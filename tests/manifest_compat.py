@@ -21,27 +21,51 @@ always sends every field, and ``manifest_version``'s default is the version itse
 
 Refresh the snapshot after bumping the version: ``make manifest-snapshot``. It
 refuses a breaking change under the same major, and any change without a bump.
+
+A speech export's ``SpeechManifestRow`` (#187) is held to
+``SPEECH_MANIFEST_VERSION`` the same way, against
+``schema/speech-manifest-row.snapshot.json`` (:data:`SPEECH`); the image
+row and its version are :data:`IMAGE`. ``make manifest-snapshot`` refreshes both.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SNAPSHOT_PATH = Path(__file__).resolve().parent.parent / "schema" / "manifest-row.snapshot.json"
+_SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
 
 _IGNORED = frozenset({"title", "description", "default", "examples"})
 
 
-def live_snapshot() -> dict[str, Any]:
-    from argus_curator.models import MANIFEST_VERSION, ManifestRow
+@dataclass(frozen=True)
+class Target:
+    """A manifest row model, the version constant that describes it, and its snapshot file."""
 
-    return {
-        "manifest_version": MANIFEST_VERSION,
-        "schema": ManifestRow.model_json_schema(mode="serialization"),
-    }
+    row: str  # the model's name in argus_curator.models
+    version: str  # the version constant's name there
+    path: Path
+
+    def live(self) -> dict[str, Any]:
+        from argus_curator import models
+
+        return {
+            "manifest_version": getattr(models, self.version),
+            "schema": getattr(models, self.row).model_json_schema(mode="serialization"),
+        }
+
+
+IMAGE = Target("ManifestRow", "MANIFEST_VERSION", _SCHEMA_DIR / "manifest-row.snapshot.json")
+SPEECH = Target("SpeechManifestRow", "SPEECH_MANIFEST_VERSION", _SCHEMA_DIR / "speech-manifest-row.snapshot.json")
+TARGETS = (IMAGE, SPEECH)
+SNAPSHOT_PATH = IMAGE.path
+
+
+def live_snapshot(target: Target = IMAGE) -> dict[str, Any]:
+    return target.live()
 
 
 def major(version: str) -> str:
@@ -57,7 +81,7 @@ def normalize(node: Any) -> Any:
     return node
 
 
-def breaking_changes(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
+def breaking_changes(old: dict[str, Any], new: dict[str, Any], row: str = "ManifestRow") -> list[str]:
     """Every way ``new`` would break a consumer of rows that match ``old``."""
     old, new = normalize(old), normalize(new)
     old_defs, new_defs = old.get("$defs", {}), new.get("$defs", {})
@@ -118,7 +142,7 @@ def breaking_changes(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
             elif o[key] != n[key]:
                 problems.append(f"{here}: changed from {o[key]!r} to {n[key]!r}")
 
-    walk(old, new, "ManifestRow")
+    walk(old, new, row)
     return problems
 
 
@@ -126,17 +150,18 @@ def _key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
 
 
-def verdict(snapshot: dict[str, Any], live: dict[str, Any]) -> str | None:
+def verdict(snapshot: dict[str, Any], live: dict[str, Any], target: Target = IMAGE) -> str | None:
     """Why the snapshot can't stand for the live row, or None when it does."""
+    row, const = target.row, target.version
     old_v, new_v = snapshot["manifest_version"], live["manifest_version"]
     if _key(new_v) < _key(old_v):
-        return f"MANIFEST_VERSION went backwards: {old_v} -> {new_v}. A released version never moves down."
+        return f"{const} went backwards: {old_v} -> {new_v}. A released version never moves down."
     same_schema = normalize(snapshot["schema"]) == normalize(live["schema"])
     if major(old_v) == major(new_v):
-        broken = breaking_changes(snapshot["schema"], live["schema"])
+        broken = breaking_changes(snapshot["schema"], live["schema"], row)
         if broken:
             return (
-                f"ManifestRow changed in a way that breaks consumers, but MANIFEST_VERSION is still "
+                f"{row} changed in a way that breaks consumers, but {const} is still "
                 f"{major(new_v)}.x ({old_v} -> {new_v}). Bump the major, or make the change additive:\n  "
                 + "\n  ".join(broken)
             )
@@ -144,27 +169,31 @@ def verdict(snapshot: dict[str, Any], live: dict[str, Any]) -> str | None:
         return None
     if not same_schema and old_v == new_v:
         return (
-            f"ManifestRow changed but MANIFEST_VERSION is still {new_v}. Bump the minor for an additive "
+            f"{row} changed but {const} is still {new_v}. Bump the minor for an additive "
             "change (the major for a breaking one), then run `make manifest-snapshot`."
         )
-    return f"MANIFEST_VERSION is {new_v} but the snapshot records {old_v}: run `make manifest-snapshot`."
+    return f"{const} is {new_v} but the snapshot records {old_v}: run `make manifest-snapshot`."
+
+
+def _refresh(target: Target) -> int:
+    live = target.live()
+    if target.path.exists():
+        snapshot = json.loads(target.path.read_text(encoding="utf-8"))
+        problem = verdict(snapshot, live, target)
+        if problem is None:
+            print(f"{target.path.name} is current ({live['manifest_version']}).")
+            return 0
+        # Only a stale version is fixed by writing; a missing bump or an unbumped break is refused.
+        if not problem.startswith(f"{target.version} is "):
+            print(problem, file=sys.stderr)
+            return 1
+    target.path.write_text(json.dumps(live, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"wrote {target.path} ({live['manifest_version']})")
+    return 0
 
 
 def refresh() -> int:
-    live = live_snapshot()
-    if SNAPSHOT_PATH.exists():
-        snapshot = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
-        problem = verdict(snapshot, live)
-        if problem is None:
-            print(f"{SNAPSHOT_PATH.name} is current ({live['manifest_version']}).")
-            return 0
-        # Only a stale version is fixed by writing; a missing bump or an unbumped break is refused.
-        if not problem.startswith("MANIFEST_VERSION is "):
-            print(problem, file=sys.stderr)
-            return 1
-    SNAPSHOT_PATH.write_text(json.dumps(live, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"wrote {SNAPSHOT_PATH} ({live['manifest_version']})")
-    return 0
+    return max(_refresh(target) for target in TARGETS)
 
 
 if __name__ == "__main__":

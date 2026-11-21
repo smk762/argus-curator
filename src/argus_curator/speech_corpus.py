@@ -12,8 +12,8 @@ scan's own clips are):
   then ``train.tsv``, ``dev.tsv``, ``test.tsv``: the first that names a clip
   wins). ``path`` names the clip (Common Voice ships MP3; a scan reads WAV or
   FLAC, so a converted clip matches by stem), ``sentence`` is its transcript,
-  and ``client_id``, ``accents`` (or ``accent``), ``locale`` and ``age`` are
-  carried through verbatim. ``invalidated.tsv`` and ``other.tsv`` are never read.
+  and ``client_id``, ``accents`` (or ``accent``), ``locale``, ``age`` and
+  ``gender`` are carried through verbatim. ``invalidated.tsv`` and ``other.tsv`` are never read.
 
 A corpus maps clips by file stem, so two clips sharing a stem in different
 sub-folders both take the row. The Blizzard 2027 layout is not read yet: its
@@ -53,6 +53,7 @@ class Transcript:
     accent: str | None = None
     language: str | None = None
     age: str | None = None
+    gender: str | None = None
 
 
 def under_18_label(age: str | None) -> bool:
@@ -156,6 +157,7 @@ def _common_voice(root: Path, stems: set[str]) -> dict[str, Transcript]:
                     accent=_clean(row.get("accents") or row.get("accent")),
                     language=_clean(row.get("locale")),
                     age=_clean(row.get("age")),
+                    gender=_clean(row.get("gender")),
                 )
         except (OSError, csv.Error) as exc:
             logger.warning("speech_metadata_read_error", file=name, error=str(exc))
