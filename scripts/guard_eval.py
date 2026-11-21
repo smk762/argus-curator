@@ -135,6 +135,7 @@ import random
 import re
 import statistics
 import sys
+import tempfile
 import time
 import tomllib
 import urllib.request
@@ -1116,8 +1117,9 @@ def summarise_cache_check(data: dict) -> str:
 
 
 def _warn_tmp(path: Path, what: str) -> None:
-    if str(path.expanduser().resolve()).startswith("/tmp/"):
-        print(f"{what} {path} is under /tmp: a reboot wipes it", file=sys.stderr)
+    """Warn when *path* is in the system temp dir, which a reboot wipes (it took every result once)."""
+    if path.expanduser().resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()):
+        print(f"{what} {path} is in the temp directory: a reboot wipes it", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
