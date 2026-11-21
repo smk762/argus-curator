@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **GPU memory stays near what curator's leases ask for (#189).** ONNX Runtime's
+  default CUDA arena grows in power-of-two steps with no ceiling and keeps what
+  it takes, and MiVOLO and FairFace ran every face in an image as one batch, so
+  each new face count was a new, larger shape. One scan held ~20 GB while each
+  lease asked for 512 MB, and its own next lease then waited on that memory.
+  Every CUDA session (curator's own and InsightFace's) is now built with
+  `arena_extend_strategy=kSameAsRequested` and a per-session `gpu_mem_limit`
+  (`ARGUS_CURATOR_GPU_MEM_LIMIT_MB`, default 1024), and the attribute models
+  run one face per pass (`runtime.ATTRIBUTE_BATCH`), so a crowd shot neither
+  grows the arena nor fails against the cap. Measured on a 3090 over 600
+  images, the faces check now peaks at ~1.5 GB (it was ~2.2 GB on those images)
+  and runs about as fast. `runtime.VRAM_MB` and `gpu-tenant.yaml` carry the
+  measured footprints (`faces` 1600 MB, `garments` 1268, `scenes` 656).
+- **A lease reports `peak_vram_mb` on release.** It is the VRAM the process
+  holds then (NVML), which is its high-water mark because the arena keeps what
+  it reserves. NVML lists host PIDs, so in a container the figure is only
+  found with `pid: host`. Otherwise nothing is reported, as before.
+
 ## [0.18.0] - 2026-11-19
 
 ### Added

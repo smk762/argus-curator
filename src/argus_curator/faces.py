@@ -35,7 +35,7 @@ from argus_curator.models import (
     ScanSummary,
     SetAge,
 )
-from argus_curator.runtime import gpu_lease, providers
+from argus_curator.runtime import gpu_lease, providers, session_providers
 
 logger = structlog.get_logger()
 
@@ -95,7 +95,12 @@ def _build_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
         ensure_available("models", cfg.model, root=INSIGHTFACE_ROOT)
     ctx_id = 0 if "CUDAExecutionProvider" in provs else -1
     with gpu_lease(cfg.device, "faces", "load", wait_s=lease_wait_s):
-        app = FaceAnalysis(name=cfg.model, root=INSIGHTFACE_ROOT, providers=provs, allowed_modules=list(FACE_MODULES))
+        app = FaceAnalysis(
+            name=cfg.model,
+            root=INSIGHTFACE_ROOT,
+            providers=session_providers(provs),
+            allowed_modules=list(FACE_MODULES),
+        )
         app.prepare(ctx_id=ctx_id, det_size=(640, 640))
     return app
 

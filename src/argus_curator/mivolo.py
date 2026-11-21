@@ -29,6 +29,7 @@ from argus_curator.runtime import (
     ModelUnavailable,
     configured_path,
     load_session,
+    run_batched,
     sha256,
     softmax,
 )
@@ -135,8 +136,7 @@ def predict(
     if not idx:
         return out
     batch = preprocess([crops[i] for i in idx], [body_crops[i] for i in idx] if body_crops is not None else None)
-    input_name = session.get_inputs()[0].name
-    (raw,) = session.run(None, {input_name: batch})
+    raw = run_batched(session, batch)
     gender, age = decode(raw)
     for j, i in enumerate(idx):
         out[i] = (gender[j], float(age[j]))
@@ -153,9 +153,7 @@ def predict_bodies(session, body_crops: list[Image.Image]) -> list[tuple[np.ndar
         return []
     faces = np.broadcast_to(_ABSENT, (len(body_crops), *_ABSENT.shape))
     persons = np.stack([_channels(crop) for crop in body_crops])
-    batch = np.concatenate([faces, persons], axis=1).astype(np.float32)
-    input_name = session.get_inputs()[0].name
-    (raw,) = session.run(None, {input_name: batch})
+    raw = run_batched(session, np.concatenate([faces, persons], axis=1).astype(np.float32))
     gender, age = decode(raw)
     return [(gender[i], float(age[i])) for i in range(len(body_crops))]
 

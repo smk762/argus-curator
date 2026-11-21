@@ -22,16 +22,16 @@ node: morpheus
 kinds:
   - kind: faces
     description: InsightFace buffalo_l with MiVOLO and FairFace, plus the body detector.
-    vram_mb: 2012
-    model_mb: 1500
+    vram_mb: 1600
+    model_mb: 1000
     priority: batch
   - kind: scenes
     description: Places365 scene tags, up to 16 images per batch.
-    vram_mb: 912
+    vram_mb: 656
     model_mb: 400
     priority: batch
   - kind: garments
     description: Fashionpedia garment detector.
-    vram_mb: 1112
-    model_mb: 600
+    vram_mb: 1268
+    model_mb: 500
     priority: batch
