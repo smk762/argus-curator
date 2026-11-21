@@ -7,50 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-21
+
+**For downstream consumers (argus-lens, argus-forge, argus-proof, argus-mint).**
+Every change below is additive, so a 2.x image-manifest reader and a 1.x
+speech-manifest reader keep working, but:
+
+- **`MANIFEST_VERSION` 2.6 → 2.7.** Image manifest rows gain `pose_labels`
+  (the primary person's `stance` / `arms` / `facing`) and `pose_cluster` (the
+  scan-level body-pose cluster id), both null unless the scan ran the body-pose
+  stage against argus-puppet. No keypoints are written.
+- **`SPEECH_MANIFEST_VERSION` stays 1.0.** `SpeechManifestRow` is unchanged by
+  the CLI export, Silero VAD, language ID and the voice-consent binding: their
+  readings go to the scan rows and `curation_report.csv`, not the manifest. A
+  consented voice export may now keep fewer clips, since a clip must match the
+  consenting voice itself, not its cluster (#209).
+- **New extra `[lid-convert]`** (torch, speechbrain, huggingface_hub, onnx) for
+  the one-time `argus-curator lid-convert`; the language-ID check itself runs
+  on onnxruntime under `[speech]`.
+- **New optional models**, each needed only when asked for: Silero VAD v6.2.3
+  (`argus-curator vad-fetch`, MIT, `ARGUS_CURATOR_VAD_MODEL`) and SpeechBrain
+  VoxLingua107 ECAPA-TDNN (`argus-curator lid-convert`, Apache-2.0,
+  `ARGUS_CURATOR_LID_MODEL`).
+- **A new GPU lease kind, `language`** (912 MB in `gpu-tenant.yaml`). Silero
+  runs on CPU and takes no lease.
+- **Optional argus-puppet.** Setting `ARGUS_CURATOR_PUPPET_URL` turns the
+  body-pose stage on for every scan, like NudeNet; a down puppet never fails a
+  scan.
+- argus-cortex stays `>=0.13,<0.14`.
+
 ### Added
-
-- **Speech scan: language-ID check of the corpus labels (#208).**
-  `speech.language_id` (CLI `--language-id`) classifies each passing clip with
-  SpeechBrain's VoxLingua107 ECAPA-TDNN (Apache-2.0, 107 languages), and
-  flags a clip whose corpus `language` label the model rules out
-  (probability under `language_dispute_below`, default 0.001). Clips gain
-  `language_predicted`, `language_confidence`, `language_label_confidence`,
-  `language_mismatch` and `language_error`, and `ScanSummary` gains
-  `language_mismatches`. The label is never changed, and nothing is
-  rejected unless asked: `speech.exclude_language_mismatch` (CLI
-  `--exclude-language-mismatch`) drops flagged clips at select and export
-  (`language-mismatch`), and `reject_language_mismatch` turns a dispute into
-  the `language` prefilter. `argus-curator lid-convert`
-  (`[lid-convert]` extra, torch at conversion only) exports the pinned
-  checkpoints to ONNX with a conversion record that is checked at load. It
-  runs under the GPU lease as the kind `language`, in 3 fixed windows of 6 s
-  (810 MB at peak on a 3090), and `GET /detectors` reports
-  `language_id_model`. `curation_report.csv` adds `language_predicted`,
-  `language_confidence` and `language_mismatch`. The speech manifest row is
-  unchanged. Calibrated on 272 real clips in 14 languages (`docs/speech.md`).
-  The accent half is left out, because no credible permissive model covers
-  it (#223).
-
-- **Body pose from argus-puppet (manifest 2.7).** With
-  `ARGUS_CURATOR_PUPPET_URL` set, a scan sends each passing image to
-  argus-puppet's `POST /pose` after the faces (the primary face as the
-  `face=x,y,w,h` hint, turned into the EXIF-upright frame;
-  `X-Argus-Priority: batch`; a 503 retried after `Retry-After`, at most 3
-  times), then clusters the scan with one inline `POST /stats`. Rows gain
-  `pose_check` (`ok`, `unusable`, `no_person`, `failed`; null = not checked),
-  `pose_labels` (the primary person's `stance` / `arms` / `facing`) and
-  `pose_cluster` (the scan-level cluster id); `ScanSummary.pose` holds the
-  cluster sizes and medoids, `largest_cluster_share`, `diversity`, the usable
-  count and, when the scan was not clustered, why (`skipped`: over
-  `ARGUS_CURATOR_PUPPET_MAX_SET` / `_MAX_JSON_BYTES`, refused, failed; never
-  truncated). Clusters span the whole scan; a UI counts a selection's share of
-  its most common cluster itself. On whenever the URL is set, like NudeNet:
-  `pose.enabled` (`--body-pose/--no-body-pose`, `--puppet-url`) opts out or requires it,
-  and `GET /detectors` reports `puppet`. It never fails a scan: a failed image
-  keeps null, and after 8 failures with no success puppet is taken to be down.
-  No keypoints are stored anywhere. Manifest rows (2.7) carry `pose_labels`
-  and `pose_cluster`; the CSV report adds `pose_check`, `pose_stance`,
-  `pose_arms`, `pose_facing` and `pose_cluster`. See `docs/body-pose.md`.
 
 - **Speech export from the CLI (#207).** `scan --modality speech` takes
   `--copy-to`, `--move-to` and `--symlink-to`, with the selection as flags
@@ -77,6 +63,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the energy VAD's fell to 0, and its SNR tracked the mixed SNR within 0.5 dB
   (docs/speech.md). `GET /detectors` adds `silero_vad`. Speech manifest rows
   are unchanged.
+- **Language-ID check of speech corpus labels (#208).**
+  `speech.language_id` (CLI `--language-id`) classifies each passing clip with
+  SpeechBrain's VoxLingua107 ECAPA-TDNN (Apache-2.0, 107 languages), and
+  flags a clip whose corpus `language` label the model rules out
+  (probability under `language_dispute_below`, default 0.001). Clips gain
+  `language_predicted`, `language_confidence`, `language_label_confidence`,
+  `language_mismatch` and `language_error`, and `ScanSummary` gains
+  `language_mismatches`. The label is never changed, and nothing is
+  rejected unless asked: `speech.exclude_language_mismatch` (CLI
+  `--exclude-language-mismatch`) drops flagged clips at select and export
+  (`language-mismatch`), and `reject_language_mismatch` turns a dispute into
+  the `language` prefilter. `argus-curator lid-convert`
+  (`[lid-convert]` extra, torch at conversion only) exports the pinned
+  checkpoints to ONNX with a conversion record that is checked at load. It
+  runs under the GPU lease as the kind `language`, in 3 fixed windows of 6 s
+  (810 MB at peak on a 3090), and `GET /detectors` reports
+  `language_id_model`. `curation_report.csv` adds `language_predicted`,
+  `language_confidence` and `language_mismatch`. The speech manifest row is
+  unchanged. Calibrated on 272 real clips in 14 languages (`docs/speech.md`).
+  The accent half is left out, because no credible permissive model covers
+  it (#223).
+- **Body pose from argus-puppet (manifest 2.7, #221).** With
+  `ARGUS_CURATOR_PUPPET_URL` set, a scan sends each passing image to
+  argus-puppet's `POST /pose` after the faces (the primary face as the
+  `face=x,y,w,h` hint, turned into the EXIF-upright frame;
+  `X-Argus-Priority: batch`; a 503 retried after `Retry-After`, at most 3
+  times), then clusters the scan with one inline `POST /stats`. Rows gain
+  `pose_check` (`ok`, `unusable`, `no_person`, `failed`; null = not checked),
+  `pose_labels` (the primary person's `stance` / `arms` / `facing`) and
+  `pose_cluster` (the scan-level cluster id); `ScanSummary.pose` holds the
+  cluster sizes and medoids, `largest_cluster_share`, `diversity`, the usable
+  count and, when the scan was not clustered, why (`skipped`: over
+  `ARGUS_CURATOR_PUPPET_MAX_SET` / `_MAX_JSON_BYTES`, refused, failed; never
+  truncated). Clusters span the whole scan; a UI counts a selection's share of
+  its most common cluster itself. On whenever the URL is set, like NudeNet:
+  `pose.enabled` (`--body-pose/--no-body-pose`, `--puppet-url`) opts out or requires it,
+  and `GET /detectors` reports `puppet`. It never fails a scan: a failed image
+  keeps null, and after 8 failures with no success puppet is taken to be down.
+  No keypoints are stored anywhere. Manifest rows (2.7) carry `pose_labels`
+  and `pose_cluster`; the CSV report adds `pose_check`, `pose_stance`,
+  `pose_arms`, `pose_facing` and `pose_cluster`. See `docs/body-pose.md`.
 
 ### Changed
 
@@ -1502,7 +1529,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/smk762/argus-curator/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/smk762/argus-curator/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/smk762/argus-curator/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/smk762/argus-curator/compare/v0.16.0...v0.17.0
