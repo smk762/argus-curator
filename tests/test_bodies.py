@@ -183,7 +183,7 @@ def test_detect_faces_gives_mivolo_the_bodies_it_found(monkeypatch: pytest.Monke
     assert detector.asked == [0.6]
     assert [f.attributes.age_body for f in r.faces] == [True, False]
     assert [f.attributes.age_years for f in r.faces] == [30.0, 50.0]
-    persons = session.batches[0][:, 3:]
+    persons = np.concatenate(session.batches)[:, 3:]  # one pass per face (runtime.ATTRIBUTE_BATCH)
     assert not np.allclose(persons[0], mivolo._ABSENT) and np.allclose(persons[1], mivolo._ABSENT)
     assert len(r.people) == 1 and r.people[0].face_index == 0 and r.people[0].age_years == 30.0
     assert r.faces[0].person_index == 0 and r.faces[1].person_index is None
@@ -192,7 +192,7 @@ def test_detect_faces_gives_mivolo_the_bodies_it_found(monkeypatch: pytest.Monke
 def test_without_mivolo_body_no_body_is_detected(monkeypatch: pytest.MonkeyPatch) -> None:
     r, session = _scan(monkeypatch, FaceConfig(mivolo=True), None)
     assert [f.attributes.age_body for f in r.faces] == [False, False]
-    assert np.allclose(session.batches[0][:, 3:], mivolo._ABSENT)
+    assert np.allclose(np.concatenate(session.batches)[:, 3:], mivolo._ABSENT)
     assert r.people_check is None and r.people_error is None  # not asked for
 
 
@@ -226,7 +226,8 @@ def test_unmatched_body_gets_a_body_only_age(monkeypatch: pytest.MonkeyPatch) ->
     faces.detect_faces([r], [("x.png", "/d/x.png", _png(400))], FaceConfig(mivolo_body=True))
     unmatched = [p for p in r.people if p.face_index is None]
     assert len(unmatched) == 1 and unmatched[0].age_years == 22.0 and unmatched[0].age_body is True
-    assert len(session.batches) == 2  # faces, then body-only
+    assert len(session.batches) == 3  # each face, then the body-only one
+    assert np.allclose(session.batches[-1][:, :3], mivolo._ABSENT)
     assert r.people_check == "ok"
 
     def broken(session, crops):  # noqa: ANN001, ANN202

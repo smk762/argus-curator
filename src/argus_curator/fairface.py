@@ -28,6 +28,7 @@ from argus_curator.runtime import (
     ModelUnavailable,
     configured_path,
     load_session,
+    run_batched,
     softmax,
 )
 
@@ -111,13 +112,10 @@ def split_probs(logits: np.ndarray) -> np.ndarray:
 
 
 def predict(session, image: Image.Image, kps_list: list[np.ndarray]) -> np.ndarray:
-    """Per-head probabilities ``(N, 18)`` for each face (one batched forward pass)."""
+    """Per-head probabilities ``(N, 18)`` for each face (:data:`runtime.ATTRIBUTE_BATCH` faces per pass)."""
     if not kps_list:
         return np.zeros((0, 18))
-    batch = preprocess([align_face(image, kps) for kps in kps_list])
-    input_name = session.get_inputs()[0].name
-    (logits,) = session.run(None, {input_name: batch})
-    return split_probs(logits)
+    return split_probs(run_batched(session, preprocess([align_face(image, kps) for kps in kps_list])))
 
 
 def export_onnx(weights: Path, output: Path) -> Path:

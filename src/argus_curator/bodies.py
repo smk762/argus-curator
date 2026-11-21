@@ -32,7 +32,7 @@ from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS
 from PIL import Image
 
 from argus_curator.models import FaceConfig, ImageResult, PersonDetection
-from argus_curator.runtime import ModelUnavailable, providers
+from argus_curator.runtime import ModelUnavailable, providers, session_providers
 
 # MiVOLO's CROP_ROUND_RATE: a masked person edge this close to the crop's edge snaps to it.
 CROP_ROUND_RATE = 0.3
@@ -72,7 +72,9 @@ def _build_detector(cfg: FaceConfig) -> object:
         ) from exc
     # Fetches the pack on first use into ~/.insightface, beside buffalo_l.
     package = ensure_person_package(cfg.body_model)
-    return PersonDetection(package["tasks"]["person_detection"], providers(cfg.device))
+    # insightface turns TF32 off for a bare "CUDAExecutionProvider" but keeps a
+    # tuple's options as given, so the tuple carries it too.
+    return PersonDetection(package["tasks"]["person_detection"], session_providers(providers(cfg.device), use_tf32="0"))
 
 
 def detect(detector: object, bgr: np.ndarray, min_score: float) -> tuple[np.ndarray, np.ndarray]:
