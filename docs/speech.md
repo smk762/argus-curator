@@ -12,6 +12,7 @@ argus-curator scan ./LJSpeech-1.1 --modality speech -v
 argus-curator dnsmos-fetch                    # once, for --mos
 argus-curator speaker-fetch                   # once, for --speakers
 argus-curator vad-fetch                       # once, for --vad silero
+pip install "argus-curator[lid-convert]" && argus-curator lid-convert   # once, for --language-id
 argus-curator scan ./corpus --modality speech --mos --speakers --speech-config thresholds.json
 ```
 
@@ -74,6 +75,7 @@ one, and `reject_detail` says what was measured. `null` turns a threshold off.
 | `speech_ratio` | share of 10 ms frames the `vad` marks as speech: the energy VAD (default) or Silero | off (`min_speech_ratio`) |
 | `mos` | DNSMOS OVRL, 1-5 (with `mos: true`) | off (`min_mos`); with it set, a clip DNSMOS couldn't score is rejected |
 | `cer` | CER of the transcript against an STT pass | off (`max_cer`); needs an STT engine, see below |
+| `language` | the language-ID model disputes the corpus language label ([below](#language-labels)) | off: a dispute is flagged, and rejects only with `reject_language_mismatch` |
 
 The score (0-1) weights the measured terms (`weight_mos` 0.5 on (OVRL-1)/4,
 `weight_snr` 0.3 on SNR/`snr_ref_db`, `weight_speech_ratio` 0.2) and
@@ -241,8 +243,106 @@ of face clustering.
   held by the scan store per scan and dropped with it, as CLIP embeddings are.
   A centroid is a voiceprint, so none is stored.
 
-Checking the accent and language labels with a model is
-[#208](https://github.com/smk762/argus-curator/issues/208).
+## Language labels
+
+A speech scan carries the corpus's `language` label as given, and
+spontaneous-speech corpora mislabel some clips. With `speech.language_id: true`
+(CLI `--language-id`), each clip that passed is classified by a spoken
+language-ID model, and a clip whose label the model rules out is flagged
+([#208](https://github.com/smk762/argus-curator/issues/208)). The label is
+never changed, and a flag alone rejects nothing.
+
+- **Model:** SpeechBrain's VoxLingua107 ECAPA-TDNN
+  (`speechbrain/lang-id-voxlingua107-ecapa`, Apache-2.0; trained on
+  VoxLingua107, CC BY 4.0), 107 languages. SpeechBrain publishes it only as
+  PyTorch checkpoints, so `argus-curator lid-convert` (`pip install
+  "argus-curator[lid-convert]"`, which pulls torch and SpeechBrain for the
+  conversion alone) fetches them pinned by revision `0253049a` and the sha256
+  of each file (`embedding_model.ckpt` `ab750d5c...a19a`, `classifier.ckpt`
+  `a50d9024...dbc`, `label_encoder.txt` `9f566d83...c17f`). It exports the
+  encoder and classifier to ONNX (85 MB), and writes `<model>.json` beside the
+  model naming those sources and the ONNX file's own sha256. At load, a model
+  is refused if its record names other sources or doesn't match the file. The
+  scan itself needs only onnxruntime (`[speech]`) and never imports torch. Set
+  `ARGUS_CURATOR_LID_MODEL` (CLI `--lid-model`) to keep it elsewhere.
+- **Input:** 60-bin log mel filterbanks of the clip at 16 kHz, as
+  SpeechBrain's `Fbank` computes them (within 0.001 dB), mean-normalised over
+  the clip. A clip is cut into 3 windows of 6 s spread evenly across it (a
+  short clip is tiled up to 6 s first) and run as one fixed-shape batch. Its
+  language probabilities are the mean of the windows'. On CUDA it loads and
+  runs under the host GPU lease as the kind `language`. That is 352 MB loaded
+  and 810 MB at peak on a 3090 with the 1 GB arena cap (`gpu-tenant.yaml`),
+  and 7 ms a clip against 700 ms on CPU, so unlike Silero it leases a GPU.
+- **What a clip records:** `language_predicted` (the model's top language,
+  in its own codes: ISO 639-1 mostly, but Hebrew is `iw` and Javanese `jw`),
+  `language_confidence` (that language's probability),
+  `language_label_confidence` (the probability it gives the corpus label),
+  `language_mismatch`, and `language_error` (why a passing clip got no
+  reading). `ScanSummary.language_mismatches` counts the flagged clips. Only
+  these numbers are kept: the 107-way probabilities are dropped once the clip
+  is judged.
+- **Reading the label:** a locale is read by its primary subtag (`pt-BR` is
+  `pt`, `zh-CN` is `zh`). A few aliases are read too (`he`, `jv`, `nb`,
+  `fil`, `cmn`), and so are the English language names the model lists. A
+  label the model doesn't know (Common Voice's `fy-NL`, `yue`) gets no
+  judgement. Languages the model can't tell apart by ear count as one:
+  Bosnian, Croatian and Serbian; Norwegian and Nynorsk; Hindi and Urdu;
+  Indonesian and Malay; Czech and Slovak.
+- **The dispute:** a clip is `language_mismatch` when the model gives its
+  label (with the label's group) a probability under
+  `speech.language_dispute_below` (default **0.001**). The model has to rule
+  the label out; disagreeing about its top guess isn't enough. On noisy or
+  telephone audio the model is often unsure what a clip is but still sure what
+  it is not (below).
+- **Using it:** read `language_mismatch` and the two probabilities in the
+  scan, or in `curation_report.csv` (`language_predicted`,
+  `language_confidence`, `language_mismatch`). `speech.exclude_language_mismatch`
+  (CLI `--exclude-language-mismatch`) leaves the flagged clips out at select
+  and export (`language-mismatch`). `speech.reject_language_mismatch` makes a
+  dispute a prefilter instead: the clip is rejected with the check
+  `language`. Both are opt-in. The speech manifest row is unchanged.
+
+**Calibration.** Measured with the pinned model on 272 real clips in 14
+languages (fetched to a scratch folder and deleted afterwards). The read
+speech is 105 clips of Multilingual LibriSpeech's test split (pt, es, fr, de,
+it, nl, pl; 16 kHz audiobooks, median 15 s). The spontaneous speech is 167
+clips of MInDS-14 (en-US, en-GB, en-AU, pt-PT, fr, de, es, it, nl, pl, ru, cs,
+ko, zh; 8 kHz phone calls, median 7 s). Both are CC BY 4.0. A wrong label was
+simulated by giving every clip each of the set's other languages in turn
+(1,155 and 1,837 cases). The "hardest wrong label" is the other language the
+model itself rated most likely for that clip, so it is the mislabel least
+likely to be caught.
+
+| `language_dispute_below` | Read: correct labels disputed | Read: wrong labels caught (hardest) | Phone: correct labels disputed | Phone: wrong labels caught (hardest) |
+|---|---|---|---|---|
+| 0.001 (default) | 0/105 | 96.7% (85/105) | 2/167 (1.2%) | 83.3% (57/167) |
+| 0.005 | 0/105 | 97.7% (91/105) | 7/167 (4.2%) | 92.8% (86/167) |
+| 0.01 | 0/105 | 98.4% (94/105) | 12/167 (7.2%) | 95.6% (108/167) |
+| 0.05 | 0/105 | 99.1% (96/105) | 25/167 (15%) | 98.7% (146/167) |
+
+The model's top guess is right on 95.2% of the read clips and only 62.3% of
+the phone clips. Its usual misses are a neighbouring language: Spanish heard
+as Galician or Catalan, English as Manx or Welsh, Czech as Slovak, Russian as
+Ukrainian. That is why the dispute reads the label's probability. A rule
+"flag when the top guess is another language at p >= 0.9" disputed 4 correct
+phone labels but caught only 28% of wrong ones. At 0.001 the 2 correct phone
+labels disputed were a French clip heard as Breton and a Russian one heard as
+Lithuanian. End to end, a scan of 57 of these clips with 9 labels swapped
+(pt/es, de/nl, fr/it, ru/pl) flagged 7 of the 9 and nothing else. It missed
+German labelled Dutch (p(nl) 0.15) and a Russian phone clip labelled Polish
+(p(pl) 0.009). On clean read speech the default could be raised to 0.01 with
+no correct label disputed here. On phone-quality audio, read the
+probabilities before excluding at a higher one. 14 languages are evidence of
+the scale, not a calibration for your corpus. The model has only one `pt`,
+so it can't split Brazilian from European Portuguese.
+
+**Accent labels aren't checked.** No credible accent-ID model with a clear
+permissive licence covers the corpora curated here. The English CommonAccent
+ECAPA is English only. The one Portuguese pt-BR/pt-PT classifier was trained
+partly on CC BY-NC-ND data, and was tested on studio TTS audio alone.
+[#223](https://github.com/smk762/argus-curator/issues/223) records what was
+checked and what would unblock it. Until then `accent` is the corpus label as
+given.
 
 ## Select and export
 
@@ -275,6 +375,7 @@ argus-curator scan corpus/ --modality speech --symlink-to blizzard-train \
 |---|---|
 | `--speaker-id`, `--accent`, `--language` (comma-separated) | `speech.speakers`, `speech.accents`, `speech.languages` |
 | `--exclude-speaker-mismatch` | `speech.exclude_speaker_mismatch` (needs `--speakers`) |
+| `--exclude-language-mismatch` | `speech.exclude_language_mismatch` (needs `--language-id`) |
 | `--min-hours-per-speaker`, `--max-hours-per-speaker`, `--max-hours-per-accent`, `--balance-accents` | the `speech` hours caps |
 | `--min-score`, `--keep-similar`, `--max-keep`, `--run-stats` | as for images |
 | `--held-out` or `--held-out-fraction`, `--split-method`, `--split-seed`, `--split-part` | `split` (`group_by` is always `speaker`), `split_part` |
@@ -297,6 +398,7 @@ least `min_score` and isn't a near-duplicate (unless `keep_similar`). Then:
 |---|---|---|
 | `speakers`, `accents`, `languages` | keep only these (`speaker_id`, the corpus labels) | `speaker-excluded`, `accent-excluded`, `language-excluded` |
 | `exclude_speaker_mismatch` | drop clips whose corpus label the clustering disputes (needs `speakers` on the scan) | `speaker-mismatch` |
+| `exclude_language_mismatch` | drop clips whose corpus language label the language-ID model disputes (needs `language_id` on the scan) | `language-mismatch` |
 | `min_hours_per_speaker` | drop a speaker with fewer hours | `speaker-under-min-hours` |
 | `max_hours_per_speaker` | cap each speaker, best clips first | `speaker-cap` |
 | `max_hours_per_accent`, `balance_accents` | cap each accent (at the smallest accent's hours with `balance_accents`), taking clips from its speakers in turn | `accent-cap` |

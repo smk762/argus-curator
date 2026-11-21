@@ -46,7 +46,12 @@ kinds:
     model_mb: 300
     priority: batch
   - kind: speakers
-    description: WeSpeaker ECAPA-TDNN speaker embeddings for speech scans, one clip's 4 windows of 3 s per pass.
+    description: WeSpeaker ECAPA-TDNN speaker embeddings for speech scans, one clip's 3 windows of 6 s per pass.
     vram_mb: 542
     model_mb: 350
+    priority: batch
+  - kind: language
+    description: SpeechBrain VoxLingua107 ECAPA-TDNN spoken language ID for speech scans, one clip's 3 windows of 6 s per pass.
+    vram_mb: 912
+    model_mb: 400
     priority: batch
