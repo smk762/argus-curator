@@ -14,7 +14,7 @@
 # its models.
 tenant_version: "1.0"
 tenant: argus-curator
-description: Dataset curation for LoRA training sets (faces, scenes, garments on CUDA).
+description: Dataset curation for LoRA training sets (faces, scenes, garments, embeddings on CUDA).
 repo: smk762/argus-curator
 # In-process work runs on the GPU of the host curator runs on. Change this if
 # curator is deployed on another node.
@@ -34,4 +34,9 @@ kinds:
     description: Fashionpedia garment detector.
     vram_mb: 1268
     model_mb: 500
+    priority: batch
+  - kind: embeddings
+    description: CLIP ViT-L/14 (DataComp-1B) image tower, semantic embeddings in batches of 8.
+    vram_mb: 1984
+    model_mb: 1600
     priority: batch

@@ -12,9 +12,11 @@ import contextlib
 import glob
 import json
 import os
+import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -36,6 +38,35 @@ class ScanStore:
     def __init__(self, cache_dir: str | Path | None = None) -> None:
         self.cache_dir = Path(cache_dir) if cache_dir else default_cache_dir()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # scan_id -> {rel_path: semantic embedding}, in memory only (#188): never
+        # written to the cache dir, gone on restart, and dropped with the scan
+        # or its rows by delete, delete_all and save.
+        self._embeddings: dict[str, dict[str, Any]] = {}
+        self._embeddings_lock = threading.Lock()
+
+    def _hold_embeddings(self, summary: ScanSummary) -> None:
+        """Keep *summary*'s embeddings, or prune the held ones to its rows.
+
+        A summary carrying embeddings (a finished scan) replaces what is held.
+        One without (a snapshot, or a reloaded copy saved after rows were
+        dropped) prunes the held set to its rows, so a deleted or moved image's
+        vector goes with its row.
+        """
+        rows = {r.rel_path for r in summary.results}
+        with self._embeddings_lock:
+            source = summary.embeddings or self._embeddings.get(summary.scan_id)
+            if not source:
+                return
+            kept = {rel: v for rel, v in source.items() if rel in rows}
+            if kept:
+                self._embeddings[summary.scan_id] = kept
+            else:
+                self._embeddings.pop(summary.scan_id, None)
+
+    def held_embeddings(self, scan_id: str) -> dict[str, Any]:
+        """A copy of the embeddings held for *scan_id* (empty when none are)."""
+        with self._embeddings_lock:
+            return dict(self._embeddings.get(scan_id, {}))
 
     def _path(self, scan_id: str) -> Path:
         # Guard against path traversal via a crafted scan_id.
@@ -58,6 +89,7 @@ class ScanStore:
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
+        self._hold_embeddings(summary)
         return path
 
     def _temps(self, scan_id: str) -> list[Path]:
@@ -102,7 +134,9 @@ class ScanStore:
         path = self._path(scan_id)
         if not path.exists():
             return None
-        return ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
+        summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
+        summary.embeddings.update(self.held_embeddings(scan_id))
+        return summary
 
     def load_page(
         self,
@@ -152,12 +186,16 @@ class ScanStore:
             tmp.unlink(missing_ok=True)
         existed = path.exists()
         path.unlink(missing_ok=True)
+        with self._embeddings_lock:
+            self._embeddings.pop(scan_id, None)
         # Last: if the snapshot would not go, the next start still knows to drop it.
         self._marker(scan_id).unlink(missing_ok=True)
         return existed
 
     def delete_all(self) -> int:
         """Remove every cached scan, half-written ones and markers included. Returns how many."""
+        with self._embeddings_lock:
+            self._embeddings.clear()
         count = 0
         paths = [path for pattern in ("*.json", "*.json.tmp", "*.running") for path in self.cache_dir.glob(pattern)]
         for path in paths:

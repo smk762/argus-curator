@@ -87,6 +87,23 @@
       "title": "CropConfig",
       "type": "object"
     },
+    "EmbeddingConfig": {
+      "description": "Semantic image embeddings of whole images, a CLIP image tower (see embeddings.py).\n\nThe vectors are held in memory for the scan only, never written, and are\ngone once the scan is deleted or the server restarts. The model (and so the\nembedding space) is process configuration (ARGUS_CURATOR_EMBEDDINGS_MODEL,\n``embeddings.EMBEDDING_SPACE``), deliberately not a field here.",
+      "properties": {
+        "device": {
+          "default": "auto",
+          "title": "Device",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "EmbeddingConfig",
+      "type": "object"
+    },
     "EraxConfig": {
       "description": "Optional EraX-NSFW fill-in via a remote server (see erax.py).\n\nThe URL (ARGUS_CURATOR_ERAX_URL) is process configuration, like NudeNet.\nA finished scan records whether the check ran as True or False.",
       "properties": {
@@ -232,6 +249,11 @@
         "diversify_scenes": {
           "default": false,
           "title": "Diversify Scenes",
+          "type": "boolean"
+        },
+        "diversify_semantic": {
+          "default": false,
+          "title": "Diversify Semantic",
           "type": "boolean"
         },
         "diversity_weight": {
@@ -2973,6 +2995,9 @@
         "crops": {
           "$ref": "#/$defs/CropConfig"
         },
+        "embeddings": {
+          "$ref": "#/$defs/EmbeddingConfig"
+        },
         "faces": {
           "$ref": "#/$defs/FaceConfig"
         },
@@ -3017,6 +3042,9 @@
         "duplicates": {
           "title": "Duplicates",
           "type": "integer"
+        },
+        "embeddings_config": {
+          "$ref": "#/$defs/EmbeddingConfig"
         },
         "erax_config": {
           "$ref": "#/$defs/EraxConfig"
@@ -3165,6 +3193,7 @@
         "faces_config",
         "scenes_config",
         "garments_config",
+        "embeddings_config",
         "nsfw_config",
         "erax_config",
         "guard_config",
@@ -3294,6 +3323,11 @@
         "diversify_scenes": {
           "default": false,
           "title": "Diversify Scenes",
+          "type": "boolean"
+        },
+        "diversify_semantic": {
+          "default": false,
+          "title": "Diversify Semantic",
           "type": "boolean"
         },
         "diversity_weight": {

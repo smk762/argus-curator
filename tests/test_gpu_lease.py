@@ -102,7 +102,7 @@ def test_gpu_tenant_manifest_declares_every_leased_model() -> None:
     """gpu-tenant.yaml validates as cortex's TenantManifest and covers every kind gpu_lease names."""
     manifest = load_tenant_manifest(Path(__file__).parent.parent / "gpu-tenant.yaml")
     assert manifest.tenant == "argus-curator"
-    leased = {"faces", "scenes", "garments"}  # bodies run inside the faces lease
+    leased = {"faces", "scenes", "garments", "embeddings"}  # bodies run inside the faces lease
     assert {k.kind for k in manifest.kinds} == leased
     for model in leased:
         kind = manifest.kind_for(model)

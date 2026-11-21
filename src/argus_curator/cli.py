@@ -144,6 +144,12 @@ def scan(
     garments_model: Path | None = Option(
         None, "--garments-model", help="Converted garment-detector ONNX model (ARGUS_CURATOR_GARMENTS_MODEL)"
     ),
+    embeddings: bool = Option(
+        False, "--embeddings", help="Compute CLIP image embeddings (memory only) for --diversify-semantic"
+    ),
+    embeddings_model: Path | None = Option(
+        None, "--embeddings-model", help="Converted CLIP image-tower ONNX model (ARGUS_CURATOR_EMBEDDINGS_MODEL)"
+    ),
     face_clusters: str | None = Option(None, "--face-clusters", help="Comma-separated cluster ids to export"),
     face_reference: list[str] = Option(
         [],
@@ -206,6 +212,11 @@ def scan(
     ),
     diversify_outfits: bool = Option(
         False, "--diversify-outfits", help="With --max-keep, also spread the selection across outfits"
+    ),
+    diversify_semantic: bool = Option(
+        False,
+        "--diversify-semantic",
+        help="With --max-keep, also spread the selection semantically (CLIP embeddings; needs --embeddings)",
     ),
     nsfw: bool | None = Option(
         None,
@@ -341,6 +352,7 @@ def scan(
     from argus_curator.models import (
         DEFAULT_NSFW_THRESHOLD,
         CropConfig,
+        EmbeddingConfig,
         ExportRequest,
         FaceConfig,
         FaceSourceFilter,
@@ -362,6 +374,7 @@ def scan(
         raise typer.Exit(1)
     import os
 
+    from argus_curator import embeddings as embeddings_mod
     from argus_curator import erax as erax_mod
     from argus_curator import fairface as fairface_mod
     from argus_curator import garments as garments_mod
@@ -376,6 +389,7 @@ def scan(
         (mivolo_model, mivolo_mod.MODEL_ENV),
         (places365_model, scenes_mod.MODEL_ENV),
         (garments_model, garments_mod.MODEL_ENV),
+        (embeddings_model, embeddings_mod.MODEL_ENV),
         (nudenet_url, nsfw_mod.URL_ENV),
         (erax_url, erax_mod.URL_ENV),
         (watermark_url, watermarks_mod.URL_ENV),
@@ -434,6 +448,9 @@ def scan(
         mivolo_body=mivolo_body,
         reference_paths=face_reference,
     )
+    if diversify_semantic and not embeddings:
+        typer.echo("Error: --diversify-semantic needs --embeddings", err=True)
+        raise typer.Exit(2)
     if face_source and not faces_cfg.mivolo:
         typer.echo("Error: --face-source checks for an adult age, which needs --mivolo", err=True)
         raise typer.Exit(2)
@@ -522,6 +539,7 @@ def scan(
             min_garment_conf=min_garment_conf,
             garments_uncropped=garments_uncropped,
             diversify_outfits=diversify_outfits,
+            diversify_semantic=diversify_semantic,
             nsfw_threshold=nsfw_threshold,
             nsfw_label_thresholds=label_thresholds,
             content_ratings=_csv_list(content_ratings),
@@ -547,6 +565,13 @@ def scan(
         (mivolo, mivolo_available, "MiVOLO", mivolo_mod.MODEL_ENV, "mivolo-convert"),
         (scenes, scenes_mod.scenes_available, "Places365", scenes_mod.MODEL_ENV, "places365-convert"),
         (garments, garments_mod.garments_available, "garment-detector", garments_mod.MODEL_ENV, "garments-convert"),
+        (
+            embeddings,
+            embeddings_mod.embeddings_available,
+            "CLIP embedding",
+            embeddings_mod.MODEL_ENV,
+            "embeddings-convert",
+        ),
     )
     for wanted, available, name, env, command in needed:
         if wanted and not available():
@@ -609,6 +634,7 @@ def scan(
         faces_cfg,
         scene_cfg=scene_cfg,
         garment_cfg=garment_cfg,
+        embed_cfg=EmbeddingConfig(enabled=embeddings, device=device),
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
@@ -742,7 +768,11 @@ def scan(
             from argus_curator.selection import decide_selection
 
             selected, keep_reason = decide_selection(
-                summary.results, req, summary.config.diversity_weight, set_age=summary.set_age
+                summary.results,
+                req,
+                summary.config.diversity_weight,
+                set_age=summary.set_age,
+                embeddings=summary.embeddings,
             )
             exported_paths = result.exported_paths if result is not None else {}
             write_report(summary.results, keep_reason, {r.rel_path for r in selected}, exported_paths, csv_out)
@@ -932,6 +962,32 @@ def garments_convert(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"Wrote garment-detector ONNX model -> {written}")
+
+
+@app.command("embeddings-convert")
+def embeddings_convert(
+    checkpoint: Path | None = Option(
+        None, "--checkpoint", help="Local dir with config.json + pytorch_model.bin (default: download the pinned one)"
+    ),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+) -> None:
+    """Fetch, verify and convert the CLIP image tower for --embeddings.
+
+    Weights: huggingface.co/laion/CLIP-ViT-L-14-DataComp.XL-s13B-b90K (MIT;
+    DataComp-1B CLIP ViT-L/14), pinned by commit and sha256. Only the image
+    tower and its projection are exported (~1.2 GB fp32).
+    Needs: pip install argus-curator[embeddings-convert]
+    """
+    from argus_curator.embeddings import export_onnx, fetch_weights, model_path
+    from argus_curator.runtime import ModelUnavailable
+
+    try:
+        source = checkpoint or fetch_weights()
+        written = export_onnx(source, output or model_path())
+    except ModelUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote CLIP image-tower ONNX model -> {written}")
 
 
 DEFAULT_SCHEMA_PATH = Path("schema/curator-wire.schema.json")

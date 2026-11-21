@@ -91,9 +91,10 @@ System libraries for the face stack (Ubuntu/Debian):
 sudo apt install -y libgl1 libglib2.0-0 libgomp1
 ```
 
-Face attributes, scenes and garments read ONNX models that are converted once
-(`mivolo-convert`, `fairface-convert`, `places365-convert`,
-`garments-convert`); each feature's page says how. The nudity, policy and
+Face attributes, scenes, garments and semantic embeddings read ONNX models
+that are converted once (`mivolo-convert`, `fairface-convert`,
+`places365-convert`, `garments-convert`, `embeddings-convert`); each feature's
+page says how. The nudity, policy and
 watermark checks talk to their own servers over HTTP. A Docker image is
 published for CPU and GPU: see [Docker and the GPU](docs/gpu.md).
 

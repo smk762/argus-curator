@@ -54,6 +54,7 @@ from argus_curator import prefilter as prefilter_mod
 from argus_curator import watermarks as watermarks_mod
 from argus_curator.attributes import fairface_available, mivolo_available
 from argus_curator.bodies import bodies_available
+from argus_curator.embeddings import embeddings_available
 from argus_curator.faces import faces_available
 from argus_curator.garments import garments_available
 from argus_curator.models import (
@@ -215,6 +216,7 @@ def _detectors() -> dict[str, bool | list[str] | str | None]:
         "bodies": bodies_available(),
         "places365": scenes_available(),
         "garments": garments_available(),
+        "embeddings": embeddings_available(),
         # A NudeNet / EraX server URL is configured; reachability is not probed here.
         "nudenet": nsfw_mod.configured(),
         "erax": erax_mod.configured(),
@@ -789,6 +791,13 @@ def create_app(
                 "ARGUS_CURATOR_GARMENTS_MODEL",
                 "garments-convert",
             ),
+            (
+                req.embeddings.enabled,
+                embeddings_available,
+                "CLIP embedding",
+                "ARGUS_CURATOR_EMBEDDINGS_MODEL",
+                "embeddings-convert",
+            ),
         )
         for requested, available, name, env, command in wanted:
             if requested and not available():
@@ -905,6 +914,7 @@ def create_app(
                 req.faces,
                 scene_cfg=req.scenes,
                 garment_cfg=req.garments,
+                embed_cfg=req.embeddings,
                 nsfw_cfg=req.nsfw,
                 guard_cfg=req.guard,
                 prefilter_cfg=req.prefilter,
@@ -973,6 +983,7 @@ def create_app(
                     req.faces,
                     scene_cfg=req.scenes,
                     garment_cfg=req.garments,
+                    embed_cfg=req.embeddings,
                     nsfw_cfg=req.nsfw,
                     guard_cfg=req.guard,
                     prefilter_cfg=req.prefilter,
@@ -1104,6 +1115,7 @@ def create_app(
                 export_req,
                 summary.config.diversity_weight,
                 set_age=summary.set_age,
+                embeddings=summary.embeddings,
             )
         except SplitError as exc:
             raise HTTPException(status_code=400, detail=f"split refused: {exc}") from None

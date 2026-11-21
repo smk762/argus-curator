@@ -15,11 +15,12 @@ import os
 import random
 import re
 from collections import Counter
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 import imagehash
+import numpy as np
 from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS, rule_matches
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
@@ -129,6 +130,8 @@ def select_diverse(
     scenes: bool = False,
     outfits: bool = False,
     outfit_conf: float = 0.5,
+    semantic: bool = False,
+    embeddings: Mapping[str, Any] | None = None,
     rank: RankBy = "score",
 ) -> list[ImageResult]:
     """Greedy diversity-aware selection.
@@ -146,8 +149,15 @@ def select_diverse(
     the mean of pHash spread and the enabled novelties, so near-identical
     backdrops or outfits are spread out even when the pixels differ.
 
-    A term, once in play, scores every candidate: an untagged image or one
-    with nothing detected is itself a "scene" / "outfit" that repeats, rather
+    ``semantic`` adds a fourth: one minus the largest cosine similarity between
+    the candidate's semantic embedding (*embeddings*, unit vectors by
+    ``rel_path``) and any selected image's, so burst shots, re-encodes and
+    small crops of one frame are spread out even when their pHashes are far
+    apart. A selected image with no embedding is similar to nothing.
+
+    A term, once in play, scores every candidate: an untagged image, one with
+    nothing detected, or one with no embedding is itself a "scene" / "outfit" /
+    embedding that repeats, rather
     than skipping the term and being judged on pHash alone (which would
     systematically favour exactly the images the term knows least about). A
     term is in play only if some candidate carries the data at all.
@@ -168,6 +178,16 @@ def select_diverse(
     sigs = [outfit(r.garments, outfit_conf) for r in candidates] if outfits else []
     use_scenes = scenes and any(r.scene is not None for r in candidates)
     use_outfits = outfits and any(sigs)
+    vectors = [embeddings.get(r.rel_path) for r in candidates] if semantic and embeddings else []
+    use_semantic = any(v is not None for v in vectors)
+    if use_semantic:
+        dim = next(len(v) for v in vectors if v is not None)
+        has_vec = np.array([v is not None for v in vectors])
+        matrix = np.stack(
+            [np.asarray(v, dtype=np.float32) if v is not None else np.zeros(dim, np.float32) for v in vectors]
+        )
+        # Each candidate's largest cosine to anything selected so far, updated per pick.
+        nearest = np.full(len(candidates), -1.0, dtype=np.float32)
     remaining = list(range(len(candidates)))
 
     for _ in range(n):
@@ -191,6 +211,9 @@ def select_diverse(
                 terms.append(1.0 - max(_scene_overlap(candidates[i], candidates[j]) for j in selected_idx))
             if use_outfits and selected_idx:
                 terms.append(1.0 - max(outfit_similarity(sigs[i], sigs[j]) for j in selected_idx))
+            if use_semantic and selected_idx:
+                # No embedding: a repeat. Nothing embedded selected yet: as far as it gets.
+                terms.append(min(1.0, max(0.0, 1.0 - float(nearest[i]))) if has_vec[i] else 0.0)
             div_norm = sum(terms) / len(terms)
             val = score_norm * (1.0 - diversity_weight) + div_norm * diversity_weight
             if val > best_val:
@@ -200,6 +223,8 @@ def select_diverse(
         selected_idx.append(best_idx)
         if hashes[best_idx] is not None:
             selected_hashes.append(hashes[best_idx])
+        if use_semantic and has_vec[best_idx]:
+            np.maximum(nearest, matrix @ matrix[best_idx], out=nearest)
         remaining.remove(best_idx)
 
     return [candidates[i] for i in selected_idx]
@@ -509,6 +534,24 @@ def rank_split_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
     return None
 
 
+def semantic_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """Why ``req.diversify_semantic`` cannot be applied to *summary*, else ``None``.
+
+    Embeddings live in memory only, so a scan that ran them loses them when
+    the server restarts; the term would then silently do nothing.
+    """
+    if not req.diversify_semantic:
+        return None
+    if not summary.embeddings_config.enabled:
+        return "diversify_semantic needs a scan that computed embeddings; rescan with embeddings on"
+    if not summary.embeddings:
+        return (
+            "diversify_semantic needs this scan's embeddings, which are held in memory only and are gone "
+            "(the server restarted since the scan, or no image could be embedded); rescan with embeddings on"
+        )
+    return None
+
+
 def selection_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
     """The first reason *req*'s selection cannot be applied to *summary*, else ``None``.
 
@@ -520,6 +563,7 @@ def selection_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
         face_source_problem(req, summary),
         guard_filter_problem(req, summary),
         rank_split_problem(req, summary),
+        semantic_problem(req, summary),
     ):
         if problem is not None:
             return problem
@@ -683,13 +727,16 @@ def plan_selection(
     diversity_weight: float,
     *,
     set_age: SetAge | None = None,
+    embeddings: Mapping[str, Any] | None = None,
 ) -> SelectionPlan:
     """The filter, cap, ranking and split for *req*: the one path select and export share.
 
     *diversity_weight* is the scan's; ``req.diversity_weight`` overrides it.
-    Raises :class:`SplitError` when ``req.split`` cannot be made.
+    *embeddings* are the scan's in-memory ones (``ScanSummary.embeddings``),
+    read by ``req.diversify_semantic``. Raises :class:`SplitError` when
+    ``req.split`` cannot be made.
     """
-    chosen, keep_reason = decide_selection(results, req, diversity_weight, set_age=set_age)
+    chosen, keep_reason = decide_selection(results, req, diversity_weight, set_age=set_age, embeddings=embeddings)
     split: dict[str, SplitPart] = {}
     if req.split is not None:
         key = SPLIT_GROUP_KEYS[req.split.group_by]
@@ -704,6 +751,7 @@ def decide_selection(
     diversity_weight: float,
     *,
     set_age: SetAge | None = None,
+    embeddings: Mapping[str, Any] | None = None,
 ) -> tuple[list[ImageResult], dict[str, str]]:
     """Return ``(selected_results, keep_reason_by_rel)`` for an export request.
 
@@ -772,6 +820,8 @@ def decide_selection(
             scenes=req.diversify_scenes,
             outfits=req.diversify_outfits,
             outfit_conf=req.min_garment_conf,
+            semantic=req.diversify_semantic,
+            embeddings=embeddings,
             rank=req.rank,
         )
         chosen_set = {r.rel_path for r in chosen}
