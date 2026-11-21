@@ -14,14 +14,15 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from argus_cortex.consent import AgeCheck, ConsentRecord, Revocation
+from argus_cortex.consent import AgeCheck, ConsentRecord, Revocation, consent_matches
+from argus_cortex.provenance import Provenance
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from argus_curator import faces as faces_mod
 from argus_curator.attributes import RawAttributes
 from argus_curator.consent import ConsentRefused, face_source_gate
-from argus_curator.export import export_selection
+from argus_curator.export import _write_pseudonymised_sidecar, export_selection
 from argus_curator.models import (
     MANIFEST_VERSION,
     ConsentConfig,
@@ -320,7 +321,9 @@ def test_a_consented_export_keeps_the_bound_images_and_records_consent_on_each_r
         assert row["consent_record_sha256"] == record_sha
         prov = row["provenance"]
         assert prov["kind"] == "consented" and prov["release_sha256"] == "a" * 64
-        assert prov["subject"] == "Jo Example" and "Example Studio" in prov["source"] and prov["license"]
+        # The row names the release, not the person, nor who collected the release.
+        assert prov["subject"] == "consent:" + "a" * 64 and prov["license"]
+        assert "Example Studio" not in prov["source"]
 
 
 def test_an_image_sidecar_provenance_goes_on_its_row(faces_stub: dict, consent_set: Path, tmp_path: Path) -> None:
@@ -336,6 +339,63 @@ def test_an_image_sidecar_provenance_goes_on_its_row(faces_stub: dict, consent_s
     export_selection(_scan(consent_set), _req(dest))
     by_rel = {row["rel_path"]: row for row in _rows(dest)}
     assert by_rel["a0.png"]["provenance"]["source"] == "shot by Ann on 2025-02-01"
+    # Pseudonymised like the default: the sidecar's subject is not carried onto the row.
+    assert by_rel["a0.png"]["provenance"]["subject"] == "consent:" + "a" * 64
+
+
+def _all_text(dest: Path) -> dict[str, str]:
+    files = (f for f in dest.rglob("*") if f.is_file() and f.suffix != ".png")
+    return {str(f.relative_to(dest)): f.read_text(encoding="utf-8") for f in files}
+
+
+@pytest.mark.parametrize("mode", ["copy", "move", "symlink"])
+def test_consent_subject_name_appears_nowhere_in_the_export(
+    faces_stub: dict, consent_set: Path, tmp_path: Path, mode: str
+) -> None:
+    """Must never: a consented export naming the consenting person (or who collected the release).
+
+    The manifest, the CSV report, curator's XMP sidecars and the carried ``<stem>.json``
+    sidecars name the subject only by cortex's subject ref; the source sidecars keep the name.
+    """
+    named = {
+        "kind": "consented",
+        "source": "a capture session",
+        "license": "release",
+        "subject": "Jo Example",
+        "release_sha256": "a" * 64,
+    }
+    sidecar = {"producer": "argus-mask", "likeness_consent": True, "provenance": named}
+    (consent_set / "a0.json").write_text(json.dumps(sidecar))
+    source_before = (consent_set / "a0.json").read_bytes()
+    summary = _scan(consent_set)
+    dest = tmp_path / "out"
+    req = _req(dest).model_copy(update={"mode": mode, "write_xmp": True, "carry_sidecars": True})
+    result = export_selection(summary, req)
+    assert "a0.png" in result.selected_rel_paths
+    files = _all_text(dest)
+    assert "manifest.jsonl" in files and "curation_report.csv" in files
+    assert any(name.endswith(".xmp") for name in files)
+    for name, text in files.items():
+        assert "Jo Example" not in text, name
+        assert "Example Studio" not in text, name
+    # The carried copy is the sidecar with its provenance pseudonymised, and still matches the record.
+    carried = json.loads(files["a0.json"])
+    assert carried["producer"] == "argus-mask" and carried["likeness_consent"] is True
+    prov = Provenance.model_validate(carried["provenance"])
+    assert prov.subject == "consent:" + "a" * 64
+    assert consent_matches(ConsentRecord.model_validate_json((consent_set / "consent.json").read_bytes()), prov)
+    # The source sidecar is never changed, nor moved away, whatever the mode.
+    assert (consent_set / "a0.json").read_bytes() == source_before
+    assert not (dest / "a0.json").is_symlink()
+
+
+def test_a_carried_sidecar_the_hold_does_not_cover_is_not_carried(tmp_path: Path) -> None:
+    side = tmp_path / "x.json"
+    side.write_text(json.dumps({"provenance": {"subject": "Jo Example"}}))
+    target = tmp_path / "out" / "x.json"
+    with pytest.raises(ValueError, match="does not cover"):
+        _write_pseudonymised_sidecar(side, target, None)
+    assert not target.exists()
 
 
 def test_an_image_whose_provenance_names_another_release_is_excluded(

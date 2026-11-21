@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Requires argus-cortex 0.13** (`>=0.13,<0.14`) for its consent subject ref
+  (`subject_ref`, `pseudonymise`).
+
 ### Added
 
 - **Speech export (#187).** `POST /scan/{id}/select` and `POST /export` take a
@@ -39,7 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `speech.license`) or a cortex `ConsentRecord` for a real person's voice
     (`speech.consent_record`, checked for `training` of the `voice` at
     `speech.consent_delivery`, bound to its reference recordings' speaker
-    clusters). The corpus's `gender` label is carried with `speaker`,
+    clusters). A consented row's provenance names no one: `subject` is
+    cortex's subject ref `consent:<release_sha256>` and `source` leaves out
+    who collected the release. The corpus's `gender` label is carried with `speaker`,
     `accent`, `language` and `age`; age is never estimated.
 - **Semantic near-duplicates (#196).** With embeddings on, `ScanConfig.semantic_duplicates`
   (CLI `--semantic-dupes`) also groups images whose CLIP embeddings reach
@@ -73,7 +80,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marked `likeness_consent: false` (`face-source:not-consented`).
 - **Manifest 2.6: consented face sets carry `consent_release_sha256`,
   `consent_record_sha256` and `provenance`** (argus-cortex's `Provenance`).
-  Additive.
+  Additive. The export never names the consenting person: `provenance.subject`
+  is argus-cortex 0.13's subject ref, `consent:<release_sha256>`, applied with
+  `pseudonymise` to both the default and a sidecar's provenance. The default
+  `source` no longer names who collected the release. With `carry_sidecars`, a
+  carried `<stem>.json` is a copy with its provenance pseudonymised, under every
+  mode, and the source sidecar is never changed (under `move` it stays put).
 - **Speech scans (#186).** `POST /scan/folder` (and its stream) and
   `argus-curator scan --modality speech` score a folder of WAV/FLAC clips when
   `target_profile.modality` is `speech`. `SpeechTargetProfile` (cortex's

@@ -100,7 +100,7 @@ Every key is always present in a 2.6 row; a field with no value is written as
 | `split` | string or null | 2.4 | `train` or `held_out` when the export asked for a train/held-out split (`split`, exporting `split_part`), else null. See the [HTTP API](http-api.md#ranking-max_keep-and-splits). |
 | `consent_release_sha256` | string or null | 2.6 | A consented face set only (`face_source.consent`): the consent record's key, the sha256 of the signed release. Null otherwise. See [Consented face sets](face-sources.md#consented-face-sets-of-a-real-person). |
 | `consent_record_sha256` | string or null | 2.6 | A consented face set only: the sha256 of the consent record file as read at export. Null otherwise. |
-| `provenance` | object or null | 2.6 | A consented face set only: where the image came from, as argus-cortex's `Provenance` (`kind`, `source`, `license`, `subject`, `release_sha256`, `cleared`…). It is the `provenance` in the image's `<stem>.json` sidecar when there is one, else `kind: "consented"` under the record's release. Null otherwise. |
+| `provenance` | object or null | 2.6 | A consented face set only: where the image came from, as argus-cortex's `Provenance` (`kind`, `source`, `license`, `subject`, `release_sha256`, `cleared`…). It is the `provenance` in the image's `<stem>.json` sidecar when there is one, else `kind: "consented"` under the record's release. Either way `subject` is cortex's subject ref `consent:<release_sha256>`, never the person's name (cortex's `consent_matches` accepts it). Null otherwise. |
 
 ### `target_profile`
 
@@ -194,7 +194,7 @@ The export response carries the same mappings as `exported_paths` and
 | 2.3 | 0.15.0 | Adds `primary_face` and `set_age`. |
 | 2.4 | unreleased | Adds `split`. |
 | 2.5 | unreleased | Adds `target_profile.modality`, always `image` (argus-cortex 0.12). |
-| 2.6 | unreleased | Adds `consent_release_sha256`, `consent_record_sha256` and `provenance` (consented face sets, #133). |
+| 2.6 | unreleased | Adds `consent_release_sha256`, `consent_record_sha256` and `provenance` (consented face sets, #133); `provenance.subject` is the subject ref `consent:<release_sha256>`, never a name. |
 
 2.0 is a new major because a 1.x consumer that derives destinations from
 `rel_path`, or trusts every row to name a file on disk, misreads a 2.x manifest.

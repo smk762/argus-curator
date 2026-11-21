@@ -557,6 +557,41 @@ def test_a_consented_voice_exports_only_the_consented_speaker(
     assert "consent:other-speaker" in report
 
 
+@pytest.mark.parametrize("mode", ["copy", "move", "symlink"])
+def test_consent_subject_name_appears_nowhere_in_the_speech_export(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]], mode: str
+) -> None:
+    """Must never: a consented voice export naming the consenting person or who collected the release.
+
+    The speech manifest, the transcript sidecars and the CSV report name the subject only
+    by cortex's subject ref, and the ref still matches the record.
+    """
+    from argus_cortex.consent import ConsentRecord, consent_matches
+
+    root = _corpus(tmp_path / "src", SPEAKERS[:3])
+    record_path = _record(
+        root / "consent.json", [root / "clips" / "s2_0.wav"], subject="Jo Speaker", collected_by="Example Voice Studio"
+    )
+    summary = _scan(root, speakers=True)
+    speech = {"consent_record": "consent.json", "consent_delivery": "neutral"}
+    dest = tmp_path / "out"
+    result = export_selection(summary, ExportRequest(scan_id=summary.scan_id, dest=str(dest), speech=speech, mode=mode))
+    files = {
+        str(f.relative_to(dest)): f.read_text(encoding="utf-8")
+        for f in dest.rglob("*")
+        if f.is_file() and f.suffix != ".wav"
+    }
+    assert SPEECH_MANIFEST_NAME in files and "curation_report.csv" in files
+    assert any(name.endswith(".txt") for name in files)
+    for name, text in files.items():
+        assert "Jo Speaker" not in text, name
+        assert "Example Voice Studio" not in text, name
+    rows = _rows(Path(result.manifest_path))
+    assert rows and all(r.provenance.subject == "consent:" + "a" * 64 for r in rows)
+    record = ConsentRecord.model_validate_json(record_path.read_bytes())
+    assert consent_matches(record, rows[0].provenance)
+
+
 @pytest.mark.parametrize(
     ("over", "match"),
     [

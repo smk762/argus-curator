@@ -33,8 +33,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
-from argus_cortex.consent import ConsentRecord, consent_matches, consent_valid
-from argus_cortex.provenance import Provenance
+from argus_cortex.consent import ConsentRecord, consent_matches, consent_valid, subject_ref
+from argus_cortex.provenance import Provenance, pseudonymise
 from pydantic import ValidationError
 
 from argus_curator.models import (
@@ -328,7 +328,12 @@ def bind(summary: ScanSummary, prepared: Prepared) -> None:
 
 @dataclass(frozen=True)
 class ConsentHold:
-    """A consent record as re-checked for one export: its hashes and each bound image's provenance."""
+    """A consent record as re-checked for one export: its hashes and each bound image's provenance.
+
+    Each provenance is pseudonymised (cortex's :func:`~argus_cortex.provenance.pseudonymise`): its
+    ``subject`` is the record's subject ref, ``consent:<release_sha256>``, never the person's name,
+    because it goes into the manifest and into carried sidecars.
+    """
 
     release_sha256: str
     record_sha256: str
@@ -350,12 +355,16 @@ class FaceSourceGate:
 
 
 def _default_provenance(record: ConsentRecord) -> Provenance:
-    """An image with no provenance of its own: captured under the release, by whoever collected it."""
+    """An image with no provenance of its own: captured under the release.
+
+    It names no one: the subject is the record's subject ref, and the source leaves out
+    who collected the release (``collected_by`` can be a person too).
+    """
     return Provenance(
         kind="consented",
-        source=f"captured under the subject's likeness release, collected by {record.collected_by}",
+        source="captured under the subject's likeness release",
         license="the subject's signed likeness release (release_sha256)",
-        subject=record.subject,
+        subject=subject_ref(record),
         release_sha256=record.release_sha256,
     )
 
@@ -387,7 +396,8 @@ def _consent_hold(summary: ScanSummary, at: datetime) -> tuple[ConsentHold, dict
         elif facts.problem is not None or not _under_release(facts, record):
             excluded[r.rel_path] = "face-source:consent-provenance"
         else:
-            provenance[r.rel_path] = facts.provenance or default
+            # A sidecar's own provenance names the subject (consent_matches needs it to); the row must not.
+            provenance[r.rel_path] = pseudonymise(facts.provenance) if facts.provenance else default
     assert read.record_sha256 is not None  # a parsed record was read from bytes
     return ConsentHold(record.release_sha256, read.record_sha256, provenance), excluded
 
