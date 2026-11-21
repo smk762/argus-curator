@@ -740,6 +740,29 @@
           "default": false,
           "title": "Enabled",
           "type": "boolean"
+        },
+        "reference_embedding": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Embedding"
+        },
+        "reference_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reference Paths",
+          "type": "array"
         }
       },
       "title": "EmbeddingConfig",
@@ -954,6 +977,11 @@
           ],
           "default": null,
           "title": "Exclude Garments"
+        },
+        "exclude_references": {
+          "default": false,
+          "title": "Exclude References",
+          "type": "boolean"
         },
         "face_ages": {
           "anyOf": [
@@ -1219,6 +1247,20 @@
           "default": null,
           "title": "Max Keep"
         },
+        "max_likeness_distance": {
+          "anyOf": [
+            {
+              "maximum": 2.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Likeness Distance"
+        },
         "min_age_years": {
           "anyOf": [
             {
@@ -1356,7 +1398,8 @@
           "default": "score",
           "enum": [
             "score",
-            "identity"
+            "identity",
+            "likeness"
           ],
           "title": "Rank",
           "type": "string"
@@ -2882,6 +2925,18 @@
           "title": "Keep Reason",
           "type": "string"
         },
+        "likeness_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Likeness Distance"
+        },
         "nsfw": {
           "anyOf": [
             {
@@ -3132,6 +3187,7 @@
         "primary_face_attributes",
         "set_age",
         "consent",
+        "likeness_distance",
         "scene",
         "garments",
         "nsfw",
@@ -4008,6 +4064,34 @@
           "default": null,
           "title": "Legacy Min Short Side"
         },
+        "likeness_skipped": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Likeness Skipped"
+        },
+        "likeness_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "reference",
+                "centroid"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Likeness Source"
+        },
         "limit": {
           "anyOf": [
             {
@@ -4173,6 +4257,8 @@
         "set_age",
         "set_age_skipped",
         "reference_skipped",
+        "likeness_source",
+        "likeness_skipped",
         "consent",
         "results",
         "speech_config",
@@ -4356,6 +4442,11 @@
           ],
           "default": null,
           "title": "Exclude Garments"
+        },
+        "exclude_references": {
+          "default": false,
+          "title": "Exclude References",
+          "type": "boolean"
         },
         "face_ages": {
           "anyOf": [
@@ -4601,6 +4692,20 @@
           "default": null,
           "title": "Max Keep"
         },
+        "max_likeness_distance": {
+          "anyOf": [
+            {
+              "maximum": 2.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Likeness Distance"
+        },
         "min_age_years": {
           "anyOf": [
             {
@@ -4723,7 +4828,8 @@
           "default": "score",
           "enum": [
             "score",
-            "identity"
+            "identity",
+            "likeness"
           ],
           "title": "Rank",
           "type": "string"
@@ -4811,7 +4917,8 @@
           "default": "score",
           "enum": [
             "score",
-            "identity"
+            "identity",
+            "likeness"
           ],
           "title": "Rank",
           "type": "string"
@@ -5782,6 +5889,7 @@
           "enum": [
             "image",
             "face_cluster",
+            "similar_group",
             "speaker"
           ],
           "title": "Group By",

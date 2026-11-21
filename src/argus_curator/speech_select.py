@@ -35,6 +35,8 @@ from argus_curator.speech_corpus import under_18_label
 # that sets any of them away from its default is refused rather than ignored.
 IMAGE_ONLY_FIELDS: tuple[str, ...] = (
     "rank",
+    "max_likeness_distance",
+    "exclude_references",
     "diversity_weight",
     "face_clusters",
     "face_poses",

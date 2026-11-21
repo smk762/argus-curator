@@ -43,6 +43,7 @@ from argus_curator.selection import (
     hard_exclusion,
     plan_selection,
     primary_face,
+    scan_references,
 )
 
 logger = structlog.get_logger()
@@ -777,6 +778,7 @@ def export_selection(
             set_age=summary.set_age,
             embeddings=summary.embeddings,
             gate=gate,
+            references=scan_references(summary),
         )
         selected, keep_reason = plan.chosen, plan.keep_reason
         if req.split is not None:

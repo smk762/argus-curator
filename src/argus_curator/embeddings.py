@@ -6,7 +6,8 @@ ImageNet-1k) on each passing image and keeps its L2-normalised 768-d vector.
 Selection reads them for a semantic novelty term (``diversify_semantic``):
 frames with the same pose and framing but different pixels (burst shots,
 re-encodes, small crops, mirrors) are near each other here even when their
-pHashes are far apart.
+pHashes are far apart. The scan also measures each image's likeness distance
+to the subject (:func:`measure_likeness`, #191), a plain float on its row.
 
 The vectors are never written anywhere. They ride on the scan's summary as a
 private attribute (``ScanSummary.embeddings``), which neither the store's JSON
@@ -21,7 +22,7 @@ ONNX once.
 from __future__ import annotations
 
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,7 +30,7 @@ import numpy as np
 import structlog
 from PIL import Image
 
-from argus_curator.models import EmbeddingConfig, ImageResult
+from argus_curator.models import EmbeddingConfig, ImageResult, LikenessSource
 from argus_curator.runtime import (
     GPU_UNAVAILABLE,
     ModelUnavailable,
@@ -166,9 +167,13 @@ def embed_images(
     items: list[tuple[str, str, bytes]],
     cfg: EmbeddingConfig,
     progress: Callable[[int, int], None] | None = None,
+    *,
+    also: Collection[str] = (),
 ) -> dict[str, np.ndarray]:
     """Each passing image's unit embedding, by ``rel_path``, in batches of :data:`BATCH`.
 
+    *also* names images embedded even when rejected (the likeness reference
+    images, :func:`measure_likeness`); the caller drops their vectors after.
     An image that fails to decode, or whose batch fails, is left out: selection
     reads a missing embedding as a repeat. Nothing is written to *results*.
     """
@@ -178,7 +183,8 @@ def embed_images(
     with gpu_lease(cfg.device, "embeddings", "load"):
         session = get_session(providers(cfg.device))
     data_by_rel = {rel: data for rel, _abs, data in items}
-    pending = [r for r in results if r.passed and data_by_rel.get(r.rel_path) is not None]
+    extra = set(also)
+    pending = [r for r in results if (r.passed or r.rel_path in extra) and data_by_rel.get(r.rel_path) is not None]
     total = len(pending)
     if progress is not None:
         progress(0, total)
@@ -204,6 +210,80 @@ def embed_images(
         if progress is not None:
             progress(min(start + BATCH, total), total)
     return vectors
+
+
+# ---------------------------------------------------------------------------
+# Likeness: each image's distance to the subject (#191)
+# ---------------------------------------------------------------------------
+
+# Without a reference the subject is the set's centroid, recentred once on
+# this share of the images closest to the plain mean, so a minority of strays
+# (another subject, a failed render) pulls it less.
+CENTROID_KEEP = 0.75
+
+
+def _cosine_distance(vector: np.ndarray, unit_centre: np.ndarray) -> float:
+    """``1 - cos`` (0..2, floored at 0 and rounded to 4 places), as faces' distances are."""
+    return round(max(0.0, 1.0 - float(np.dot(normalise(vector), unit_centre))), 4)
+
+
+def set_centroid(vectors: list[np.ndarray]) -> np.ndarray:
+    """The unit centroid of *vectors*, recentred on the :data:`CENTROID_KEEP` share closest to the plain mean."""
+    matrix = normalise(np.stack(vectors))
+    centre = normalise(matrix.mean(axis=0))
+    keep = max(1, int(np.ceil(CENTROID_KEEP * len(matrix))))
+    if keep < len(matrix):
+        closest = np.argsort(-(matrix @ centre), kind="stable")[:keep]
+        centre = normalise(matrix[closest].mean(axis=0))
+    return centre
+
+
+def measure_likeness(
+    results: list[ImageResult],
+    vectors: Mapping[str, np.ndarray],
+    cfg: EmbeddingConfig,
+) -> tuple[LikenessSource | None, str | None]:
+    """Set each passing image's ``likeness_distance``; return ``(source, skipped)``.
+
+    The subject is ``cfg.reference_embedding`` when given, else the mean of
+    ``cfg.reference_paths``' embeddings (in *vectors*: pass them to
+    :func:`embed_images` as ``also``), else the set's own centroid
+    (:func:`set_centroid` over the passing images). ``source`` says which;
+    ``skipped`` why no distance was measured (a reference is never swapped
+    for the centroid). Only the distances are kept: the vectors are the
+    caller's, and nothing here stores them.
+    """
+    if not cfg.enabled:
+        return None, None
+    passing = [r for r in results if r.passed and r.rel_path in vectors]
+    if not passing:
+        return None, "no image could be embedded"
+    dim = len(vectors[passing[0].rel_path])
+    if cfg.reference_embedding is not None:
+        if len(cfg.reference_embedding) != dim:
+            return None, f"reference_embedding has {len(cfg.reference_embedding)} values; embeddings have {dim}"
+        centre = normalise(np.asarray(cfg.reference_embedding, dtype=np.float32))
+        source: LikenessSource = "reference"
+    elif cfg.reference_paths:
+        known = {r.rel_path for r in results}
+        missing = [p for p in cfg.reference_paths if p not in known]
+        if len(missing) == len(cfg.reference_paths):
+            return None, f"no reference image is in the scan ({', '.join(missing)})"
+        refs = [vectors[p] for p in cfg.reference_paths if p in vectors]
+        if not refs:
+            return None, "no reference image could be embedded"
+        if missing:
+            logger.warning("likeness_reference_paths_missing", missing=missing)
+        centre = normalise(normalise(np.stack(refs)).mean(axis=0))
+        source = "reference"
+    else:
+        centre = set_centroid([vectors[r.rel_path] for r in passing])
+        source = "centroid"
+    if not centre.any():
+        return None, "the references cancel out (their mean is zero)"
+    for r in passing:
+        r.likeness_distance = _cosine_distance(vectors[r.rel_path], centre)
+    return source, None
 
 
 # ---------------------------------------------------------------------------

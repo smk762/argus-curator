@@ -422,6 +422,46 @@ class EmbeddingConfig(BaseModel):
     # Compute device hint for onnxruntime: "auto" | "cpu" | "cuda".
     device: str = "auto"
 
+    # The subject reference for likeness (#191): each passing image's
+    # ImageResult.likeness_distance is the cosine distance from its embedding
+    # to it. Either images in this scan (rel_paths), whose embeddings are
+    # averaged (a rejected one is still embedded, from the bytes the scan read,
+    # and stays rejected), or a centroid the caller supplies in this embedding
+    # space (reference_embedding). Not both. Neither = the distance to the set's
+    # own centroid (see embeddings.measure_likeness). Either reference turns
+    # embeddings on. Vectors are never stored: ScanSummary drops
+    # reference_embedding from its embeddings_config.
+    reference_paths: list[str] = Field(default_factory=list)
+    reference_embedding: list[float] | None = Field(default=None, min_length=1)
+
+    @field_validator("reference_embedding")
+    @classmethod
+    def _usable_embedding(cls, value: list[float] | None) -> list[float] | None:
+        if value is None:
+            return None
+        if not all(math.isfinite(v) for v in value) or not any(value):
+            raise ValueError("reference_embedding must be finite and not all zero")
+        return value
+
+    @model_validator(mode="after")
+    def _reference_needs_embeddings(self) -> EmbeddingConfig:
+        if self.reference_paths and self.reference_embedding is not None:
+            raise ValueError("give reference_paths or reference_embedding, not both")
+        if self.has_reference:
+            self.enabled = True
+        return self
+
+    @property
+    def has_reference(self) -> bool:
+        """Whether this config asks for likeness distances to a reference (else to the set's centroid)."""
+        return bool(self.reference_paths) or self.reference_embedding is not None
+
+
+# Where an image's likeness_distance is measured from (#191): "reference" =
+# EmbeddingConfig.reference_paths or reference_embedding; "centroid" = the
+# scan's own passing images' (trimmed) centroid.
+LikenessSource = Literal["reference", "centroid"]
+
 
 class NsfwConfig(BaseModel):
     """NudeNet nudity detection via a remote NudeNet server (see nsfw.py).
@@ -965,6 +1005,12 @@ class ImageResult(BaseModel):
     set_age: SetAge | None = None
     # Only when the scan read an eligible consent record (ConsentConfig).
     consent: ConsentBinding | None = None
+    # Cosine distance (0..2) from this image's CLIP embedding to the subject
+    # (#191): the scan's likeness reference, else the set's centroid
+    # (ScanSummary.likeness_source says which). The non-face analogue of a
+    # face's reference_distance / cluster_distance. None = embeddings off, the
+    # image rejected or not embedded, or no distance (ScanSummary.likeness_skipped).
+    likeness_distance: float | None = None
 
     # Places365 scene tags (when SceneConfig.enabled ran).
     scene: SceneTags | None = None
@@ -1284,6 +1330,11 @@ class ScanSummary(BaseModel):
     # scan, none with a face, or an embedding of the wrong length), else None.
     # Set only when a reference was asked for.
     reference_skipped: str | None = None
+    # What each image's likeness_distance was measured from (#191), or why
+    # none was measured (no reference image in the scan, none embedded, an
+    # embedding of the wrong length). Both None when embeddings were off.
+    likeness_source: LikenessSource | None = None
+    likeness_skipped: str | None = None
     # When ConsentConfig.record asked: whether the record makes the set
     # eligible, and why not. None when not asked.
     consent: ConsentCheck | None = None
@@ -1330,6 +1381,16 @@ class ScanSummary(BaseModel):
         # A caller's reference_embedding is a biometric template: a summary is
         # stored and served, so it never carries one (reference_skipped and
         # each face's reference_distance say what it measured).
+        if value.reference_embedding is None:
+            return value
+        return value.model_copy(update={"reference_embedding": None})
+
+    @field_validator("embeddings_config")
+    @classmethod
+    def _no_likeness_template(cls, value: EmbeddingConfig) -> EmbeddingConfig:
+        # Like the face reference above: a summary is stored and served, so a
+        # caller's likeness centroid never rides on it (likeness_source,
+        # likeness_skipped and each image's likeness_distance say what it measured).
         if value.reference_embedding is None:
             return value
         return value.model_copy(update={"reference_embedding": None})
@@ -1463,8 +1524,11 @@ class FaceSourceFilter(BaseModel):
 # How the kept images are ordered, best first (selection.rank_key). "score":
 # the curation score, then the primary face's identity distance. "identity":
 # the identity distance (reference_distance, else cluster_distance; no face
-# last), then the score. Ties fall back to rel_path, so the order is total.
-RankBy = Literal["score", "identity"]
+# last), then the score. "likeness" (#191): the image's likeness_distance
+# (its CLIP embedding's distance to the subject; none last), then the score,
+# for a subject without a usable face. Ties fall back to rel_path, so the
+# order is total.
+RankBy = Literal["score", "identity", "likeness"]
 
 # Which part of a train/held-out split an image is in.
 SplitPart = Literal["train", "held_out"]
@@ -1474,8 +1538,10 @@ SplitPart = Literal["train", "held_out"]
 # identity, so one identity never lands in both parts (an image with no
 # clustered face is a group of its own). "speaker" (speech scans only, and the
 # only grouping a speech split takes): a speaker never lands in both parts (see
-# speech_select.speaker_groups).
-SplitGroup = Literal["image", "face_cluster", "speaker"]
+# speech_select.speaker_groups). "similar_group": the scan's near-duplicate
+# group (pHash, and CLIP embeddings with ScanConfig.semantic_duplicates), so
+# no image has a near-duplicate in the other part (#191).
+SplitGroup = Literal["image", "face_cluster", "similar_group", "speaker"]
 
 
 class SplitConfig(BaseModel):
@@ -1590,8 +1656,17 @@ class ExportRequest(BaseModel):
     # scan's ScanConfig.diversity_weight.
     diversity_weight: float | None = Field(None, ge=0.0, le=1.0)
     # How kept images are ordered (RankBy), in the manifest too. "identity"
-    # needs a scan that ran face detection.
+    # needs a scan that ran face detection, "likeness" one that measured
+    # likeness distances (EmbeddingConfig).
     rank: RankBy = "score"
+    # Ceiling on ImageResult.likeness_distance (#191); an image without one is
+    # kept out ("likeness-distance"). Needs a scan that measured them.
+    max_likeness_distance: float | None = Field(None, ge=0.0, le=2.0)
+    # Keep the scan's reference images (faces.reference_paths and
+    # embeddings.reference_paths) out of the selection, keep reason
+    # "reference": the yardstick, not a candidate (argus-mint's anchors), so a
+    # cap or a split never spends a place on one. Refused on a scan with none.
+    exclude_references: bool = False
     # Optional train/held-out split of the kept images; the export transfers
     # only split_part of it, and each manifest row names its part. Two exports
     # with the same filter and split, one per part, give disjoint sets.
@@ -1997,6 +2072,8 @@ class SelectRequest(BaseModel):
     diversify_outfits: bool = False
     diversify_semantic: bool = False
     rank: RankBy = "score"
+    max_likeness_distance: float | None = Field(None, ge=0.0, le=2.0)
+    exclude_references: bool = False
     split: SplitConfig | None = None
 
     face_clusters: list[str] | None = None

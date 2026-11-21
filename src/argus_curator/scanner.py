@@ -732,6 +732,8 @@ def scan_items(
         "skipped": "the identities have not been read yet" if faces_cfg.set_age else None,
         "reference_skipped": None,
     }
+    # What the likeness distances were measured from, or why none were (#191).
+    likeness: dict[str, Any] = {"source": None, "skipped": None}
     # Face detection and NudeNet run side by side, so chunks, saves and the
     # completed set are touched under one lock.
     lock = threading.Lock()
@@ -780,6 +782,8 @@ def scan_items(
             set_age=set_age["age"],
             set_age_skipped=set_age["skipped"],
             reference_skipped=set_age["reference_skipped"],
+            likeness_source=likeness["source"],
+            likeness_skipped=likeness["skipped"],
             results=[visible(r) for r in rows],
             returned=len(rows),
         )
@@ -1128,7 +1132,16 @@ def scan_items(
             items,
             embed_cfg,
             progress=(lambda done, phase_total: emit("embeddings", done, phase_total)) if progress else None,
+            also=embed_cfg.reference_paths,
         )
+        # Each passing image's distance to the subject (#191): plain floats on
+        # the rows. A rejected reference image was embedded for this only, so
+        # its vector goes now; the passing ones stay in memory for selection.
+        likeness["source"], likeness["skipped"] = embeddings_mod.measure_likeness(results, vectors, embed_cfg)
+        if likeness["skipped"]:
+            logger.warning("likeness_skipped", reason=likeness["skipped"])
+        passed_rels = {r.rel_path for r in results if r.passed}
+        vectors = {rel: v for rel, v in vectors.items() if rel in passed_rels}
 
     # SingGuard (opt-out), the same way as NudeNet. The slow GPU pass goes last
     # among the checks: its verdict can put a blur back, never lift one.
