@@ -16,8 +16,10 @@ corpus (``speech.corpus`` and ``speech.license``), or a cortex
 ``training`` of the ``voice`` at ``speech.consent_delivery``, and binds the
 export to the voice of the record's reference recordings (found in the scan
 by sha256): each clip's speaker embedding must be within
-``speech.consent_max_distance`` of their centroid (#209). Clips of anyone
-else are left out.
+``speech.consent_max_distance`` of their centroid (#209), and its farthest
+1.5 s of speech within ``speech.second_voice_max_distance`` of the centroid
+of their own 1.5 s windows (#217).
+Clips of anyone else, and clips with a second voice in them, are left out.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
+import numpy as np
 import structlog
 from argus_cortex.consent import consent_valid, subject_ref
 from argus_cortex.provenance import Provenance
@@ -74,8 +77,9 @@ class VoiceConsentHold:
     """A voice consent record as checked for one export: its hashes, the provenance, and who it binds.
 
     ``distances`` holds each clip's cosine distance to the reference voice (a
-    plain number, for review); ``excluded`` the clips the record does not
-    cover, with their keep reason. The reference centroid itself is never held.
+    plain number, for review), ``second_voice`` its farthest window's (#217);
+    ``excluded`` the clips the record does not cover, with their keep reason.
+    The reference centroid and the window vectors are never held.
     """
 
     release_sha256: str
@@ -85,6 +89,8 @@ class VoiceConsentHold:
     references: tuple[str, ...]
     distances: dict[str, float] = field(default_factory=dict)
     excluded: dict[str, str] = field(default_factory=dict)
+    second_voice_max_distance: float = 0.0
+    second_voice: dict[str, float] = field(default_factory=dict)
 
 
 # Why no reference voice could be built. It never falls back to the speaker
@@ -93,6 +99,16 @@ NO_REFERENCE_VOICE = (
     "the record's reference recordings have no speaker embedding in this process (the scan ran without "
     "speech.speakers, embedding them failed, or a restart since the scan dropped the embeddings, which "
     "are held in memory only); rescan with speech.speakers on"
+)
+# Why the second-voice check (#217) cannot run. A consented export never skips it.
+NO_SECOND_VOICE_CHECK = (
+    "the scan holds no second-voice windows in this process (it ran without speech.second_voice, or a "
+    "restart since the scan dropped them, which are held in memory only), so a clip with a second voice "
+    "in it could not be told apart; rescan with speech.speakers and speech.second_voice on"
+)
+NO_REFERENCE_WINDOWS = (
+    "the record's reference recordings have no second-voice windows in this process (the VAD found no "
+    "speech in them, or embedding them failed), so the check has no voice to measure against"
 )
 
 
@@ -106,12 +122,18 @@ def voice_consent_gate(
     must be a passing clip in the scan, by sha256, with a speaker embedding
     held for the scan. The centroid of those embeddings is the consented
     voice (#209): a clip is bound when its own embedding is within
-    ``speech.consent_max_distance`` of it, whatever cluster it joined. Every
-    other clip is excluded, as ``consent:other-speaker`` (too far) or
-    ``consent:no-embedding`` (nothing to measure). Raises
-    :class:`ConsentRefused` with the reason otherwise, and never falls back to
-    the clusters. The CLI takes the record path as given; the server resolves
-    it under the scan's folder first.
+    ``speech.consent_max_distance`` of it, whatever cluster it joined, and
+    holds no second voice (#217): its second-voice windows' farthest stretch
+    (:func:`speakers.second_voice_distance`) is within
+    ``speech.second_voice_max_distance`` of the centroid of the reference
+    recordings' own windows. Every other clip is excluded,
+    as ``consent:other-speaker`` (too far), ``consent:second-voice`` (another
+    voice inside it), ``consent:no-embedding`` or ``consent:no-voice-windows``
+    (nothing to measure). Raises :class:`ConsentRefused` with the reason
+    otherwise: a scan holding no second-voice windows refuses outright, it
+    never skips the check, and it never falls back to the clusters. The CLI
+    takes the record path as given; the server resolves it under the scan's
+    folder first.
     """
     if speech.consent_record is None:
         return None
@@ -133,7 +155,20 @@ def voice_consent_gate(
     centroid = speakers.reference_centroid([held[c.rel_path] for c in references if c.rel_path in held])
     if centroid is None:
         raise ConsentRefused(NO_REFERENCE_VOICE)
+    windows = summary.voice_windows
+    cfg = summary.speech_config
+    if not windows or cfg is None or not cfg.second_voice:
+        raise ConsentRefused(NO_SECOND_VOICE_CHECK)
+    # The second-voice check measures 1.5 s windows against the centroid of the reference
+    # recordings' own 1.5 s windows: short windows sit farther from a whole clip's centroid,
+    # and matching them halved the false flags (docs/speech.md). A voiceprint too: one check only.
+    window_centroid = speakers.reference_centroid(
+        [row for c in references if c.rel_path in windows for row in np.asarray(windows[c.rel_path])]
+    )
+    if window_centroid is None:
+        raise ConsentRefused(NO_REFERENCE_WINDOWS)
     distances: dict[str, float] = {}
+    second_voice: dict[str, float] = {}
     excluded: dict[str, str] = {}
     for c in summary.clips:
         vector = held.get(c.rel_path)
@@ -142,8 +177,16 @@ def voice_consent_gate(
             excluded[c.rel_path] = "consent:no-embedding"
             continue
         distances[c.rel_path] = distance
+        segments = windows.get(c.rel_path)
+        spread = speakers.second_voice_distance(segments, window_centroid) if segments is not None else None
+        if spread is not None:
+            second_voice[c.rel_path] = spread
         if distance > speech.consent_max_distance:
             excluded[c.rel_path] = "consent:other-speaker"
+        elif spread is None:
+            excluded[c.rel_path] = "consent:no-voice-windows"
+        elif spread > speech.second_voice_max_distance:
+            excluded[c.rel_path] = "consent:second-voice"
     # It names no one: the subject is cortex's subject ref (consent:<release_sha256>), and the
     # source leaves out who collected the release. Every row of the export carries it.
     provenance = Provenance(
@@ -162,6 +205,8 @@ def voice_consent_gate(
         tuple(sorted(c.rel_path for c in references)),
         distances,
         excluded,
+        speech.second_voice_max_distance,
+        second_voice,
     )
 
 
@@ -214,13 +259,16 @@ def write_report(
     split: dict[str, SplitPart],
     path: Path,
     consent_distance: dict[str, float] | None = None,
+    second_voice_distance: dict[str, float] | None = None,
 ) -> None:
     """The per-clip CSV report: every clip, kept or not, and why.
 
     *consent_distance* (a consented voice, #209) is each clip's distance to
-    the reference voice, so the borderline ones can be reviewed.
+    the reference voice, and *second_voice_distance* (#217) its farthest
+    stretch of speech's, so the borderline ones can be reviewed.
     """
     consent_distance = consent_distance or {}
+    second_voice_distance = second_voice_distance or {}
     fields = [
         "rel_path",
         "score",
@@ -232,6 +280,7 @@ def write_report(
         "speaker_cluster",
         "speaker_mismatch",
         "consent_distance",
+        "second_voice_distance",
         "accent",
         "language",
         "language_predicted",
@@ -262,6 +311,7 @@ def write_report(
                     "speaker_cluster": c.speaker_cluster or "",
                     "speaker_mismatch": c.speaker_mismatch,
                     "consent_distance": consent_distance.get(c.rel_path, ""),
+                    "second_voice_distance": second_voice_distance.get(c.rel_path, ""),
                     "accent": c.accent or "",
                     "language": c.language or "",
                     "language_predicted": c.language_predicted or "",
@@ -410,7 +460,13 @@ def export_speech(
         manifest_path = dest_root / SPEECH_MANIFEST_NAME
         write_manifest(rows, manifest_path)
         write_report(
-            clips, keep_reason, exported, split, dest_root / REPORT_NAME, hold.distances if hold is not None else None
+            clips,
+            keep_reason,
+            exported,
+            split,
+            dest_root / REPORT_NAME,
+            hold.distances if hold is not None else None,
+            hold.second_voice if hold is not None else None,
         )
 
     run_stats_path: Path | None = None

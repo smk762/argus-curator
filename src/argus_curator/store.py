@@ -43,6 +43,9 @@ class ScanStore:
         # written to the cache dir, gone on restart, and dropped with the scan
         # or its rows by delete, delete_all and save.
         self._embeddings: dict[str, dict[str, Any]] = {}
+        # scan_id -> {rel_path: a speech clip's second-voice window embeddings
+        # (#217)}, held exactly as _embeddings is, under the same lock.
+        self._voice_windows: dict[str, dict[str, Any]] = {}
         self._embeddings_lock = threading.Lock()
 
     def _hold_embeddings(self, summary: ScanSummary) -> None:
@@ -56,19 +59,25 @@ class ScanStore:
         # A speech scan's rows are its clips, and its embeddings speaker ones (#187).
         rows = {r.rel_path for r in (summary.clips if summary.is_speech else summary.results)}
         with self._embeddings_lock:
-            source = summary.embeddings or self._embeddings.get(summary.scan_id)
-            if not source:
-                return
-            kept = {rel: v for rel, v in source.items() if rel in rows}
-            if kept:
-                self._embeddings[summary.scan_id] = kept
-            else:
-                self._embeddings.pop(summary.scan_id, None)
+            for held, given in ((self._embeddings, summary.embeddings), (self._voice_windows, summary.voice_windows)):
+                source = given or held.get(summary.scan_id)
+                if not source:
+                    continue
+                kept = {rel: v for rel, v in source.items() if rel in rows}
+                if kept:
+                    held[summary.scan_id] = kept
+                else:
+                    held.pop(summary.scan_id, None)
 
     def held_embeddings(self, scan_id: str) -> dict[str, Any]:
         """A copy of the embeddings held for *scan_id* (empty when none are)."""
         with self._embeddings_lock:
             return dict(self._embeddings.get(scan_id, {}))
+
+    def held_voice_windows(self, scan_id: str) -> dict[str, Any]:
+        """A copy of the second-voice window embeddings held for *scan_id* (empty when none are)."""
+        with self._embeddings_lock:
+            return dict(self._voice_windows.get(scan_id, {}))
 
     def _path(self, scan_id: str) -> Path:
         # Guard against path traversal via a crafted scan_id.
@@ -138,6 +147,7 @@ class ScanStore:
             return None
         summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
         summary.embeddings.update(self.held_embeddings(scan_id))
+        summary.voice_windows.update(self.held_voice_windows(scan_id))
         return summary
 
     def load_page(
@@ -194,6 +204,7 @@ class ScanStore:
         path.unlink(missing_ok=True)
         with self._embeddings_lock:
             self._embeddings.pop(scan_id, None)
+            self._voice_windows.pop(scan_id, None)
         # Last: if the snapshot would not go, the next start still knows to drop it.
         self._marker(scan_id).unlink(missing_ok=True)
         return existed
@@ -202,6 +213,7 @@ class ScanStore:
         """Remove every cached scan, half-written ones and markers included. Returns how many."""
         with self._embeddings_lock:
             self._embeddings.clear()
+            self._voice_windows.clear()
         count = 0
         paths = [path for pattern in ("*.json", "*.json.tmp", "*.running") for path in self.cache_dir.glob(pattern)]
         for path in paths:

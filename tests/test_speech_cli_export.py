@@ -145,6 +145,16 @@ def test_cli_speech_export_under_a_voice_consent_record(tmp_path: Path, cache: P
     rows = _rows(tmp_path / "out" / SPEECH_MANIFEST_NAME)
     assert {r.speaker_label for r in rows} == {"s2"} and len(rows) == CLIPS_PER_SPEAKER
     assert all(r.provenance.kind == "consented" and r.consent_release_sha256 == "a" * 64 for r in rows)
+    # --voice-consent runs the second-voice check's windows in the scan (#217) and reports its measurement.
+    report = (tmp_path / "out" / "curation_report.csv").read_text(encoding="utf-8")
+    assert "second_voice_distance" in report.splitlines()[0]
+    scan = json.loads(next(cache.glob("*.json")).read_text(encoding="utf-8"))
+    assert scan["speech_config"]["second_voice"] is True
+
+    strict = _run(
+        root, "--copy-to", str(tmp_path / "strict"), "--speakers", *consent, "--second-voice-max-distance", "0"
+    )
+    assert strict.exit_code == 2 and "second_voice_max_distance" in strict.output
 
     # The ceiling is the CLI's to set (#209), and checked as the library checks it.
     ceiling = ["--voice-consent-max-distance", "0"]
@@ -165,6 +175,7 @@ def test_cli_speech_export_under_a_voice_consent_record(tmp_path: Path, cache: P
         ([*CORPUS_FLAGS, "--voice-consent", "c.json", "--consent-delivery", "neutral"], "not both"),
         (["--voice-consent", "missing.json", "--consent-delivery", "neutral", "--speakers"], "no such file"),
         ([*CORPUS_FLAGS, "--voice-consent-max-distance", "0.2"], "needs --voice-consent"),
+        ([*CORPUS_FLAGS, "--second-voice-max-distance", "0.2"], "--second-voice-max-distance needs --voice-consent"),
         ([*CORPUS_FLAGS, "--split-part", "held_out"], "need a split"),
         ([*CORPUS_FLAGS, "--held-out", "1", "--held-out-fraction", "0.5"], "not both"),
         ([*CORPUS_FLAGS, "--exclude-speaker-mismatch"], "add --speakers"),

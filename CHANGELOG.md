@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A consented voice export refuses clips with a second voice in them
+  (#217).** With `speech.second_voice` on (the CLI's `--voice-consent` turns it
+  on), the scan embeds each clip's speech, as marked by the scan's VAD, in
+  1.5 s windows every 0.75 s. They run in fixed-shape passes of 8 under the
+  `speakers` lease, and are held in memory only. Under `speech.consent_record`,
+  each window is measured against the centroid of the reference recordings'
+  own windows. A clip whose farthest window is past
+  `speech.second_voice_max_distance` (default 0.40) is left out as
+  `consent:second-voice`. The distance is a plain number:
+  `second_voice_distance` in `curation_report.csv` and on `SelectRow`. A
+  consented export refuses (400) when the check can't run: no
+  `second_voice` on the scan, a restart since the scan, or references with no
+  windows. A clip with no windows is left out as `consent:no-voice-windows`.
+  The default was calibrated on **synthetic** voices only. It reliably catches
+  a second voice of 2 s or more, catches 92% at 1 s, and flags 13% of the
+  subject's clean clips (docs/speech.md). The A/B against real recordings is
+  #228. New CLI flag: `--second-voice-max-distance`. `SpeechManifestRow` is
+  unchanged, so `SPEECH_MANIFEST_VERSION` stays 1.0.
+
 ## [0.20.0] - 2026-11-21
 
 **For downstream consumers (argus-lens, argus-forge, argus-proof, argus-mint).**
