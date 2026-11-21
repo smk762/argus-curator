@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from argus_cortex.taxonomy import TARGET_CATEGORIES
+from argus_cortex.taxonomy import SPEECH_CATEGORIES, TARGET_CATEGORIES
 
 if TYPE_CHECKING:
     from pydantic import ValidationError
@@ -126,9 +126,28 @@ def scan(
     blur_threshold: float = Option(100.0, "--blur-threshold", help="Minimum Laplacian variance"),
     max_workers: int = Option(4, "--max-workers", help="Parallel worker threads"),
     style: str = Option("photo", "--target-style", help="photo or anime"),
-    target_backend: str = Option("sdxl", "--target-backend", help="Diffusion backend family"),
+    target_backend: str | None = Option(
+        None, "--target-backend", help="Diffusion backend family (default sdxl), or a TTS family for speech"
+    ),
     checkpoint: str | None = Option(None, "--checkpoint", help="Target checkpoint"),
-    category: str = Option("identity", "--target-category", help="|".join(TARGET_CATEGORIES)),
+    category: str | None = Option(
+        None,
+        "--target-category",
+        help=f"{'|'.join(TARGET_CATEGORIES)} (default identity); for speech {'|'.join(SPEECH_CATEGORIES)} (default voice)",
+    ),
+    modality: str = Option(
+        "image", "--modality", help="image, or speech to scan the folder's WAV/FLAC clips and transcripts instead"
+    ),
+    transcripts: str | None = Option(
+        None, "--transcripts", help="Speech: auto (default), sidecar, ljspeech or common_voice"
+    ),
+    mos: bool = Option(False, "--mos", help="Speech: score each passing clip with DNSMOS (see dnsmos-fetch)"),
+    dnsmos_model: Path | None = Option(
+        None, "--dnsmos-model", help="Speech: DNSMOS ONNX model (ARGUS_CURATOR_DNSMOS_MODEL)"
+    ),
+    speech_config: Path | None = Option(
+        None, "--speech-config", help="Speech: a JSON SpeechConfig with the thresholds (the flags above override it)"
+    ),
     faces: bool = Option(False, "--faces", help="Run InsightFace detection + identity clustering"),
     faces_model: str = Option("buffalo_l", "--faces-model", help="InsightFace model name"),
     min_det_score: float = Option(0.5, "--min-det-score", help="Minimum face detection score"),
@@ -410,6 +429,50 @@ def scan(
     if not source.is_dir():
         typer.echo(f"Error: not a directory: {source}", err=True)
         raise typer.Exit(1)
+    if modality not in ("image", "speech"):
+        typer.echo("Error: --modality must be image or speech", err=True)
+        raise typer.Exit(2)
+    if modality == "speech":
+        image_only = {
+            "--copy-to": copy_to,
+            "--move-to": move_to,
+            "--symlink-to": symlink_to,
+            "--csv": csv_out,
+            "--faces": faces or fairface or mivolo or set_age or mivolo_body or bool(face_reference),
+            "--scenes": scenes,
+            "--garments": garments,
+            "--embeddings": embeddings,
+            "--crops": crops or detect_watermarks,
+            "--guard": guard,
+            "--drop-*": drop_nsfw or drop_no_face or drop_no_age,
+            "--xmp": xmp or xmp_sources,
+            "--consent": consent or face_source_consent or face_source,
+        }
+        if asked := [flag for flag, value in image_only.items() if value]:
+            typer.echo(
+                f"Error: a speech scan has no image checks or export yet (#187); drop {', '.join(asked)}", err=True
+            )
+            raise typer.Exit(2)
+        _scan_speech(
+            source,
+            style=style,
+            target_backend=target_backend,
+            checkpoint=checkpoint,
+            category=category or "voice",
+            transcripts=transcripts,
+            mos=mos,
+            dnsmos_model=dnsmos_model,
+            speech_config=speech_config,
+            device=device,
+            max_workers=max_workers,
+            no_cluster=no_cluster,
+            json_out=json_out,
+            verbose=verbose,
+        )
+        return
+    if transcripts or mos or dnsmos_model or speech_config:
+        typer.echo("Error: --transcripts, --mos, --dnsmos-model and --speech-config need --modality speech", err=True)
+        raise typer.Exit(2)
     import os
 
     from argus_curator import embeddings as embeddings_mod
@@ -457,12 +520,15 @@ def scan(
             typer.echo(f"Error: --detect-watermarks: the detector {why}", err=True)
             raise typer.Exit(2)
 
-    profile = TargetProfile(
-        target_style=style,
-        target_backend=target_backend,
-        checkpoint=checkpoint,
-        target_category=category,
-    )
+    try:
+        profile = TargetProfile(
+            target_style=style,
+            target_backend=target_backend or "sdxl",
+            checkpoint=checkpoint,
+            target_category=category or "identity",
+        )
+    except ValidationError as exc:
+        raise _invalid(exc) from exc
     try:
         cfg = ScanConfig(
             min_short_side=min_short_side,
@@ -880,6 +946,101 @@ def scan(
     typer.echo(f"\nDone. scan_id={summary.scan_id}")
 
 
+def _scan_speech(
+    source: Path,
+    *,
+    style: str,
+    target_backend: str | None,
+    checkpoint: str | None,
+    category: str,
+    transcripts: str | None,
+    mos: bool,
+    dnsmos_model: Path | None,
+    speech_config: Path | None,
+    device: str,
+    max_workers: int,
+    no_cluster: bool,
+    json_out: Path | None,
+    verbose: bool,
+) -> None:
+    """``scan --modality speech``: score the folder's clips (#186). Saves the scan to the store, exports nothing."""
+    import json
+    import os
+
+    from pydantic import ValidationError
+
+    from argus_curator import dnsmos as dnsmos_mod
+    from argus_curator.models import SpeechConfig, SpeechTargetProfile
+    from argus_curator.runtime import ModelUnavailable
+    from argus_curator.speech import scan_speech_folder
+    from argus_curator.store import ScanStore
+
+    if dnsmos_model is not None:
+        os.environ[dnsmos_mod.MODEL_ENV] = str(dnsmos_model)
+    try:
+        base = json.loads(speech_config.read_text(encoding="utf-8")) if speech_config is not None else {}
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Error: --speech-config: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if not isinstance(base, dict):
+        typer.echo("Error: --speech-config must hold a JSON object", err=True)
+        raise typer.Exit(2)
+    overrides: dict[str, object] = {"max_workers": max_workers}
+    if transcripts is not None:
+        overrides["transcripts"] = transcripts
+    if mos:
+        overrides.update(mos=True, mos_device=device)
+    if no_cluster:
+        overrides["duplicate_distance"] = -1
+    try:
+        cfg = SpeechConfig.model_validate({**base, **overrides})
+        profile = SpeechTargetProfile(
+            target_style=style, target_backend=target_backend, checkpoint=checkpoint, target_category=category
+        )
+    except ValidationError as exc:
+        raise _invalid(exc) from exc
+
+    typer.echo(f"Scanning speech clips in {source} (recursive) ...")
+    try:
+        summary = scan_speech_folder(source, profile, cfg)
+    except ModelUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    typer.echo("=" * 56)
+    typer.echo(f"  Clips scanned:         {summary.total}")
+    typer.echo(f"  Passed:                {summary.passed}")
+    typer.echo(f"  Similar clusters (>1): {summary.similar_clusters}  ({summary.duplicates} non-representative)")
+    kept = [c for c in summary.clips if c.passed and not c.is_duplicate]
+    hours = sum(c.duration_s or 0.0 for c in kept) / 3600
+    typer.echo(f"  Usable audio:          {hours:.2f} h in {len(kept)} clips")
+    scored = sorted(c.mos.ovrl for c in summary.clips if c.mos is not None)
+    if scored:
+        typer.echo(f"  DNSMOS OVRL (median):  {scored[len(scored) // 2]:.2f} over {len(scored)} clips")
+    typer.echo("=" * 56)
+    if summary.reject_reasons:
+        typer.echo("")
+        typer.echo("Rejection reasons:")
+        for reason, count in sorted(summary.reject_reasons.items(), key=lambda x: -x[1]):
+            typer.echo(f"  {count:4d}  {reason}")
+    if verbose:
+        typer.echo("")
+        typer.echo("Per-clip (grouped by cluster, then score):")
+        for c in sorted(summary.clips, key=lambda x: (x.similar_group, -x.score)):
+            tag = f"g{c.similar_group}" + ("*" if c.is_representative and c.group_size > 1 else "")
+            why = f"  [{c.reject_reason}: {c.reject_detail}]" if c.reject_reason else ""
+            snr = f" snr={c.snr_db:.1f}" if c.snr_db is not None else ""
+            mos_text = f" mos={c.mos.ovrl:.2f}" if c.mos is not None else ""
+            typer.echo(f"  {c.score:.3f} {tag:>5}  {c.rel_path}{snr}{mos_text}{why}")
+
+    ScanStore().save(summary)
+    if json_out:
+        json_out.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
+        typer.echo("")
+        typer.echo(f"JSON summary written -> {json_out}")
+    typer.echo(f"Scan saved as {summary.scan_id}")
+
+
 @app.command()
 def serve(
     port: int = Option(8101, "--port", "-p", help="Port to listen on"),
@@ -1078,6 +1239,26 @@ def embeddings_convert(
 
 
 DEFAULT_SCHEMA_PATH = Path("schema/curator-wire.schema.json")
+
+
+@app.command("dnsmos-fetch")
+def dnsmos_fetch(
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the model (default: model cache)"),
+) -> None:
+    """Fetch the DNSMOS P.835 model a speech scan's --mos runs.
+
+    microsoft/DNS-Challenge (code MIT, other content CC BY 4.0), pinned by
+    commit and sha256; 1.2 MB, runs on onnxruntime (argus-curator[speech]).
+    """
+    from argus_curator.dnsmos import fetch_model
+    from argus_curator.runtime import ModelUnavailable
+
+    try:
+        written = fetch_model(output)
+    except (ModelUnavailable, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"DNSMOS model in place -> {written}")
 
 
 @app.command()

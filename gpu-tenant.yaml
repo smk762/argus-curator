@@ -4,7 +4,7 @@
 # Read when ARGUS_GPU_COORDINATOR=broker and ARGUS_GPU_TENANT_MANIFEST names this file
 # (/app/gpu-tenant.yaml in the image). Each kind is a model curator runs in its own
 # process (runtime.gpu_lease passes the model as the kind). vram_mb is the load ask
-# plus one image's run ask from runtime.VRAM_MB, and model_mb the load ask: the
+# plus one image's (or one speech window's) run ask from runtime.VRAM_MB, and model_mb the load ask: the
 # weights that stay loaded between leases.
 #
 # Scans take the kinds' batch priority; POST /faces (darkroom's age check) asks for
@@ -14,7 +14,7 @@
 # its models.
 tenant_version: "1.0"
 tenant: argus-curator
-description: Dataset curation for LoRA training sets (faces, scenes, garments, embeddings on CUDA).
+description: Dataset curation for LoRA training sets (faces, scenes, garments, embeddings and speech MOS on CUDA).
 repo: smk762/argus-curator
 # In-process work runs on the GPU of the host curator runs on. Change this if
 # curator is deployed on another node.
@@ -39,4 +39,9 @@ kinds:
     description: CLIP ViT-L/14 (DataComp-1B) image tower, semantic embeddings in batches of 8.
     vram_mb: 1984
     model_mb: 1600
+    priority: batch
+  - kind: mos
+    description: DNSMOS P.835 speech quality for speech scans, one 9.01 s window per pass.
+    vram_mb: 684
+    model_mb: 300
     priority: batch

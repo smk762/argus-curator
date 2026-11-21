@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import math
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from argus_cortex.consent import ConsentRefusal
 from argus_cortex.moderation import (  # re-exported: part of curator's wire contract
@@ -26,8 +26,10 @@ from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import PolicyName
 from argus_cortex.provenance import SHA256_PATTERN, Provenance
 from argus_cortex.taxonomy import (  # re-exported: the suite's one taxonomy, not a local copy
+    SPEECH_CATEGORIES,  # noqa: F401
     TARGET_CATEGORIES,  # noqa: F401
     TARGET_STYLES,  # noqa: F401
+    SpeechCategory,
     TargetCategory,
     TargetStyle,  # noqa: F401
 )
@@ -37,10 +39,12 @@ from argus_cortex.wire import wire_schema as _cortex_wire_schema
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Discriminator,
     Field,
     PrivateAttr,
     SerializationInfo,
     SerializerFunctionWrapHandler,
+    Tag,
     computed_field,
     field_validator,
     model_serializer,
@@ -174,6 +178,41 @@ class TargetProfile(_CortexTargetProfile):
         if modality != "image":
             raise ValueError(f"argus-curator curates images: a {modality!r} target profile is not supported")
         return data
+
+
+# The speech counterpart (#186): a subclass of cortex's narrowed the other way,
+# so a speech scan's profile is a cortex TargetProfile too. Only the speech scan
+# path takes it (ScanRequest / ScanSummary through ScanProfile); ManifestRow and
+# the image scanner keep TargetProfile, which refuses it.
+class SpeechTargetProfile(_CortexTargetProfile):
+    """argus-cortex's ``TargetProfile`` for a speech dataset: ``modality`` is ``speech``.
+
+    ``target_category`` is a speech category (``voice`` by default), and
+    ``target_backend`` names a TTS model family (``xtts-v2``, ``qwen3-tts``) or
+    is ``None``. Accepted by the speech scan only; image scoring and the image
+    manifest never see it.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    modality: Literal["speech"] = "speech"
+    target_category: SpeechCategory = "voice"
+    target_backend: str | None = None
+
+
+def _profile_modality(value: Any) -> str:
+    # A profile without modality reads as image, as cortex's does.
+    modality = value.get("modality", "image") if isinstance(value, dict) else getattr(value, "modality", "image")
+    return modality if isinstance(modality, str) else "image"
+
+
+# The profile a scan request (and its stored summary) carries: an image profile,
+# or with ``modality: "speech"`` a speech one, which routes the scan to the
+# speech path. Anything that writes manifest rows reads TargetProfile instead.
+ScanProfile = Annotated[
+    Annotated[TargetProfile, Tag("image")] | Annotated[SpeechTargetProfile, Tag("speech")],
+    Discriminator(_profile_modality),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -940,6 +979,179 @@ class ImageResult(BaseModel):
         return rate_content(self.nsfw)
 
 
+# ---------------------------------------------------------------------------
+# Speech scans (#186)
+# ---------------------------------------------------------------------------
+
+
+SPEECH_EXTS = {".wav", ".flac"}
+
+# The checks a speech scan runs, in the order a clip meets them. A clip that
+# fails any is rejected: ``reject_reason`` names the first and
+# ``failed_checks`` every one measured. ``unreadable``: not a WAV/FLAC clip the
+# scan can decode (``reject_detail`` says why). ``corpus_under_18``: the
+# corpus's own metadata marks the speaker as under 18 (a hard exclusion, never
+# configurable). ``cer`` needs an STT engine (argus-echo#4).
+SpeechCheck = Literal[
+    "unreadable",
+    "corpus_under_18",
+    "duration",
+    "sample_rate",
+    "channels",
+    "silent",
+    "clipping",
+    "leading_silence",
+    "trailing_silence",
+    "transcript",
+    "speaking_rate",
+    "snr",
+    "speech_ratio",
+    "mos",
+    "cer",
+]
+SPEECH_CHECKS: tuple[SpeechCheck, ...] = SpeechCheck.__args__
+
+# Where a clip's transcript came from: a ``<clip>.txt`` beside it, LJSpeech's
+# ``metadata.csv``, or a Common Voice ``*.tsv``, both at the scanned folder's top.
+TranscriptSource = Literal["sidecar", "ljspeech", "common_voice"]
+TranscriptLayout = Literal["auto", "sidecar", "ljspeech", "common_voice"]
+
+# Ceilings a request cannot raise: they bound what decoding one clip costs.
+MAX_CLIP_SECONDS = 120.0
+MAX_CLIP_CHANNELS = 2
+
+
+class SpeechConfig(BaseModel):
+    """Thresholds and options for a speech scan (``target_profile.modality == "speech"``).
+
+    Every threshold is a prefilter: a clip past it is rejected with the check
+    named (:data:`SpeechCheck`). ``None`` turns a threshold off. Silence is
+    measured against the clip's loudest 30 ms frame: a frame ``silence_db``
+    or more below it is silent. ``chars_per_s`` counts a transcript's letters
+    and digits over the clip less its leading and trailing silence.
+    """
+
+    # Which transcripts to read. "auto": a sidecar, else LJSpeech's
+    # metadata.csv, else Common Voice TSVs (the first that names the clip).
+    transcripts: TranscriptLayout = "auto"
+    require_transcript: bool = True
+
+    min_duration_s: float = Field(1.0, ge=0.0)
+    max_duration_s: float = Field(20.0, gt=0.0, le=MAX_CLIP_SECONDS)
+    min_sample_rate: int = Field(16000, ge=8000)
+    max_channels: int = Field(1, ge=1, le=MAX_CLIP_CHANNELS)
+    # Share of samples at or past full scale (|x| >= 0.999).
+    max_clipping_ratio: float | None = Field(0.001, ge=0.0, le=1.0)
+    silence_db: float = Field(-40.0, lt=0.0)
+    max_leading_silence_s: float | None = Field(1.0, ge=0.0)
+    max_trailing_silence_s: float | None = Field(1.0, ge=0.0)
+    min_chars_per_s: float | None = Field(4.0, ge=0.0)
+    max_chars_per_s: float | None = Field(30.0, gt=0.0)
+    min_snr_db: float | None = None
+    min_speech_ratio: float | None = Field(None, ge=0.0, le=1.0)
+
+    # DNSMOS (ARGUS_CURATOR_DNSMOS_MODEL), run on each clip that passed the
+    # checks above. min_mos is on its overall (OVRL) score, 1-5.
+    mos: bool = False
+    mos_device: str = "auto"
+    min_mos: float | None = Field(None, ge=1.0, le=5.0)
+    # The character error rate between the transcript and an STT pass. Needs
+    # an STT engine (argus-echo#4): a scan that sets it without one is refused.
+    max_cer: float | None = Field(None, ge=0.0)
+
+    # Near-duplicate clips: Hamming distance between 64-bit spectrogram
+    # fingerprints, among clips whose lengths are within 10%. -1 disables.
+    duplicate_distance: int = Field(6, ge=-1, le=64)
+
+    # Composite score weights (a term the scan did not measure drops out and
+    # the rest are renormalised), and the SNR that scores 1.
+    weight_mos: float = Field(0.5, ge=0.0)
+    weight_snr: float = Field(0.3, ge=0.0)
+    weight_speech_ratio: float = Field(0.2, ge=0.0)
+    snr_ref_db: float = Field(40.0, gt=0.0)
+
+    max_workers: int = Field(4, ge=1)
+
+    @model_validator(mode="after")
+    def _ranges(self) -> SpeechConfig:
+        if self.min_duration_s >= self.max_duration_s:
+            raise ValueError("min_duration_s must be below max_duration_s")
+        low, high = self.min_chars_per_s, self.max_chars_per_s
+        if low is not None and high is not None and low >= high:
+            raise ValueError("min_chars_per_s must be below max_chars_per_s")
+        return self
+
+
+class SpeechMos(BaseModel):
+    """DNSMOS P.835 predictions for a clip, each 1-5: speech (SIG), background (BAK), overall (OVRL)."""
+
+    model_config = RESPONSE_ONLY
+
+    model: Literal["dnsmos"] = "dnsmos"
+    sig: float
+    bak: float
+    ovrl: float
+
+
+class ClipResult(BaseModel):
+    """Per-clip record of a speech scan, keyed by ``rel_path`` like :class:`ImageResult`.
+
+    A measurement is ``None`` when the scan never got to it (the clip could not
+    be decoded, or the check was not asked for). The corpus labels
+    (``speaker``, ``accent``, ``language``, ``age``) are copied verbatim from
+    the corpus metadata, never estimated.
+    """
+
+    model_config = RESPONSE_ONLY
+
+    rel_path: str
+    abs_path: str
+
+    score: float = 0.0
+    passed: bool = False
+    # The first failed check, and every failed one in SPEECH_CHECKS order.
+    reject_reason: SpeechCheck | None = None
+    failed_checks: list[SpeechCheck] = Field(default_factory=list)
+    # What the first failed check measured against its threshold.
+    reject_detail: str | None = None
+
+    # Near-duplicate clustering (as ImageResult's).
+    similar_group: int = 0
+    group_size: int = 1
+    is_representative: bool = True
+    is_duplicate: bool = False
+    duplicate_of: str | None = None
+
+    duration_s: float | None = None
+    sample_rate: int | None = None
+    channels: int | None = None
+    clipping_ratio: float | None = None
+    leading_silence_s: float | None = None
+    trailing_silence_s: float | None = None
+    snr_db: float | None = None
+    speech_ratio: float | None = None
+
+    transcript: str | None = None
+    transcript_source: TranscriptSource | None = None
+    chars_per_s: float | None = None
+
+    mos: SpeechMos | None = None
+    # Why DNSMOS gave no score for a clip it was asked to score, else None.
+    mos_error: str | None = None
+    # The STT hook (argus-echo#4): its transcript, and the CER against ``transcript``.
+    stt_transcript: str | None = None
+    cer: float | None = None
+
+    speaker: str | None = None
+    accent: str | None = None
+    language: str | None = None
+    age: str | None = None
+
+    # 64-bit spectrogram fingerprint (hex), the counterpart of ImageResult.phash.
+    fingerprint: str = ""
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
+
+
 class FaceCluster(BaseModel):
     """A clustered identity across the scanned dataset."""
 
@@ -962,7 +1174,9 @@ class ScanSummary(BaseModel):
 
     scan_id: str
     folder: str
-    target_profile: TargetProfile
+    # A speech profile marks a speech scan: its rows are in ``clips``, and
+    # ``results`` and every image config stay empty.
+    target_profile: ScanProfile
     config: ScanConfig
     faces_config: FaceConfig
     # Defaulted so scans cached before scene tagging existed still load.
@@ -999,6 +1213,10 @@ class ScanSummary(BaseModel):
     # eligible, and why not. None when not asked.
     consent: ConsentCheck | None = None
     results: list[ImageResult] = Field(default_factory=list)
+    # A speech scan's thresholds and per-clip rows (#186); None and empty for an
+    # image scan. ``total``, ``passed`` ... count clips on a speech scan.
+    speech_config: SpeechConfig | None = None
+    clips: list[ClipResult] = Field(default_factory=list)
 
     # The min_short_side a scan cached before MIN_SHORT_SIDE existed actually ran
     # with, when it was below the floor; None otherwise. ``config`` reads the
@@ -1021,6 +1239,11 @@ class ScanSummary(BaseModel):
     def embeddings(self) -> dict[str, Any]:
         """The scan's in-memory semantic embeddings by ``rel_path`` (empty when none are held)."""
         return self._embeddings
+
+    @property
+    def is_speech(self) -> bool:
+        """True for a speech scan (#186): its rows are ``clips``, never image ``results``."""
+        return self.target_profile.modality == "speech"
 
     @field_validator("faces_config")
     @classmethod
@@ -1057,7 +1280,10 @@ class ScanRequest(BaseModel):
     # The server resolves this under its configured scan root and refuses
     # traversal escapes; relative paths are canonical ("" scans the root).
     folder: str
-    target_profile: TargetProfile = Field(default_factory=TargetProfile)
+    # ``{"modality": "speech", ...}`` scans the folder's wav/flac clips with
+    # ``speech`` instead of its images (#186). The image checks below are
+    # then refused, never silently skipped.
+    target_profile: ScanProfile = Field(default_factory=TargetProfile)
     config: ScanConfig = Field(default_factory=ScanConfig)
     faces: FaceConfig = Field(default_factory=FaceConfig)
     scenes: SceneConfig = Field(default_factory=SceneConfig)
@@ -1068,6 +1294,34 @@ class ScanRequest(BaseModel):
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
     crops: CropConfig = Field(default_factory=CropConfig)
     consent: ConsentConfig = Field(default_factory=ConsentConfig)
+    speech: SpeechConfig = Field(default_factory=SpeechConfig)
+
+    @property
+    def is_speech(self) -> bool:
+        return self.target_profile.modality == "speech"
+
+    @model_validator(mode="after")
+    def _no_image_checks_on_speech(self) -> ScanRequest:
+        if not self.is_speech:
+            return self
+        asked = [
+            name
+            for name, on in (
+                ("faces", self.faces.enabled),
+                ("scenes", self.scenes.enabled),
+                ("garments", self.garments.enabled),
+                ("embeddings", self.embeddings.enabled),
+                ("nsfw", self.nsfw.enabled is True),
+                ("guard", self.guard.enabled is True),
+                ("crops", self.crops.enabled),
+                ("prefilter", any(self.prefilter.model_dump().values())),
+                ("consent", self.consent.record is not None),
+            )
+            if on
+        ]
+        if asked:
+            raise ValueError(f"a speech scan runs no image checks: turn off {', '.join(asked)}")
+        return self
 
 
 class FaceSourceFilter(BaseModel):

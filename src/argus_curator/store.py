@@ -148,9 +148,13 @@ class ScanStore:
         summary = self.load(scan_id)
         if summary is None:
             return None
-        all_results = summary.results
-        sliced = all_results[offset:] if limit is None else all_results[offset : offset + limit]
-        summary.results = sliced
+        # A speech scan's rows are its clips (#186); an image scan's, its results.
+        rows = summary.clips if summary.is_speech else summary.results
+        sliced = rows[offset:] if limit is None else rows[offset : offset + limit]
+        if summary.is_speech:
+            summary.clips = sliced
+        else:
+            summary.results = sliced
         summary.offset = offset
         summary.limit = limit
         summary.returned = len(sliced)

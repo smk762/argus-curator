@@ -24,6 +24,7 @@ $ argus-curator [OPTIONS] COMMAND [ARGS]...
 * `places365-convert`: Fetch, verify and convert a Places365-CNN...
 * `garments-convert`: Fetch, verify and convert the Fashionpedia...
 * `embeddings-convert`: Fetch, verify and convert the CLIP image...
+* `dnsmos-fetch`: Fetch the DNSMOS P.835 model a speech...
 * `schema`: Emit the wire-contract JSON Schema...
 
 ## `argus-curator scan`
@@ -56,9 +57,14 @@ $ argus-curator scan [OPTIONS] {source}
 * `--blur-threshold <float>`: Minimum Laplacian variance  [default: 100.0]
 * `--max-workers <int>`: Parallel worker threads  [default: 4]
 * `--target-style <str>`: photo or anime  [default: photo]
-* `--target-backend <str>`: Diffusion backend family  [default: sdxl]
+* `--target-backend <str>`: Diffusion backend family (default sdxl), or a TTS family for speech
 * `--checkpoint <str>`: Target checkpoint
-* `--target-category <str>`: identity|wardrobe|pose_composition|setting|concept  [default: identity]
+* `--target-category <str>`: identity|wardrobe|pose_composition|setting|concept (default identity); for speech voice|accent|language|speaking_style (default voice)
+* `--modality <str>`: image, or speech to scan the folder&#x27;s WAV/FLAC clips and transcripts instead  [default: image]
+* `--transcripts <str>`: Speech: auto (default), sidecar, ljspeech or common_voice
+* `--mos`: Speech: score each passing clip with DNSMOS (see dnsmos-fetch)
+* `--dnsmos-model <path>`: Speech: DNSMOS ONNX model (ARGUS_CURATOR_DNSMOS_MODEL)
+* `--speech-config <path>`: Speech: a JSON SpeechConfig with the thresholds (the flags above override it)
 * `--faces`: Run InsightFace detection + identity clustering
 * `--faces-model <str>`: InsightFace model name  [default: buffalo_l]
 * `--min-det-score <float>`: Minimum face detection score  [default: 0.5]
@@ -278,6 +284,24 @@ $ argus-curator embeddings-convert [OPTIONS]
 
 * `--checkpoint <path>`: Local dir with config.json + pytorch_model.bin (default: download the pinned one)
 * `-o, --output <path>`: Where to write the ONNX model (default: model cache)
+* `--help`: Show this message and exit.
+
+## `argus-curator dnsmos-fetch`
+
+Fetch the DNSMOS P.835 model a speech scan&#x27;s --mos runs.
+
+microsoft/DNS-Challenge (code MIT, other content CC BY 4.0), pinned by
+commit and sha256; 1.2 MB, runs on onnxruntime (argus-curator).
+
+**Usage**:
+
+```console
+$ argus-curator dnsmos-fetch [OPTIONS]
+```
+
+**Options**:
+
+* `-o, --output <path>`: Where to write the model (default: model cache)
 * `--help`: Show this message and exit.
 
 ## `argus-curator schema`

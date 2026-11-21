@@ -90,8 +90,8 @@ taking the host lock (argus-cortex's `BrokerCoordinator`, from cortex 0.6):
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none` |
 
 [`gpu-tenant.yaml`](../gpu-tenant.yaml) declares curator's kinds of GPU work:
-`faces`, `scenes` and `garments`, with each one's footprint from
-`runtime.VRAM_MB` (`vram_mb` is the load ask plus one image's run ask,
+`faces`, `scenes`, `garments`, `embeddings` and `mos` (DNSMOS, for [speech scans](speech.md)), with each one's footprint from
+`runtime.VRAM_MB` (`vram_mb` is the load ask plus one image's (or one DNSMOS window's) run ask,
 `model_mb` the load ask). Each lease names its model as the kind. Scans take
 the kinds' `batch` priority. `POST /faces`, which darkroom waits on, asks for
 `interactive`. A test checks that the manifest validates as cortex's
