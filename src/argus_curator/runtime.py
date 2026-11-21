@@ -204,6 +204,9 @@ VRAM_MB: dict[str, dict[str, int]] = {
     "scenes": {"load": 400, "run": 256},  # one Places365 batch (up to 16); NVML is a snapshot
     "garments": {"load": 500, "run": 768},
     "bodies": {"load": 300, "run": 256},  # a Cheetah pack's person detector alone
+    # CLIP ViT-L/14 image tower, fp32, one batch of 8: 1,432 MB once loaded (CUDA
+    # context included) and 1,680 MB at peak over 30 batches (3090, 2 GB arena cap).
+    "embeddings": {"load": 1600, "run": 384},
 }
 
 # What gpu_lease raises when no GPU slot was granted: not a bad image, so a
@@ -288,25 +291,47 @@ def gpu_lease(
     )
 
 
-def load_session(path: Path, providers: list[str], *, missing_hint: str, extra: str = "faces"):
-    """Build (and cache) an onnxruntime session for the model at *path*."""
-    key = f"{path}:{','.join(providers)}"
+def load_session(
+    path: Path,
+    providers: list[str],
+    *,
+    missing_hint: str,
+    extra: str = "faces",
+    cuda_options: dict[str, str] | None = None,
+):
+    """Build (and cache) an onnxruntime session for the model at *path*.
+
+    *cuda_options* override :func:`cuda_provider_options` for this one model (a
+    larger ``gpu_mem_limit`` for weights past the default cap); the arena stays
+    ``kSameAsRequested`` and capped either way.
+    """
+    options = cuda_options or {}
+    key = f"{path}:{','.join(providers)}:{sorted(options.items())}"
     if key in _SESSION_CACHE:
         return _SESSION_CACHE[key]
     with _SESSION_LOCK:
         if key not in _SESSION_CACHE:
-            _SESSION_CACHE[key] = _build_session(path, providers, missing_hint=missing_hint, extra=extra)
+            _SESSION_CACHE[key] = _build_session(
+                path, providers, missing_hint=missing_hint, extra=extra, cuda_options=options
+            )
         return _SESSION_CACHE[key]
 
 
-def _build_session(path: Path, providers: list[str], *, missing_hint: str, extra: str):
+def _build_session(
+    path: Path,
+    providers: list[str],
+    *,
+    missing_hint: str,
+    extra: str,
+    cuda_options: dict[str, str] | None = None,
+):
     try:
         import onnxruntime as ort
     except Exception as exc:  # pragma: no cover - exercised only without deps
         raise ModelUnavailable(f"This model requires onnxruntime: pip install argus-curator[{extra}]") from exc
     if not path.is_file():
         raise ModelUnavailable(f"Model not found at {path}. {missing_hint}")
-    return ort.InferenceSession(str(path), providers=session_providers(providers))
+    return ort.InferenceSession(str(path), providers=session_providers(providers, **(cuda_options or {})))
 
 
 # Faces per forward pass of an attribute model (MiVOLO, FairFace). A pass used to

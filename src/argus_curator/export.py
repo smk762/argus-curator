@@ -702,7 +702,13 @@ def export_selection(
         selected = [r for r in results if keep_reason[r.rel_path] == ""]
     else:
         # The same plan /scan/{id}/select reports: filter, cap, ranking, split.
-        plan = plan_selection(results, req, summary.config.diversity_weight, set_age=summary.set_age)
+        plan = plan_selection(
+            results,
+            req,
+            summary.config.diversity_weight,
+            set_age=summary.set_age,
+            embeddings=summary.embeddings,
+        )
         selected, keep_reason = plan.chosen, plan.keep_reason
         if req.split is not None:
             split = plan.split

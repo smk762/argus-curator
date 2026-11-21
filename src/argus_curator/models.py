@@ -35,6 +35,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     SerializationInfo,
     SerializerFunctionWrapHandler,
     computed_field,
@@ -309,6 +310,20 @@ class GarmentConfig(BaseModel):
     # Detections below this probability are not recorded at all. Lower than
     # the export filter's default (0.5) so reviewers still see the doubtful ones.
     min_conf: float = Field(0.3, ge=0.0, le=1.0)
+    # Compute device hint for onnxruntime: "auto" | "cpu" | "cuda".
+    device: str = "auto"
+
+
+class EmbeddingConfig(BaseModel):
+    """Semantic image embeddings of whole images, a CLIP image tower (see embeddings.py).
+
+    The vectors are held in memory for the scan only, never written, and are
+    gone once the scan is deleted or the server restarts. The model (and so the
+    embedding space) is process configuration (ARGUS_CURATOR_EMBEDDINGS_MODEL,
+    ``embeddings.EMBEDDING_SPACE``), deliberately not a field here.
+    """
+
+    enabled: bool = False
     # Compute device hint for onnxruntime: "auto" | "cpu" | "cuda".
     device: str = "auto"
 
@@ -836,6 +851,9 @@ class ScanSummary(BaseModel):
     # Defaulted so scans cached before scene tagging existed still load.
     scenes_config: SceneConfig = Field(default_factory=SceneConfig)
     garments_config: GarmentConfig = Field(default_factory=GarmentConfig)
+    # Whether the scan computed semantic embeddings. The vectors themselves are
+    # not here: see ``embeddings``.
+    embeddings_config: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     nsfw_config: NsfwConfig = Field(default_factory=NsfwConfig)
     erax_config: EraxConfig = Field(default_factory=EraxConfig)
     guard_config: GuardConfig = Field(default_factory=GuardConfig)
@@ -872,6 +890,17 @@ class ScanSummary(BaseModel):
     offset: int = 0
     limit: int | None = None
     returned: int = 0
+
+    # Each passing image's unit semantic embedding (a numpy vector), by rel_path.
+    # Memory only: a private attribute is neither serialised nor in the schema,
+    # so it never reaches the store's JSON or a response. ScanStore holds it per
+    # scan and drops it with the scan (#188).
+    _embeddings: dict[str, Any] = PrivateAttr(default_factory=dict)
+
+    @property
+    def embeddings(self) -> dict[str, Any]:
+        """The scan's in-memory semantic embeddings by ``rel_path`` (empty when none are held)."""
+        return self._embeddings
 
     @field_validator("faces_config")
     @classmethod
@@ -913,6 +942,7 @@ class ScanRequest(BaseModel):
     faces: FaceConfig = Field(default_factory=FaceConfig)
     scenes: SceneConfig = Field(default_factory=SceneConfig)
     garments: GarmentConfig = Field(default_factory=GarmentConfig)
+    embeddings: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     nsfw: NsfwConfig = Field(default_factory=NsfwConfig)
     guard: GuardConfig = Field(default_factory=GuardConfig)
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
@@ -1068,6 +1098,11 @@ class ExportRequest(BaseModel):
     # With max_keep: also spread the selection across outfits (garment types
     # and their colours), so an identity set is not one outfit throughout.
     diversify_outfits: bool = False
+    # With max_keep: also spread the selection semantically (one minus the
+    # largest embedding cosine to anything selected), so burst shots, re-encodes
+    # and small crops of one frame do not crowd out real variety. Needs a scan
+    # that ran EmbeddingConfig and whose embeddings this process still holds.
+    diversify_semantic: bool = False
 
     # Optional: drop images whose NudeNet exposed score (the highest score
     # among nsfw_exposed_labels) is at or above this. Scores under 0.2 are
@@ -1343,6 +1378,7 @@ class SelectRequest(BaseModel):
     diversity_weight: float | None = Field(None, ge=0.0, le=1.0)
     diversify_scenes: bool = False
     diversify_outfits: bool = False
+    diversify_semantic: bool = False
     rank: RankBy = "score"
     split: SplitConfig | None = None
 

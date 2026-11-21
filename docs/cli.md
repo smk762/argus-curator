@@ -23,6 +23,7 @@ $ argus-curator [OPTIONS] COMMAND [ARGS]...
 * `mivolo-convert`: Fetch, verify and convert MiVOLO v2 to the...
 * `places365-convert`: Fetch, verify and convert a Places365-CNN...
 * `garments-convert`: Fetch, verify and convert the Fashionpedia...
+* `embeddings-convert`: Fetch, verify and convert the CLIP image...
 * `schema`: Emit the wire-contract JSON Schema...
 
 ## `argus-curator scan`
@@ -74,6 +75,8 @@ $ argus-curator scan [OPTIONS] {source}
 * `--places365-model <path>`: Converted Places365 ONNX model (ARGUS_CURATOR_PLACES365_MODEL)
 * `--garments`: Detect garments (type, colour, cut-off) with Fashionpedia
 * `--garments-model <path>`: Converted garment-detector ONNX model (ARGUS_CURATOR_GARMENTS_MODEL)
+* `--embeddings`: Compute CLIP image embeddings (memory only) for --diversify-semantic
+* `--embeddings-model <path>`: Converted CLIP image-tower ONNX model (ARGUS_CURATOR_EMBEDDINGS_MODEL)
 * `--face-clusters <str>`: Comma-separated cluster ids to export
 * `--face-reference <list[str]>`: An image whose face is the identity reference: a path relative to the scanned folder, or any image file outside it; repeatable (several are averaged). Each face then gets a reference_distance (implies --faces)
 * `--face-source`: Export only face-source images (one identity, frontal and level, large, sharp, eyes open, mouth closed, adult; needs --mivolo), ranked best first
@@ -94,6 +97,7 @@ $ argus-curator scan [OPTIONS] {source}
 * `--min-garment-conf <float>`: Minimum probability for a garment to count (filters + outfit diversity)  [default: 0.5]
 * `--uncropped`: With --garment, the garment must not be cut off by the frame edge
 * `--diversify-outfits`: With --max-keep, also spread the selection across outfits
+* `--diversify-semantic`: With --max-keep, also spread the selection semantically (CLIP embeddings; needs --embeddings)
 * `--nsfw / --no-nsfw`: NudeNet nudity check (default: on when a NudeNet URL is configured; --no-nsfw opts out)
 * `--nudenet-url <str>`: NudeNet server origin, e.g. http://nudenet:8080 (ARGUS_CURATOR_NUDENET_URL)
 * `--erax-url <str>`: EraX-NSFW server origin, e.g. http://erax:8080 (ARGUS_CURATOR_ERAX_URL)
@@ -244,6 +248,27 @@ Needs: pip install argus-curator
 
 ```console
 $ argus-curator garments-convert [OPTIONS]
+```
+
+**Options**:
+
+* `--checkpoint <path>`: Local dir with config.json + pytorch_model.bin (default: download the pinned one)
+* `-o, --output <path>`: Where to write the ONNX model (default: model cache)
+* `--help`: Show this message and exit.
+
+## `argus-curator embeddings-convert`
+
+Fetch, verify and convert the CLIP image tower for --embeddings.
+
+Weights: huggingface.co/laion/CLIP-ViT-L-14-DataComp.XL-s13B-b90K (MIT;
+DataComp-1B CLIP ViT-L/14), pinned by commit and sha256. Only the image
+tower and its projection are exported (~1.2 GB fp32).
+Needs: pip install argus-curator
+
+**Usage**:
+
+```console
+$ argus-curator embeddings-convert [OPTIONS]
 ```
 
 **Options**:

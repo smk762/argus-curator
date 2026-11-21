@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Semantic novelty in selection (#188, item 1).** An opt-in scan phase,
+  `ScanRequest.embeddings` (`EmbeddingConfig`: `enabled`, `device`; CLI
+  `--embeddings`), runs the image tower of DataComp-1B's CLIP ViT-L/14 (MIT)
+  under onnxruntime and the GPU lease (kind `embeddings`, batches of 8, its own
+  capped 2 GB arena). `diversify_semantic` on Select/ExportRequest (CLI
+  `--diversify-semantic`) adds a fourth novelty term to the `max_keep` cap: one
+  minus the largest cosine to anything selected, with an image that has no
+  embedding counted as a repeat. The vectors are never written: they live in
+  memory for the scan, are dropped with it (or its rows), and are gone on a
+  restart, after which `diversify_semantic` is refused (400). Convert the model
+  once with `argus-curator embeddings-convert` (`[embeddings-convert]`).
+  `ManifestRow` is unchanged.
 - **`/scan/{id}/select` ranks, caps and splits (#183).** Select and export now
   run one `selection.plan_selection`, so they can't disagree. Kept rows come
   first, best first, each with its 1-based `rank`; `rank` picks the order

@@ -102,6 +102,15 @@ garments-convert = [
     "onnx>=1.16",
     "onnxscript>=0.2",
 ]
+# One-time export of the CLIP image tower (`argus-curator embeddings-convert`);
+# --embeddings itself runs on onnxruntime alone, like scenes. Uses the legacy
+# TorchScript exporter, so no onnxscript.
+embeddings-convert = [
+    "torch>=2.6",
+    "transformers>=4.45",
+    "huggingface_hub>=0.23",
+    "onnx>=1.16",
+]
 # Composed from the extras above rather than hand-duplicating them, so a new
 # member of `server`/`cli`/`faces` cannot silently go missing from `all`.
 all = ["argus-curator[server,cli,faces]"]

@@ -131,6 +131,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "bodies",
         "places365",
         "garments",
+        "embeddings",
         "nudenet",
         "erax",
         "watermark",

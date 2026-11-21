@@ -39,6 +39,7 @@ from PIL import Image, ImageFilter
 from argus_curator.models import (
     SUPPORTED_EXTS,
     CropConfig,
+    EmbeddingConfig,
     EraxConfig,
     FaceCluster,
     FaceConfig,
@@ -544,6 +545,7 @@ def scan_items(
     *,
     scene_cfg: SceneConfig | None = None,
     garment_cfg: GarmentConfig | None = None,
+    embed_cfg: EmbeddingConfig | None = None,
     nsfw_cfg: NsfwConfig | None = None,
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
@@ -560,7 +562,7 @@ def scan_items(
     When *progress* is supplied it is called with ``{phase, done, total,
     pending_checks}`` dicts as the scan advances through its ``scoring`` ->
     ``faces`` + ``nsfw`` -> ``identities`` -> ``scenes`` -> ``garments`` ->
-    ``guard`` -> ``clustering`` phases. Face detection (MiVOLO ages and
+    ``embeddings`` -> ``guard`` -> ``clustering`` phases. Face detection (MiVOLO ages and
     FairFace race) and NudeNet run at the same time and their progress events
     interleave, so a viewer has what it needs to lift a blur as early as it is
     safe to. Identities follow at once, and with ``FaceConfig.set_age`` the
@@ -574,6 +576,9 @@ def scan_items(
     *crop_cfg* (opt-in) crops the boxed images in memory before scoring, so
     every phase sees the cropped frame (see :mod:`argus_curator.crops`); an
     image whose box cannot be applied is rejected as ``crop:<why>``.
+    *embed_cfg* (opt-in) computes each passing image's semantic embedding;
+    the vectors go on the returned summary's in-memory ``embeddings`` only,
+    never on a row or a snapshot.
     *chunk* receives the images finished since the previous call, and *save*
     receives a partial summary so a scan can be reopened while it is still
     running. ``pending_checks`` names the checks (``faces``, ``nsfw``,
@@ -594,6 +599,7 @@ def scan_items(
     total = len(items)
     scene_cfg = scene_cfg or SceneConfig()
     garment_cfg = garment_cfg or GarmentConfig()
+    embed_cfg = embed_cfg or EmbeddingConfig()
     nsfw_cfg = nsfw_cfg or NsfwConfig()
     guard_cfg = guard_cfg or GuardConfig()
     prefilter_cfg = prefilter_cfg or PrefilterConfig()
@@ -679,6 +685,7 @@ def scan_items(
             faces_config=faces_cfg,
             scenes_config=scene_cfg,
             garments_config=garment_cfg,
+            embeddings_config=embed_cfg,
             nsfw_config=NsfwConfig(enabled=nsfw_ran),
             erax_config=EraxConfig(enabled=erax_ran),
             guard_config=guard_cfg.model_copy(
@@ -1036,6 +1043,20 @@ def scan_items(
         )
         deliver("garments", total, total, results, force=True)
 
+    # Semantic embeddings (optional): whole-image, for selection only. Nothing
+    # lands on the rows: the vectors go on the final summary's in-memory
+    # ``embeddings`` and are never saved (#188).
+    vectors: dict[str, Any] = {}
+    if embed_cfg.enabled:
+        from argus_curator import embeddings as embeddings_mod
+
+        vectors = embeddings_mod.embed_images(
+            results,
+            items,
+            embed_cfg,
+            progress=(lambda done, phase_total: emit("embeddings", done, phase_total)) if progress else None,
+        )
+
     # SingGuard (opt-out), the same way as NudeNet. The slow GPU pass goes last
     # among the checks: its verdict can put a blur back, never lift one.
     guard_batch: list[ImageResult] = []
@@ -1071,6 +1092,7 @@ def scan_items(
 
     summary = snapshot()
     summary.similar_clusters = multi
+    summary.embeddings.update(vectors)
     return summary
 
 
@@ -1082,6 +1104,7 @@ def scan_folder(
     *,
     scene_cfg: SceneConfig | None = None,
     garment_cfg: GarmentConfig | None = None,
+    embed_cfg: EmbeddingConfig | None = None,
     nsfw_cfg: NsfwConfig | None = None,
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
@@ -1121,6 +1144,7 @@ def scan_folder(
         faces_cfg,
         scene_cfg=scene_cfg,
         garment_cfg=garment_cfg,
+        embed_cfg=embed_cfg,
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
