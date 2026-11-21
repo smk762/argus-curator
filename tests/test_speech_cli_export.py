@@ -146,6 +146,11 @@ def test_cli_speech_export_under_a_voice_consent_record(tmp_path: Path, cache: P
     assert {r.speaker_label for r in rows} == {"s2"} and len(rows) == CLIPS_PER_SPEAKER
     assert all(r.provenance.kind == "consented" and r.consent_release_sha256 == "a" * 64 for r in rows)
 
+    # The ceiling is the CLI's to set (#209), and checked as the library checks it.
+    ceiling = ["--voice-consent-max-distance", "0"]
+    bad = _run(root, "--copy-to", str(tmp_path / "bad"), "--speakers", *consent, *ceiling)
+    assert bad.exit_code == 2 and "consent_max_distance" in bad.output
+
     refused = _run(root, "--copy-to", str(tmp_path / "late"), "--speakers", *consent[:2], "--consent-delivery", "angry")
     assert refused.exit_code == 2 and "consent refused" in refused.output
     assert not (tmp_path / "late" / SPEECH_MANIFEST_NAME).exists()
@@ -159,6 +164,7 @@ def test_cli_speech_export_under_a_voice_consent_record(tmp_path: Path, cache: P
         (["--voice-consent", "consent.json"], "needs --consent-delivery"),
         ([*CORPUS_FLAGS, "--voice-consent", "c.json", "--consent-delivery", "neutral"], "not both"),
         (["--voice-consent", "missing.json", "--consent-delivery", "neutral", "--speakers"], "no such file"),
+        ([*CORPUS_FLAGS, "--voice-consent-max-distance", "0.2"], "needs --voice-consent"),
         ([*CORPUS_FLAGS, "--split-part", "held_out"], "need a split"),
         ([*CORPUS_FLAGS, "--held-out", "1", "--held-out-fraction", "0.5"], "not both"),
         ([*CORPUS_FLAGS, "--exclude-speaker-mismatch"], "add --speakers"),

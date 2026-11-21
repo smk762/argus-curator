@@ -280,6 +280,7 @@ argus-curator scan corpus/ --modality speech --symlink-to blizzard-train \
 | `--held-out` or `--held-out-fraction`, `--split-method`, `--split-seed`, `--split-part` | `split` (`group_by` is always `speaker`), `split_part` |
 | `--corpus` and `--license` | `speech.corpus`, `speech.license` |
 | `--voice-consent` and `--consent-delivery` | `speech.consent_record` (relative to the scanned folder, or absolute; needs `--speakers`), `speech.consent_delivery` |
+| `--voice-consent-max-distance` | `speech.consent_max_distance` ([consented voice binding](#consented-voice-binding); needs `--voice-consent`) |
 
 The flags are checked before a clip is read: no provenance, half of one, both
 kinds, an image filter (`--pose`, `--garment`, `--nsfw-threshold`,
@@ -328,16 +329,13 @@ held-out part becomes proof's reference set: export each part to its own
   `ConsentRecord`, a path under the scanned folder) and
   `speech.consent_delivery`. It is read and checked at select and export for
   `training` of the subject's `voice` at that delivery (revoked, expired, or a
-  use or delivery it doesn't cover is refused with cortex's reason). At least
-  one of its `reference_recordings` must be a passing clip in the scan, by
-  sha256, and the scan must have clustered speakers: only clips in those
-  recordings' clusters are kept (`consent:other-speaker`), and rows carry
-  `consent_release_sha256`, `consent_record_sha256` and a `consented`
+  use or delivery it doesn't cover is refused with cortex's reason). Rows
+  carry `consent_release_sha256`, `consent_record_sha256` and a `consented`
   provenance that names no one: its `subject` is argus-cortex's subject ref
   `consent:<release_sha256>`, never the record's name, and its `source`
   doesn't name who collected the release. `speaker_label` and the transcript
-  are your corpus's own text and are carried as they are. Binding by distance to the reference recordings is
-  [#209](https://github.com/smk762/argus-curator/issues/209).
+  are your corpus's own text and are carried as they are. Which clips the
+  record covers is [below](#consented-voice-binding).
 
 Age is never estimated from a voice. A clip's corpus age label is carried as
 `age`, and a corpus that gives none leaves it null.
@@ -352,6 +350,66 @@ source), before the clip, and removed if the clip's transfer fails. Then
 `curation_report.csv` (every clip and its keep reason) and `run_stats.json`
 when asked. A move takes the moved clips out of the cached scan. Under
 `move` a source sidecar transcript stays in the source folder.
+
+## Consented voice binding
+
+A voice consent record covers one voice: the voice of its
+`reference_recordings`. At select and at export, curator reads the record
+again and binds every clip to that voice
+([#209](https://github.com/smk762/argus-curator/issues/209)), as a consented
+face set binds images to the record's reference images (#133):
+
+1. **The reference voice.** The record's reference recordings are found in
+   the scan by sha256 (at least one must be a passing clip), and the speaker
+   embeddings of those found are averaged into a unit centroid. The scan must have run with
+   `speech.speakers` on, and the embeddings must still be held: they live in
+   memory only, so a server restart drops them. With no usable embedding for
+   any reference recording, the export is refused (400, "rescan with
+   speech.speakers on"). It never falls back to the speaker clusters.
+2. **Each clip.** The cosine distance from its speaker embedding to the
+   centroid. A clip is kept only when that distance is at most
+   `speech.consent_max_distance` (default **0.25**), whatever cluster it
+   joined: a clip in the subject's cluster but past the distance is left out
+   as `consent:other-speaker`, and a clip with no embedding as
+   `consent:no-embedding`.
+3. **For review.** The distance is reported as a plain number:
+   `consent_distance` in `curation_report.csv` and on each select row
+   (`SelectRow.consent_distance`). The centroid is a voiceprint, so it's built
+   for the one check and never stored, served or written. The binding is
+   remade at every select and export, so nothing about it outlives the scan.
+   The speech manifest row is unchanged.
+
+**Why 0.25.** Measured with the pinned ECAPA model on 3 synthetic XTTS voices
+(each voice's centroid from two of its clips, every other clip scored against
+every centroid):
+
+| Clips | Same voice, distance to its centroid | Another voice |
+|---|---|---|
+| 6 s (n=78) | median 0.120, p95 0.198, max 0.262 | min 0.336, median 0.49 |
+| 3 s (n=153) | median 0.204, p95 0.292, max 0.402 | min 0.299, median 0.49 |
+
+On 3 s clips the two overlap, so the ceiling sits below the closest other
+voice measured at either length. Letting another voice in is the harmful
+error, and leaving one of the subject's clips out is the safe one, so the
+default leans strict: it keeps nearly all of the subject's 6 s clips, but
+drops some of their 3 s clips, because longer clips give steadier
+embeddings. Real recordings across sessions and microphones spread wider than
+one synthetic voice does, so expect a real set to lose more of the subject's
+clips. Read `consent_distance` in the report before you raise the ceiling, and
+keep it well under the clustering's `speaker_threshold` (0.5), which is loose
+on purpose. Three voices are evidence of the scale, not a calibration.
+
+**What it doesn't catch: a second voice inside a clip.** A clip's embedding is
+the mean of 4 windows of 3 s. When the subject speaks most of a clip and
+someone else speaks a few seconds of it, the mean stays near the subject's
+voice and the clip is kept. The spread of those windows was measured as a
+signal and isn't reliable enough to ship. At a threshold no single-voice clip
+crossed, it caught a second voice holding about 30% or more of a 10 s clip, but
+missed most second voices under 2 s (an interjection, a voice in the
+background), and short clips' windows overlap. Refusing clips with a second
+voice (diarization, or finer windows each checked against the reference) is
+[#217](https://github.com/smk762/argus-curator/issues/217). Until then, keep
+the scanned folder to clips of the subject alone.
 
 ## The speech manifest
 

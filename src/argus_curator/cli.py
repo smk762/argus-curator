@@ -220,6 +220,12 @@ def scan(
     consent_delivery: str | None = Option(
         None, "--consent-delivery", help="Speech export: the voice delivery --voice-consent must cover, e.g. neutral"
     ),
+    voice_consent_max_distance: float | None = Option(
+        None,
+        "--voice-consent-max-distance",
+        help="Speech export: keep a clip under --voice-consent only within this cosine distance of the record's "
+        "reference recordings' voice (default 0.25, strict; docs/speech.md)",
+    ),
     held_out: int | None = Option(
         None, "--held-out", help="Speech export: hold out about this many clips, by whole speakers (or a fraction)"
     ),
@@ -538,6 +544,7 @@ def scan(
         "--license": corpus_license,
         "--voice-consent": voice_consent,
         "--consent-delivery": consent_delivery,
+        "--voice-consent-max-distance": voice_consent_max_distance is not None,
         "--held-out": held_out is not None,
         "--held-out-fraction": held_out_fraction is not None,
         "--split-method": split_method != "spread",
@@ -600,6 +607,7 @@ def scan(
             corpus_license=corpus_license,
             voice_consent=voice_consent,
             consent_delivery=consent_delivery,
+            voice_consent_max_distance=voice_consent_max_distance,
             speakers_clustered=speech_speakers,
             held_out=held_out,
             held_out_fraction=held_out_fraction,
@@ -1166,6 +1174,7 @@ def _speech_export_request(
     corpus_license: str | None,
     voice_consent: str | None,
     consent_delivery: str | None,
+    voice_consent_max_distance: float | None,
     speakers_clustered: bool,
     held_out: int | None,
     held_out_fraction: float | None,
@@ -1220,8 +1229,15 @@ def _speech_export_request(
             typer.echo(f"Error: --voice-consent {voice_consent}: no such file", err=True)
             raise typer.Exit(2)
         if not speakers_clustered:
-            typer.echo("Error: --voice-consent binds the set by speaker clusters; add --speakers", err=True)
+            typer.echo(
+                "Error: --voice-consent binds the set by distance to its reference recordings' speaker "
+                "embeddings; add --speakers",
+                err=True,
+            )
             raise typer.Exit(2)
+    elif voice_consent_max_distance is not None:
+        typer.echo("Error: --voice-consent-max-distance needs --voice-consent", err=True)
+        raise typer.Exit(2)
     if exclude_speaker_mismatch and not speakers_clustered:
         typer.echo("Error: --exclude-speaker-mismatch needs a scan that clusters speakers; add --speakers", err=True)
         raise typer.Exit(2)
@@ -1246,6 +1262,7 @@ def _speech_export_request(
             license=corpus_license,
             consent_record=voice_consent,
             consent_delivery=consent_delivery,
+            **({"consent_max_distance": voice_consent_max_distance} if voice_consent_max_distance is not None else {}),
         )
         split = (
             SplitConfig(
