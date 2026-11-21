@@ -7,7 +7,7 @@ of the suite reads: argus-lens batch-captions it (an upload to its
 builds training sets from it. Curator and lens share one `TargetProfile`, so a
 manifest written here is captioned downstream with no remapping.
 
-This page describes manifest **2.3**, the version current releases write, and
+This page describes manifest **2.4**, the version current releases write, and
 what changed in each earlier version.
 
 ## Where it is written
@@ -36,7 +36,7 @@ Pretty-printed here; in the file each row is one line.
 
 ```json
 {
-  "manifest_version": "2.3",
+  "manifest_version": "2.4",
   "rel_path": "shoots/2026-07/IMG_0412.jpg",
   "abs_path": "/data/images/shoots/2026-07/IMG_0412.jpg",
   "exported_path": "shoots/2026-07/IMG_0412.jpg",
@@ -69,9 +69,9 @@ Pretty-printed here; in the file each row is one line.
 }
 ```
 
-## Row fields (2.3)
+## Row fields (2.4)
 
-Every key is always present in a 2.3 row; a field with no value is written as
+Every key is always present in a 2.4 row; a field with no value is written as
 `null`, not left out.
 
 | Field | Type | Since | Meaning |
@@ -89,6 +89,7 @@ Every key is always present in a 2.3 row; a field with no value is written as
 | `crop` | object or null | 2.2 | The box baked into the exported file, or null when the file is the source as it was. See [`crop`](#crop). |
 | `primary_face` | object or null | 2.3 | The primary face's measurements, or null for an image with no face. See [`primary_face`](#primary_face). |
 | `set_age` | object or null | 2.3 | The scan's set age, when the scan read one. See [`set_age`](#set_age). |
+| `split` | string or null | 2.4 | `train` or `held_out` when the export asked for a train/held-out split (`split`, exporting `split_part`), else null. See the [HTTP API](http-api.md#ranking-max_keep-and-splits). |
 
 ### `target_profile`
 
@@ -176,6 +177,7 @@ The export response carries the same mappings as `exported_paths` and
 | 2.1 | 0.2.1 | Adds `exported_abs_path`. Fixes `abs_path` under `move`, which named the deleted source; it is now the destination. |
 | 2.2 | 0.14.0 | Adds `crop`. |
 | 2.3 | 0.15.0 | Adds `primary_face` and `set_age`. |
+| 2.4 | unreleased | Adds `split`. |
 
 2.0 is a new major because a 1.x consumer that derives destinations from
 `rel_path`, or trusts every row to name a file on disk, misreads a 2.x manifest.

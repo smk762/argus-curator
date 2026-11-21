@@ -7,7 +7,7 @@ selection runs at export (or on a dry run with `POST /scan/{scan_id}/select`).
 2. **Composite score** — target-aware weighted blend of sharpness / resolution / artifact, plus a small composition bonus that depends on `target_category` (e.g. identity rewards a single centred face; setting rewards wide framing; concept rewards clean, high-resolution images and ignores faces).
 3. **Face-count fit** — with `[faces]`, identity targets penalise 0 or 2+ faces; other categories are progressively more tolerant.
 4. **Near-duplicate dedup** — pHash clustering keeps the highest-scoring representative and *reports* the rest (never silently dropped).
-5. **Selection (at export)** — score threshold + optional diversity cap (`max_keep` / `diversity_weight`) + optional face-cluster filter. Every excluded image carries a `keep_reason`.
+5. **Selection (select and export)** — score threshold + filters + optional diversity cap (`max_keep` / `diversity_weight`), then a ranking (`rank`) and an optional train/held-out `split`; see [HTTP API](http-api.md#ranking-max_keep-and-splits). Every excluded image carries a `keep_reason`.
 
 A hard reject (step 1) is never kept or exported, whatever its score, and gets
 no face, age, scene or garment reading. The [prefilter](prefilter.md) and
