@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Speech scan: language-ID check of the corpus labels (#208).**
+  `speech.language_id` (CLI `--language-id`) classifies each passing clip with
+  SpeechBrain's VoxLingua107 ECAPA-TDNN (Apache-2.0, 107 languages), and
+  flags a clip whose corpus `language` label the model rules out
+  (probability under `language_dispute_below`, default 0.001). Clips gain
+  `language_predicted`, `language_confidence`, `language_label_confidence`,
+  `language_mismatch` and `language_error`, and `ScanSummary` gains
+  `language_mismatches`. The label is never changed, and nothing is
+  rejected unless asked: `speech.exclude_language_mismatch` (CLI
+  `--exclude-language-mismatch`) drops flagged clips at select and export
+  (`language-mismatch`), and `reject_language_mismatch` turns a dispute into
+  the `language` prefilter. `argus-curator lid-convert`
+  (`[lid-convert]` extra, torch at conversion only) exports the pinned
+  checkpoints to ONNX with a conversion record that is checked at load. It
+  runs under the GPU lease as the kind `language`, in 3 fixed windows of 6 s
+  (810 MB at peak on a 3090), and `GET /detectors` reports
+  `language_id_model`. `curation_report.csv` adds `language_predicted`,
+  `language_confidence` and `language_mismatch`. The speech manifest row is
+  unchanged. Calibrated on 272 real clips in 14 languages (`docs/speech.md`).
+  The accent half is left out, because no credible permissive model covers
+  it (#223).
+
 - **Body pose from argus-puppet (manifest 2.7).** With
   `ARGUS_CURATOR_PUPPET_URL` set, a scan sends each passing image to
   argus-puppet's `POST /pose` after the faces (the primary face as the

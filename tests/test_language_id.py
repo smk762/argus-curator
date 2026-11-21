@@ -234,35 +234,53 @@ def _row(language: str | None) -> ClipResult:
     return ClipResult(rel_path="a.wav", abs_path="/a.wav", passed=True, language=language)
 
 
-def test_a_dispute_needs_a_known_label_another_language_and_the_confidence() -> None:
-    row = _row("pt-BR")
-    language_id.judge(row, _probs("es", 0.9), 0.8)
-    assert row.language_mismatch and row.language_predicted == "es" and row.language_confidence == 0.9
-    assert row.language == "pt-BR"  # never relabelled
-    assert row.language_label_confidence is not None and row.language_label_confidence < 0.01
+def _mix(**share: float) -> np.ndarray:
+    """Probabilities with the named languages' shares and the rest spread evenly."""
+    rest = (1.0 - sum(share.values())) / (language_id.N_LANGUAGES - len(share))
+    out = np.full(language_id.N_LANGUAGES, rest)
+    for code, p in share.items():
+        out[language_id.CODES.index(code)] = p
+    return out
 
-    unsure = _row("pt")
-    language_id.judge(unsure, _probs("es", 0.6), 0.8)
-    assert not unsure.language_mismatch and unsure.language_predicted == "es"
+
+def test_a_dispute_is_the_model_ruling_the_label_out() -> None:
+    row = _row("pt-BR")
+    language_id.judge(row, _probs("es", 0.99), 0.001)
+    assert row.language_mismatch and row.language_predicted == "es" and row.language_confidence == 0.99
+    assert row.language == "pt-BR"  # never relabelled
+    assert row.language_label_confidence is not None and row.language_label_confidence < 0.001
+
+    # Unsure what it hears, but sure it isn't Portuguese: still a dispute.
+    unsure_but_not_pt = _row("pt")
+    language_id.judge(unsure_but_not_pt, _mix(es=0.4, gl=0.3, ca=0.2, pt=0.00001), 0.001)
+    assert unsure_but_not_pt.language_mismatch and unsure_but_not_pt.language_confidence == 0.4
+
+    # Hears Spanish first, but leaves Portuguese well in play: no dispute.
+    close = _row("pt")
+    language_id.judge(close, _mix(es=0.6, pt=0.3), 0.001)
+    assert not close.language_mismatch and close.language_predicted == "es" and close.language_label_confidence == 0.3
 
     agrees = _row("pt")
-    language_id.judge(agrees, _probs("pt", 0.99), 0.8)
+    language_id.judge(agrees, _probs("pt", 0.99), 0.001)
     assert not agrees.language_mismatch and agrees.language_label_confidence == 0.99
 
     unknown = _row("fy-NL")  # a language the model doesn't know: no judgement
-    language_id.judge(unknown, _probs("nl", 0.99), 0.8)
+    language_id.judge(unknown, _probs("nl", 0.99), 0.001)
     assert not unknown.language_mismatch and unknown.language_label_confidence is None
 
     unlabelled = _row(None)
-    language_id.judge(unlabelled, _probs("en", 0.99), 0.8)
+    language_id.judge(unlabelled, _probs("en", 0.99), 0.001)
     assert not unlabelled.language_mismatch and unlabelled.language_predicted == "en"
 
 
-@pytest.mark.parametrize(("label", "heard"), [("hr", "sr"), ("bs", "hr"), ("nn", "no"), ("ur", "hi"), ("ms", "id")])
+@pytest.mark.parametrize(
+    ("label", "heard"), [("hr", "sr"), ("bs", "hr"), ("nn", "no"), ("ur", "hi"), ("ms", "id"), ("cs", "sk")]
+)
 def test_languages_the_ear_cannot_split_are_not_a_dispute(label: str, heard: str) -> None:
     row = _row(label)
-    language_id.judge(row, _probs(heard, 0.99), 0.8)
-    assert not row.language_mismatch
+    language_id.judge(row, _probs(heard, 0.9999), 0.001)
+    assert not row.language_mismatch and row.language_label_confidence is not None
+    assert row.language_label_confidence > 0.99  # the group's probability, summed
 
 
 # ---------------------------------------------------------------------------

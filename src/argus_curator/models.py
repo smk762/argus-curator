@@ -1262,12 +1262,13 @@ class SpeechConfig(BaseModel):
 
     # Spoken language ID (SpeechBrain VoxLingua107 ECAPA, ARGUS_CURATOR_LID_MODEL,
     # #208), run on each clip that passed: a clip whose corpus language label the
-    # model disputes with at least language_dispute_confidence is flagged
-    # (ClipResult.language_mismatch). The label is never changed; the clip is
-    # rejected (check "language") only with reject_language_mismatch.
+    # model gives a probability under language_dispute_below is flagged
+    # (ClipResult.language_mismatch; docs/speech.md has the calibration). The
+    # label is never changed; the clip is rejected (check "language") only with
+    # reject_language_mismatch.
     language_id: bool = False
     language_id_device: str = "auto"
-    language_dispute_confidence: float = Field(0.8, gt=0.0, le=1.0)
+    language_dispute_below: float = Field(0.001, gt=0.0, lt=1.0)
     reject_language_mismatch: bool = False
 
     # Composite score weights (a term the scan did not measure drops out and

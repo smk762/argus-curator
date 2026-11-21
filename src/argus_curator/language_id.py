@@ -29,7 +29,6 @@ clip's length. The clip's language probabilities are the mean of its windows'.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import threading
@@ -187,6 +186,7 @@ SAME_LANGUAGE = (
     frozenset({"no", "nn"}),
     frozenset({"hi", "ur"}),
     frozenset({"id", "ms"}),
+    frozenset({"cs", "sk"}),
 )
 
 FEATURE_RATE = 16000
@@ -196,11 +196,11 @@ HOP_SAMPLES = 160  # 10 ms
 TOP_DB = 80.0
 AMIN = 1e-10
 # Each window: WINDOW_SECONDS of audio, center-padded frames (SpeechBrain's STFT).
-WINDOW_SECONDS = 3
+WINDOW_SECONDS = 6
 WINDOW_SAMPLES = WINDOW_SECONDS * FEATURE_RATE
 WINDOW_FRAMES = WINDOW_SAMPLES // HOP_SAMPLES + 1
 # Windows per clip, run as one batch: every pass is (WINDOWS, WINDOW_FRAMES, N_MELS).
-WINDOWS = 4
+WINDOWS = 3
 
 _verified: dict[tuple[str, int, float], bool] = {}
 _verified_lock = threading.Lock()
@@ -388,27 +388,34 @@ def _agrees(predicted: str, labelled: str) -> bool:
     return predicted == labelled or any(predicted in g and labelled in g for g in SAME_LANGUAGE)
 
 
-def judge(row: ClipResult, probs: np.ndarray, dispute_confidence: float) -> None:
+def label_probability(probs: np.ndarray, labelled: str) -> float:
+    """The probability the model gives *labelled*, its :data:`SAME_LANGUAGE` group summed."""
+    return float(sum(probs[i] for i, code in enumerate(CODES) if _agrees(code, labelled)))
+
+
+def judge(row: ClipResult, probs: np.ndarray, dispute_below: float) -> None:
     """Record the model's reading of *row* beside its corpus label, in place.
 
     ``language_predicted`` is the model's top language and
     ``language_confidence`` its probability; ``language_label_confidence`` the
-    probability the model gives the corpus label (None when the label is
-    missing or one the model doesn't know). The clip is a
-    ``language_mismatch`` when the label is one the model knows, the top
-    language is another (outside :data:`SAME_LANGUAGE`), and the model gives
-    it at least *dispute_confidence*. The corpus label is never changed.
+    probability the model gives the corpus label (with the languages the ear
+    can't split from it, :data:`SAME_LANGUAGE`), None when the label is missing
+    or one the model doesn't know. The clip is a ``language_mismatch`` when
+    that probability is under *dispute_below*: the model all but rules the
+    label out. That reads the label, not the model's top guess, because on
+    noisy or telephone audio the model is often unsure what a clip is while
+    still sure what it is not (docs/speech.md). The corpus label is never changed.
     """
     best = int(np.argmax(probs))
     row.language_predicted = CODES[best]
     row.language_confidence = round(float(probs[best]), 4)
     labelled = model_code(row.language)
-    row.language_label_confidence = None if labelled is None else round(float(probs[CODES.index(labelled)]), 4)
-    row.language_mismatch = (
-        labelled is not None
-        and not _agrees(row.language_predicted, labelled)
-        and row.language_confidence >= dispute_confidence
-    )
+    if labelled is None:
+        row.language_label_confidence, row.language_mismatch = None, False
+        return
+    p = label_probability(probs, labelled)
+    row.language_label_confidence = round(p, 4)
+    row.language_mismatch = p < dispute_below
 
 
 def count_mismatches(clips: Sequence[ClipResult]) -> int:
@@ -516,9 +523,3 @@ def export_onnx(source_dir: Path, output: Path) -> Path:
     record_path(output).write_text(json.dumps(record, indent=2) + "\n")
     _verified.clear()
     return output
-
-
-def source_digest() -> str:
-    """One digest over the pinned sources (for logs and the docs)."""
-    joined = "\n".join(f"{k}:{v}" for k, v in sorted(SOURCE_SHA256.items()))
-    return hashlib.sha256(joined.encode()).hexdigest()

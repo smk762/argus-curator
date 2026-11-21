@@ -790,7 +790,7 @@ def scan_speech_folder(
                 if decoded is None:
                     raise ValueError("the clip could not be read again")
                 probs = language_id.identify(session, decoded[0], decoded[1], cfg.language_id_device)
-                language_id.judge(row, probs, cfg.language_dispute_confidence)
+                language_id.judge(row, probs, cfg.language_dispute_below)
             except GPU_UNAVAILABLE:
                 raise
             except Exception as exc:
@@ -800,8 +800,9 @@ def scan_speech_folder(
                 _settle(
                     row,
                     {
-                        "language": f"the language-ID model hears {row.language_predicted!r} "
-                        f"(p={row.language_confidence:g}), not the corpus label {row.language!r}"
+                        "language": f"the language-ID model gives the corpus label {row.language!r} "
+                        f"p={row.language_label_confidence:g} (it hears {row.language_predicted!r}, "
+                        f"p={row.language_confidence:g})"
                     },
                 )
             batch.append(row)

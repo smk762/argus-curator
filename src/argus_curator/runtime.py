@@ -215,9 +215,10 @@ VRAM_MB: dict[str, dict[str, int]] = {
     # clip's 4 windows of 3 s (3090, 1 GB arena cap).
     "speakers": {"load": 350, "run": 192},
     # SpeechBrain VoxLingua107 ECAPA-TDNN language ID (speech scans, #208):
-    # MEASURE_LOAD MB once loaded (CUDA context included) and MEASURE_PEAK MB at peak over
-    # 30 passes of one clip's 4 windows of 3 s (3090, 1 GB arena cap).
-    "language": {"load": 400, "run": 256},
+    # 352 MB once loaded (CUDA context included) and 810 MB at peak over 30
+    # passes of one clip's 3 windows of 6 s (3090, 1 GB arena cap). 7 ms a
+    # clip on the GPU against 700 ms on CPU, so unlike Silero it leases.
+    "language": {"load": 400, "run": 512},
 }
 
 # What gpu_lease raises when no GPU slot was granted: not a bad image, so a

@@ -166,7 +166,8 @@
               "snr",
               "speech_ratio",
               "mos",
-              "cer"
+              "cer",
+              "language"
             ],
             "type": "string"
           },
@@ -216,6 +217,59 @@
           ],
           "default": null,
           "title": "Language"
+        },
+        "language_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language Confidence"
+        },
+        "language_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language Error"
+        },
+        "language_label_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language Label Confidence"
+        },
+        "language_mismatch": {
+          "default": false,
+          "title": "Language Mismatch",
+          "type": "boolean"
+        },
+        "language_predicted": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language Predicted"
         },
         "leading_silence_s": {
           "anyOf": [
@@ -287,7 +341,8 @@
                 "snr",
                 "speech_ratio",
                 "mos",
-                "cer"
+                "cer",
+                "language"
               ],
               "type": "string"
             },
@@ -529,6 +584,11 @@
         "speaker_distance",
         "speaker_mismatch",
         "speaker_error",
+        "language_predicted",
+        "language_confidence",
+        "language_label_confidence",
+        "language_mismatch",
+        "language_error",
         "fingerprint",
         "score_breakdown"
       ],
@@ -4423,6 +4483,11 @@
         "guard_config": {
           "$ref": "#/$defs/GuardConfig"
         },
+        "language_mismatches": {
+          "default": 0,
+          "title": "Language Mismatches",
+          "type": "integer"
+        },
         "legacy_min_short_side": {
           "anyOf": [
             {
@@ -4652,6 +4717,7 @@
         "clips",
         "speaker_clusters",
         "speaker_mismatches",
+        "language_mismatches",
         "legacy_min_short_side",
         "offset",
         "limit",
@@ -5520,6 +5586,23 @@
           "title": "Duplicate Distance",
           "type": "integer"
         },
+        "language_dispute_below": {
+          "default": 0.001,
+          "exclusiveMaximum": 1.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Language Dispute Below",
+          "type": "number"
+        },
+        "language_id": {
+          "default": false,
+          "title": "Language Id",
+          "type": "boolean"
+        },
+        "language_id_device": {
+          "default": "auto",
+          "title": "Language Id Device",
+          "type": "string"
+        },
         "max_cer": {
           "anyOf": [
             {
@@ -5680,6 +5763,11 @@
           "default": "auto",
           "title": "Mos Device",
           "type": "string"
+        },
+        "reject_language_mismatch": {
+          "default": false,
+          "title": "Reject Language Mismatch",
+          "type": "boolean"
         },
         "require_transcript": {
           "default": true,
@@ -6075,7 +6163,7 @@
       "type": "object"
     },
     "SpeechSelection": {
-      "description": "How a speech scan's clips are selected, and where they came from (#187).\n\nThe speech part of :class:`ExportRequest` and :class:`SelectRequest`, and\nthe only part a speech scan reads besides ``min_score``, ``keep_similar``,\n``max_keep``, ``split`` and the transfer fields; the image filters are\nrefused on a speech scan.\n\nFilters: ``speakers`` (by ``speaker_id``), ``accents`` and ``languages``\n(the corpus labels, exact). ``exclude_speaker_mismatch`` drops clips whose\ncorpus speaker label the clustering disputes. Caps, in hours of audio,\nbest-scoring clips first: ``min_hours_per_speaker`` drops a speaker with\nless, ``max_hours_per_speaker`` caps one, ``max_hours_per_accent`` caps an\naccent, and ``balance_accents`` caps every accent at the smallest one's\nhours. An accent cap takes clips from its speakers in turn, so it keeps\nthem as even as it can.\n\nProvenance, required to export (not to select): ``corpus`` and\n``license`` name the licensed corpus every clip comes from; or\n``consent_record`` names a cortex ``ConsentRecord`` (a path under the\nscanned folder, as ``ConsentConfig.record``) for a real person's voice\noutside a licensed corpus, checked for ``training`` of the ``voice`` at\n``consent_delivery``. The record binds the export to its reference\nrecordings' voice (#209): a clip is kept only when its speaker embedding\nis within ``consent_max_distance`` (cosine distance) of their centroid.\nNothing estimates a speaker's age: the corpus's label is carried, and an\nunknown age stays unknown.",
+      "description": "How a speech scan's clips are selected, and where they came from (#187).\n\nThe speech part of :class:`ExportRequest` and :class:`SelectRequest`, and\nthe only part a speech scan reads besides ``min_score``, ``keep_similar``,\n``max_keep``, ``split`` and the transfer fields; the image filters are\nrefused on a speech scan.\n\nFilters: ``speakers`` (by ``speaker_id``), ``accents`` and ``languages``\n(the corpus labels, exact). ``exclude_speaker_mismatch`` drops clips whose\ncorpus speaker label the clustering disputes, and\n``exclude_language_mismatch`` those whose language label the language-ID\nmodel disputes (#208). Caps, in hours of audio,\nbest-scoring clips first: ``min_hours_per_speaker`` drops a speaker with\nless, ``max_hours_per_speaker`` caps one, ``max_hours_per_accent`` caps an\naccent, and ``balance_accents`` caps every accent at the smallest one's\nhours. An accent cap takes clips from its speakers in turn, so it keeps\nthem as even as it can.\n\nProvenance, required to export (not to select): ``corpus`` and\n``license`` name the licensed corpus every clip comes from; or\n``consent_record`` names a cortex ``ConsentRecord`` (a path under the\nscanned folder, as ``ConsentConfig.record``) for a real person's voice\noutside a licensed corpus, checked for ``training`` of the ``voice`` at\n``consent_delivery``. The record binds the export to its reference\nrecordings' voice (#209): a clip is kept only when its speaker embedding\nis within ``consent_max_distance`` (cosine distance) of their centroid.\nNothing estimates a speaker's age: the corpus's label is carried, and an\nunknown age stays unknown.",
       "properties": {
         "accents": {
           "anyOf": [
@@ -6145,6 +6233,11 @@
           ],
           "default": null,
           "title": "Corpus"
+        },
+        "exclude_language_mismatch": {
+          "default": false,
+          "title": "Exclude Language Mismatch",
+          "type": "boolean"
         },
         "exclude_speaker_mismatch": {
           "default": false,
