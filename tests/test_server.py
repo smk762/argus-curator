@@ -136,12 +136,15 @@ def test_detectors_keys(client: TestClient) -> None:
         "erax",
         "watermark",
         "singguard",
+        "puppet",
         "singguard_policies",
         "singguard_thinking_modes",
         "singguard_thinking_default",
         "speech",
         "dnsmos",
         "speaker_model",
+        "language_id_model",
+        "silero_vad",
     }
     assert resp.json()["singguard_policies"] == []  # no SingGuard server configured
     assert resp.json()["singguard_thinking_modes"] == [] and resp.json()["singguard_thinking_default"] is None
@@ -1446,6 +1449,19 @@ def test_malformed_nudenet_url_is_refused_without_echoing_it(
     assert resp.status_code == 400
     assert "not a valid http(s) URL" in resp.json()["detail"]
     assert "secret" not in resp.json()["detail"]
+
+
+def test_malformed_puppet_url_is_refused_without_echoing_it(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _exports = contained
+    monkeypatch.setenv("ARGUS_CURATOR_PUPPET_URL", "ftp://user:secret@puppet")
+    resp = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}})  # opt-out: on once set
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "body pose requested but ARGUS_CURATOR_PUPPET_URL is not a valid http(s) URL"
+    monkeypatch.delenv("ARGUS_CURATOR_PUPPET_URL")
+    resp = client.post("/scan/folder", json={"folder": "", "faces": {"enabled": False}, "pose": {"enabled": True}})
+    assert resp.status_code == 400 and resp.json()["detail"].endswith("ARGUS_CURATOR_PUPPET_URL is not set")
 
 
 def test_malformed_erax_url_is_refused_before_the_scan(

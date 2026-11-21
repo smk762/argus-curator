@@ -1,5 +1,51 @@
 {
   "$defs": {
+    "BodyPoseLabels": {
+      "description": "The primary person's body-pose labels, as argus-puppet derived them. Keypoints are never stored.",
+      "properties": {
+        "arms": {
+          "enum": [
+            "up",
+            "out",
+            "down",
+            "mixed",
+            "unknown"
+          ],
+          "title": "Arms",
+          "type": "string"
+        },
+        "facing": {
+          "enum": [
+            "front",
+            "back",
+            "left",
+            "right",
+            "unknown"
+          ],
+          "title": "Facing",
+          "type": "string"
+        },
+        "stance": {
+          "enum": [
+            "standing",
+            "jumping",
+            "crouching",
+            "seated",
+            "lying",
+            "unknown"
+          ],
+          "title": "Stance",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stance",
+        "arms",
+        "facing"
+      ],
+      "title": "BodyPoseLabels",
+      "type": "object"
+    },
     "ClipResult": {
       "description": "Per-clip record of a speech scan, keyed by ``rel_path`` like :class:`ImageResult`.\n\nA measurement is ``None`` when the scan never got to it (the clip could not\nbe decoded, or the check was not asked for). The corpus labels\n(``speaker``, ``accent``, ``language``, ``age``) are copied verbatim from\nthe corpus metadata, never estimated.",
       "properties": {
@@ -120,7 +166,8 @@
               "snr",
               "speech_ratio",
               "mos",
-              "cer"
+              "cer",
+              "language"
             ],
             "type": "string"
           },
@@ -170,6 +217,59 @@
           ],
           "default": null,
           "title": "Language"
+        },
+        "language_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language Confidence"
+        },
+        "language_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language Error"
+        },
+        "language_label_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language Label Confidence"
+        },
+        "language_mismatch": {
+          "default": false,
+          "title": "Language Mismatch",
+          "type": "boolean"
+        },
+        "language_predicted": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language Predicted"
         },
         "leading_silence_s": {
           "anyOf": [
@@ -241,7 +341,8 @@
                 "snr",
                 "speech_ratio",
                 "mos",
-                "cer"
+                "cer",
+                "language"
               ],
               "type": "string"
             },
@@ -414,6 +515,34 @@
           ],
           "default": null,
           "title": "Transcript Source"
+        },
+        "vad": {
+          "anyOf": [
+            {
+              "enum": [
+                "energy",
+                "silero"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vad"
+        },
+        "vad_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vad Error"
         }
       },
       "required": [
@@ -437,6 +566,8 @@
         "trailing_silence_s",
         "snr_db",
         "speech_ratio",
+        "vad",
+        "vad_error",
         "transcript",
         "transcript_source",
         "chars_per_s",
@@ -453,6 +584,11 @@
         "speaker_distance",
         "speaker_mismatch",
         "speaker_error",
+        "language_predicted",
+        "language_confidence",
+        "language_label_confidence",
+        "language_mismatch",
+        "language_error",
         "fingerprint",
         "score_breakdown"
       ],
@@ -1573,7 +1709,7 @@
           "title": "Manifest Path"
         },
         "manifest_version": {
-          "default": "2.6",
+          "default": "2.7",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -2999,6 +3135,47 @@
           "title": "Phash",
           "type": "string"
         },
+        "pose_check": {
+          "anyOf": [
+            {
+              "enum": [
+                "ok",
+                "unusable",
+                "no_person",
+                "failed"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pose Check"
+        },
+        "pose_cluster": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pose Cluster"
+        },
+        "pose_labels": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BodyPoseLabels"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "primary_face_attributes": {
           "anyOf": [
             {
@@ -3211,6 +3388,9 @@
         "crop",
         "crop_source",
         "watermarks",
+        "pose_check",
+        "pose_labels",
+        "pose_cluster",
         "phash",
         "score_breakdown",
         "content_rating"
@@ -3418,9 +3598,32 @@
           "type": "string"
         },
         "manifest_version": {
-          "default": "2.6",
+          "default": "2.7",
           "title": "Manifest Version",
           "type": "string"
+        },
+        "pose_cluster": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pose Cluster"
+        },
+        "pose_labels": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BodyPoseLabels"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "primary_face": {
           "anyOf": [
@@ -3533,7 +3736,9 @@
         "split",
         "consent_release_sha256",
         "consent_record_sha256",
-        "provenance"
+        "provenance",
+        "pose_labels",
+        "pose_cluster"
       ],
       "title": "ManifestRow",
       "type": "object"
@@ -3770,6 +3975,181 @@
         "exposed_score"
       ],
       "title": "PersonDetection",
+      "type": "object"
+    },
+    "PoseCluster": {
+      "description": "One scan-level body-pose cluster from argus-puppet's ``POST /stats`` (average linkage over the scan).",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "medoid_rel_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Medoid Rel Path"
+        },
+        "share": {
+          "title": "Share",
+          "type": "number"
+        },
+        "size": {
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "size",
+        "share",
+        "medoid_rel_path"
+      ],
+      "title": "PoseCluster",
+      "type": "object"
+    },
+    "PoseConfig": {
+      "description": "Body pose from a remote argus-puppet server (see bodypose.py).\n\nThe server URL is process configuration (ARGUS_CURATOR_PUPPET_URL), never a\nrequest field, as for NudeNet. Same opt-out rule: None (default) = on\nwhenever the URL is set; True = required (the scan is refused without a\nURL); False = opted out. A finished scan records whether the stage ran as\nTrue or False.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        }
+      },
+      "title": "PoseConfig",
+      "type": "object"
+    },
+    "PoseSummary": {
+      "description": "What the body-pose stage found over the whole scan (see bodypose.py and docs/body-pose.md).\n\n``posed`` images came back from argus-puppet (``no_person`` of them with\nnobody in frame), ``failed`` did not. The rest comes from one ``POST\n/stats`` over every posed image, or is None/empty with ``skipped`` saying\nwhy (the scan is over the set cap, the server refused or failed the call,\nnothing was posed). ``stale``: rows were dropped since, so cluster sizes and\nshares are recounted from the rows left but ``diversity`` and\n``comparable_share`` are as measured.",
+      "properties": {
+        "clusters": {
+          "items": {
+            "$ref": "#/$defs/PoseCluster"
+          },
+          "title": "Clusters",
+          "type": "array"
+        },
+        "comparable_share": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Comparable Share"
+        },
+        "diversity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diversity"
+        },
+        "failed": {
+          "default": 0,
+          "title": "Failed",
+          "type": "integer"
+        },
+        "largest_cluster_share": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Largest Cluster Share"
+        },
+        "no_person": {
+          "default": 0,
+          "title": "No Person",
+          "type": "integer"
+        },
+        "posed": {
+          "default": 0,
+          "title": "Posed",
+          "type": "integer"
+        },
+        "puppet_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Puppet Version"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Skipped"
+        },
+        "stale": {
+          "default": false,
+          "title": "Stale",
+          "type": "boolean"
+        },
+        "usable": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usable"
+        }
+      },
+      "required": [
+        "puppet_version",
+        "posed",
+        "no_person",
+        "failed",
+        "skipped",
+        "usable",
+        "comparable_share",
+        "diversity",
+        "largest_cluster_share",
+        "clusters",
+        "stale"
+      ],
+      "title": "PoseSummary",
       "type": "object"
     },
     "PrefilterConfig": {
@@ -4016,6 +4396,9 @@
         "nsfw": {
           "$ref": "#/$defs/NsfwConfig"
         },
+        "pose": {
+          "$ref": "#/$defs/PoseConfig"
+        },
         "prefilter": {
           "$ref": "#/$defs/PrefilterConfig"
         },
@@ -4100,6 +4483,11 @@
         "guard_config": {
           "$ref": "#/$defs/GuardConfig"
         },
+        "language_mismatches": {
+          "default": 0,
+          "title": "Language Mismatches",
+          "type": "integer"
+        },
         "legacy_min_short_side": {
           "anyOf": [
             {
@@ -4163,6 +4551,20 @@
         "passed": {
           "title": "Passed",
           "type": "integer"
+        },
+        "pose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PoseSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pose_config": {
+          "$ref": "#/$defs/PoseConfig"
         },
         "prefilter_config": {
           "$ref": "#/$defs/PrefilterConfig"
@@ -4294,6 +4696,8 @@
         "guard_config",
         "prefilter_config",
         "crop_config",
+        "pose_config",
+        "pose",
         "total",
         "passed",
         "rejected",
@@ -4313,6 +4717,7 @@
         "clips",
         "speaker_clusters",
         "speaker_mismatches",
+        "language_mismatches",
         "legacy_min_short_side",
         "offset",
         "limit",
@@ -5030,6 +5435,18 @@
           "title": "Abs Path",
           "type": "string"
         },
+        "consent_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Distance"
+        },
         "keep_reason": {
           "default": "",
           "title": "Keep Reason",
@@ -5086,7 +5503,8 @@
         "keep_reason",
         "rank",
         "split",
-        "speaker_id"
+        "speaker_id",
+        "consent_distance"
       ],
       "title": "SelectRow",
       "type": "object"
@@ -5167,6 +5585,23 @@
           "minimum": -1,
           "title": "Duplicate Distance",
           "type": "integer"
+        },
+        "language_dispute_below": {
+          "default": 0.001,
+          "exclusiveMaximum": 1.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Language Dispute Below",
+          "type": "number"
+        },
+        "language_id": {
+          "default": false,
+          "title": "Language Id",
+          "type": "boolean"
+        },
+        "language_id_device": {
+          "default": "auto",
+          "title": "Language Id Device",
+          "type": "string"
         },
         "max_cer": {
           "anyOf": [
@@ -5329,6 +5764,11 @@
           "title": "Mos Device",
           "type": "string"
         },
+        "reject_language_mismatch": {
+          "default": false,
+          "title": "Reject Language Mismatch",
+          "type": "boolean"
+        },
         "require_transcript": {
           "default": true,
           "title": "Require Transcript",
@@ -5372,6 +5812,15 @@
             "common_voice"
           ],
           "title": "Transcripts",
+          "type": "string"
+        },
+        "vad": {
+          "default": "energy",
+          "enum": [
+            "energy",
+            "silero"
+          ],
+          "title": "Vad",
           "type": "string"
         },
         "weight_mos": {
@@ -5714,7 +6163,7 @@
       "type": "object"
     },
     "SpeechSelection": {
-      "description": "How a speech scan's clips are selected, and where they came from (#187).\n\nThe speech part of :class:`ExportRequest` and :class:`SelectRequest`, and\nthe only part a speech scan reads besides ``min_score``, ``keep_similar``,\n``max_keep``, ``split`` and the transfer fields; the image filters are\nrefused on a speech scan.\n\nFilters: ``speakers`` (by ``speaker_id``), ``accents`` and ``languages``\n(the corpus labels, exact). ``exclude_speaker_mismatch`` drops clips whose\ncorpus speaker label the clustering disputes. Caps, in hours of audio,\nbest-scoring clips first: ``min_hours_per_speaker`` drops a speaker with\nless, ``max_hours_per_speaker`` caps one, ``max_hours_per_accent`` caps an\naccent, and ``balance_accents`` caps every accent at the smallest one's\nhours. An accent cap takes clips from its speakers in turn, so it keeps\nthem as even as it can.\n\nProvenance, required to export (not to select): ``corpus`` and\n``license`` name the licensed corpus every clip comes from; or\n``consent_record`` names a cortex ``ConsentRecord`` (a path under the\nscanned folder, as ``ConsentConfig.record``) for a real person's voice\noutside a licensed corpus, checked for ``training`` of the ``voice`` at\n``consent_delivery``. Nothing estimates a speaker's age: the corpus's\nlabel is carried, and an unknown age stays unknown.",
+      "description": "How a speech scan's clips are selected, and where they came from (#187).\n\nThe speech part of :class:`ExportRequest` and :class:`SelectRequest`, and\nthe only part a speech scan reads besides ``min_score``, ``keep_similar``,\n``max_keep``, ``split`` and the transfer fields; the image filters are\nrefused on a speech scan.\n\nFilters: ``speakers`` (by ``speaker_id``), ``accents`` and ``languages``\n(the corpus labels, exact). ``exclude_speaker_mismatch`` drops clips whose\ncorpus speaker label the clustering disputes, and\n``exclude_language_mismatch`` those whose language label the language-ID\nmodel disputes (#208). Caps, in hours of audio,\nbest-scoring clips first: ``min_hours_per_speaker`` drops a speaker with\nless, ``max_hours_per_speaker`` caps one, ``max_hours_per_accent`` caps an\naccent, and ``balance_accents`` caps every accent at the smallest one's\nhours. An accent cap takes clips from its speakers in turn, so it keeps\nthem as even as it can.\n\nProvenance, required to export (not to select): ``corpus`` and\n``license`` name the licensed corpus every clip comes from; or\n``consent_record`` names a cortex ``ConsentRecord`` (a path under the\nscanned folder, as ``ConsentConfig.record``) for a real person's voice\noutside a licensed corpus, checked for ``training`` of the ``voice`` at\n``consent_delivery``. The record binds the export to its reference\nrecordings' voice (#209): a clip is kept only when its speaker embedding\nis within ``consent_max_distance`` (cosine distance) of their centroid.\nNothing estimates a speaker's age: the corpus's label is carried, and an\nunknown age stays unknown.",
       "properties": {
         "accents": {
           "anyOf": [
@@ -5751,6 +6200,13 @@
           "default": null,
           "title": "Consent Delivery"
         },
+        "consent_max_distance": {
+          "default": 0.25,
+          "exclusiveMaximum": 2.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Consent Max Distance",
+          "type": "number"
+        },
         "consent_record": {
           "anyOf": [
             {
@@ -5777,6 +6233,11 @@
           ],
           "default": null,
           "title": "Corpus"
+        },
+        "exclude_language_mismatch": {
+          "default": false,
+          "title": "Exclude Language Mismatch",
+          "type": "boolean"
         },
         "exclude_speaker_mismatch": {
           "default": false,

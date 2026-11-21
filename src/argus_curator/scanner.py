@@ -51,6 +51,7 @@ from argus_curator.models import (
     GuardConfig,
     ImageResult,
     NsfwConfig,
+    PoseConfig,
     PrefilterConfig,
     ScanConfig,
     ScanSummary,
@@ -59,7 +60,7 @@ from argus_curator.models import (
     TargetProfile,
     zero_shot_asked,
 )
-from argus_curator.runtime import ScanCancelled
+from argus_curator.runtime import ModelUnavailable, ScanCancelled
 
 __all__ = ["ScanCancelled", "collect_images", "scan_folder", "scan_items"]
 
@@ -596,6 +597,7 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     their attributes pooled again (:func:`faces.repool_identities`), and the set
     age read again.
     """
+    from argus_curator import bodypose as bodypose_mod
     from argus_curator import faces as faces_mod
 
     gone = set(gone)
@@ -618,6 +620,7 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     summary.face_clusters = recount_identities(summary.face_clusters, results)
     faces_mod.repool_identities(summary.face_clusters, results)
     faces_mod.reread_set_age(summary, results)
+    bodypose_mod.recount(summary, results)
 
     rejected = [r for r in results if not r.passed]
     summary.results = results
@@ -647,6 +650,7 @@ def scan_items(
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
     crop_cfg: CropConfig | None = None,
+    pose_cfg: PoseConfig | None = None,
     folder: str = "",
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
@@ -673,6 +677,9 @@ def scan_items(
     *crop_cfg* (opt-in) crops the boxed images in memory before scoring, so
     every phase sees the cropped frame (see :mod:`argus_curator.crops`); an
     image whose box cannot be applied is rejected as ``crop:<why>``.
+    *pose_cfg* (opt-out, like NudeNet) sends each passing image to argus-puppet
+    after the faces and before SingGuard, phase ``pose``, and clusters the
+    scan's poses (see :mod:`argus_curator.bodypose`); it never fails the scan.
     *embed_cfg* (opt-in) computes each passing image's semantic embedding;
     the vectors go on the returned summary's in-memory ``embeddings`` only,
     never on a row or a snapshot.
@@ -703,6 +710,8 @@ def scan_items(
     guard_cfg = guard_cfg or GuardConfig()
     prefilter_cfg = prefilter_cfg or PrefilterConfig()
     crop_cfg = crop_cfg or CropConfig()
+    pose_cfg = pose_cfg or PoseConfig()
+    from argus_curator import bodypose as bodypose_mod
     from argus_curator import crops as crops_mod
     from argus_curator import prefilter as prefilter_mod
 
@@ -715,6 +724,9 @@ def scan_items(
         if not watermarks_mod.configured():
             raise ValueError(f"watermark detection needs a detector: set {watermarks_mod.URL_ENV}")
         watermarks_mod.client()  # a malformed URL fails here, not after the scan has started
+    pose_wanted = bodypose_mod.resolve_enabled(pose_cfg)
+    if pose_wanted and bodypose_mod.client() is None:  # a malformed URL raises, naming the variable only
+        raise ModelUnavailable(f"body pose requested but {bodypose_mod.URL_ENV} is not set")
     if cfg.semantic_duplicates and not embed_cfg.enabled:
         raise ValueError(SEMANTIC_DUPLICATES_NEED_EMBEDDINGS)
     # Refused, never run without: a zero-shot score needs the image vectors.
@@ -757,7 +769,9 @@ def scan_items(
         return [results_by_rel[rel] for rel, _, _ in items if rel in results_by_rel]
 
     # Whether each opt-out check actually ran, read when a snapshot is saved.
-    ran = {"nsfw": False, "erax": False, "guard": False, "guard_fell_back": False}
+    ran = {"nsfw": False, "erax": False, "guard": False, "guard_fell_back": False, "pose": False}
+    # The body-pose stage's scan-level findings, once it has run.
+    pose_found: dict[str, Any] = {"summary": None}
     # The SingGuard mode the scan asks for (its own, else the server's), recorded with its guard_config.
     guard_mode = guard_mod.thinking(guard_cfg) if guard_mod.resolve_enabled(guard_cfg) else None
     # The set age given to the frames with no face, or why none was, and why
@@ -808,6 +822,8 @@ def scan_items(
             ),
             prefilter_config=prefilter_cfg,
             crop_config=crop_cfg,
+            pose_config=PoseConfig(enabled=ran["pose"]),
+            pose=pose_found["summary"],
             total=total,
             passed=len(passed),
             rejected=len(rejected),
@@ -1196,6 +1212,19 @@ def scan_items(
             vectors = {rel: v for rel, v in vectors.items() if rel not in {r.rel_path for r in junk_dropped}}
         deliver("zero_shot", total, total, results, force=True)
 
+    # Body pose (opt-out, like NudeNet) on argus-puppet: after the faces, so
+    # the primary face goes as the hint, and before SingGuard, the slow pass.
+    # Labels and the scan-level cluster land on the rows; a failure leaves None
+    # and never stops the scan.
+    if pose_wanted:
+        pose_found["summary"] = bodypose_mod.pose_images(
+            [r for r in results if r.passed],
+            items,
+            progress=(lambda done, phase_total: emit("pose", done, phase_total)) if progress else None,
+        )
+        ran["pose"] = True
+        deliver("pose", total, total, results, force=True)
+
     # SingGuard (opt-out), the same way as NudeNet. The slow GPU pass goes last
     # among the checks: its verdict can put a blur back, never lift one.
     guard_batch: list[ImageResult] = []
@@ -1248,6 +1277,7 @@ def scan_folder(
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
     crop_cfg: CropConfig | None = None,
+    pose_cfg: PoseConfig | None = None,
     consent_cfg: ConsentConfig | None = None,
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
@@ -1309,6 +1339,7 @@ def scan_folder(
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
         crop_cfg=crop_cfg,
+        pose_cfg=pose_cfg,
         folder=str(root.resolve()),
         scan_id=scan_id,
         progress=progress,

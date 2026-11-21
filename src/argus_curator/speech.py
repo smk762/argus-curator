@@ -9,11 +9,15 @@ duration caps are checked before a sample is decoded) and gets:
   rate, channels, clipping ratio, and leading or trailing silence.
 * **Quality**: an SNR estimate, and with ``SpeechConfig.mos`` a DNSMOS score
   (:mod:`argus_curator.dnsmos`, under the GPU lease).
-* **Speech ratio**: the share of the clip an energy VAD marks as speech.
+* **Speech ratio**: the share of the clip a VAD marks as speech: the energy VAD
+  by default, or Silero VAD with ``SpeechConfig.vad = "silero"`` (:mod:`argus_curator.silero`).
 * **Transcript fit**: the speaking rate (letters and digits per second of the
   clip less its edge silence) and, given an STT engine, the CER between the
   transcript and its pass (the :class:`Transcriber` hook; argus-echo#4).
 * **Near-duplicates**: a 64-bit spectrogram fingerprint, the counterpart of pHash.
+* **Language labels**: with ``SpeechConfig.language_id``, a spoken language-ID
+  model's reading beside the corpus label, and a flag where it disputes it
+  (:mod:`argus_curator.language_id`, under the GPU lease).
 
 Every threshold is a prefilter: a clip past one is rejected and names the
 check (``ClipResult.reject_reason``, ``failed_checks``, ``reject_detail``). A
@@ -40,7 +44,7 @@ import numpy as np
 import structlog
 from argus_cortex.limits import DEFAULT_SAMPLE_RATES, BadInput, TooLarge, open_audio
 
-from argus_curator import dnsmos, speakers
+from argus_curator import dnsmos, language_id, silero, speakers
 from argus_curator.models import (
     MAX_CLIP_CHANNELS,
     SPEECH_CHECKS,
@@ -117,7 +121,13 @@ def require_speech() -> None:
 
 def requested_checks(cfg: SpeechConfig, transcriber: Transcriber | None = None) -> list[str]:
     """The slow checks a speech scan runs after its first pass (``pending_checks`` in its events)."""
-    return [name for name, on in (("mos", cfg.mos), ("cer", transcriber is not None), ("speakers", cfg.speakers)) if on]
+    checks = (
+        ("mos", cfg.mos),
+        ("cer", transcriber is not None),
+        ("language", cfg.language_id),
+        ("speakers", cfg.speakers),
+    )
+    return [name for name, on in checks if on]
 
 
 def problem(cfg: SpeechConfig, transcriber: Transcriber | None = None) -> str | None:
@@ -128,6 +138,10 @@ def problem(cfg: SpeechConfig, transcriber: Transcriber | None = None) -> str | 
         return "max_cer needs a speech-to-text engine (argus-echo#4), and none is configured"
     if cfg.mos and not dnsmos.dnsmos_available():
         return f"DNSMOS requested but the model is not in place (argus-curator dnsmos-fetch, or {dnsmos.MODEL_ENV})"
+    if cfg.vad == "silero" and (why := silero.problem()) is not None:
+        return why
+    if cfg.language_id and (why := language_id.problem()) is not None:
+        return why
     if cfg.speakers:
         return speakers.problem()
     return None
@@ -174,10 +188,14 @@ def vad(db: np.ndarray, silence_db: float) -> np.ndarray:
     return mask
 
 
-def snr_db(db: np.ndarray, mask: np.ndarray) -> float | None:
-    """SNR of the speech frames over the rest (or the quietest tenth when the VAD left too few)."""
+def snr_db(db: np.ndarray, mask: np.ndarray, not_noise: np.ndarray | None = None) -> float | None:
+    """SNR of the speech frames over the rest (or the quietest tenth when the VAD left too few).
+
+    *not_noise* (default *mask*) marks the frames kept out of the noise side:
+    a model VAD's speech plus what it is unsure of (:func:`speech_mask`).
+    """
     power = 10.0 ** (db / 10.0)
-    speech, noise = power[mask], power[~mask]
+    speech, noise = power[mask], power[~(mask if not_noise is None else not_noise)]
     if speech.size == 0:
         return None
     noise_p = float(noise.mean()) if noise.size >= 5 else float(np.percentile(power, 10))
@@ -311,8 +329,37 @@ def _settle(row: ClipResult, failed: dict[SpeechCheck, str]) -> None:
     row.reject_detail = (known[ordered[0]] or None) if ordered else None
 
 
-def measure_clip(rel: str, path: Path, transcript: Transcript | None, cfg: SpeechConfig) -> ClipResult:
-    """Decode one clip, measure it, and apply every first-pass threshold of *cfg*."""
+def speech_mask(
+    mono: np.ndarray, rate: int, db: np.ndarray, cfg: SpeechConfig, vad_session: Any = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(speech, not_noise)`` masks over the frames of *db*, from the VAD *cfg* names.
+
+    ``speech`` is what the speech ratio counts and the SNR's speech side;
+    ``not_noise`` is kept off the SNR's noise side. For the energy VAD they are
+    the same. For Silero (run on *vad_session*) ``not_noise`` adds every window
+    it gives at least :data:`silero.NEG_THRESHOLD` (a word too short to count
+    as speech is not noise either) and a guard band around them.
+    """
+    if cfg.vad == "silero":
+        if vad_session is None:
+            raise ModelUnavailable("the Silero VAD was requested but no session was given")
+        probs = silero.probabilities(vad_session, mono, rate)
+        speech = silero.speech_windows(probs)
+        return (
+            silero.frame_mask(speech, len(db), FRAME_S, HOP_S),
+            silero.guarded(silero.frame_mask(speech | (probs >= silero.NEG_THRESHOLD), len(db), FRAME_S, HOP_S)),
+        )
+    mask = vad(db, cfg.silence_db)
+    return mask, mask
+
+
+def measure_clip(
+    rel: str, path: Path, transcript: Transcript | None, cfg: SpeechConfig, vad_session: Any = None
+) -> ClipResult:
+    """Decode one clip, measure it, and apply every first-pass threshold of *cfg*.
+
+    *vad_session* is the Silero VAD session when ``cfg.vad`` is ``"silero"``.
+    """
     row = ClipResult(rel_path=rel, abs_path=str(path))
     if transcript is not None:
         row.transcript = transcript.text or None
@@ -367,10 +414,17 @@ def measure_clip(rel: str, path: Path, transcript: Transcript | None, cfg: Speec
             f"{row.trailing_silence_s:g} s; max_trailing_silence_s is {cfg.max_trailing_silence_s:g}",
         )
 
-    mask = vad(db, cfg.silence_db)
-    row.speech_ratio = round(float(mask.mean()), 4)
-    snr = snr_db(db, mask)
-    row.snr_db = round(snr, 2) if snr is not None else None
+    try:
+        mask, not_noise = speech_mask(mono, rate, db, cfg, vad_session)
+    except Exception as exc:
+        # Neither measured: the energy VAD is not swapped in behind the request's back.
+        row.vad_error = str(exc) or type(exc).__name__
+        logger.warning("speech_vad_failed", rel_path=rel, vad=cfg.vad, error=row.vad_error)
+    else:
+        row.vad = cfg.vad
+        row.speech_ratio = round(float(mask.mean()), 4)
+        snr = snr_db(db, mask, not_noise)
+        row.snr_db = round(snr, 2) if snr is not None else None
 
     if row.transcript is None:
         if cfg.require_transcript:
@@ -386,10 +440,21 @@ def measure_clip(rel: str, path: Path, transcript: Transcript | None, cfg: Speec
             failed.setdefault(
                 "speaking_rate", f"{row.chars_per_s:g} chars/s is over max_chars_per_s {cfg.max_chars_per_s:g}"
             )
+    no_vad = f"the {cfg.vad} VAD could not read it" if row.vad_error is not None else None
     if cfg.min_snr_db is not None and (row.snr_db is None or row.snr_db < cfg.min_snr_db):
-        failed.setdefault("snr", f"SNR {row.snr_db} dB is under min_snr_db {cfg.min_snr_db:g}")
-    if cfg.min_speech_ratio is not None and row.speech_ratio < cfg.min_speech_ratio:
-        failed.setdefault("speech_ratio", f"{row.speech_ratio:g} is under min_speech_ratio {cfg.min_speech_ratio:g}")
+        failed.setdefault(
+            "snr",
+            f"{no_vad}, and min_snr_db is set"
+            if no_vad
+            else f"SNR {row.snr_db} dB is under min_snr_db {cfg.min_snr_db:g}",
+        )
+    if cfg.min_speech_ratio is not None:
+        if row.speech_ratio is None:
+            failed.setdefault("speech_ratio", f"{no_vad or 'no speech ratio'}, and min_speech_ratio is set")
+        elif row.speech_ratio < cfg.min_speech_ratio:
+            failed.setdefault(
+                "speech_ratio", f"{row.speech_ratio:g} is under min_speech_ratio {cfg.min_speech_ratio:g}"
+            )
 
     row.fingerprint = fingerprint(mono, rate)
     _settle(row, failed)
@@ -460,6 +525,7 @@ def drop_clips(summary: ScanSummary, gone: set[str] | list[str]) -> None:
     summary.similar_clusters = mark_duplicates(clips, cfg.duplicate_distance)
     if summary.speaker_clusters:
         summary.speaker_clusters, summary.speaker_mismatches = speakers.agreement(clips)
+    summary.language_mismatches = language_id.count_mismatches(clips)
     for rel in gone:
         summary.embeddings.pop(rel, None)
     passed = [c for c in clips if c.passed]
@@ -508,8 +574,9 @@ def scan_speech_folder(
     the last one (``clips``, with ``modality: "speech"``), *save* a snapshot
     now and then, and *cancelled* stops the scan between clips. Phases:
     ``collecting``, ``scoring`` (decode, measure, first-pass thresholds),
-    ``mos`` (with ``cfg.mos``), ``cer`` (with a *transcriber*) and
-    ``speakers`` (with ``cfg.speakers``: embeddings, then the clustering).
+    ``mos`` (with ``cfg.mos``), ``cer`` (with a *transcriber*), ``language``
+    (with ``cfg.language_id``) and ``speakers`` (with ``cfg.speakers``:
+    embeddings, then the clustering).
     """
     # A speech scan takes a speech profile only: an image one is refused here.
     profile = SpeechTargetProfile.model_validate(profile) if profile is not None else SpeechTargetProfile()
@@ -612,12 +679,16 @@ def scan_speech_folder(
             },
         )
 
-    # Phase 1: decode, measure and the first-pass thresholds.
+    # Phase 1: decode, measure and the first-pass thresholds. Silero VAD, when
+    # asked for, runs here on CPU (no GPU lease: see argus_curator.silero).
+    vad_session = silero.get_session() if cfg.vad == "silero" else None
     emit("scoring", 0, total)
     done = 0
     batch: list[ClipResult] = []
     with ThreadPoolExecutor(max_workers=cfg.max_workers) as pool:
-        futures = {pool.submit(measure_clip, rel, path, transcripts.get(rel), cfg): rel for rel, path in clips}
+        futures = {
+            pool.submit(measure_clip, rel, path, transcripts.get(rel), cfg, vad_session): rel for rel, path in clips
+        }
         try:
             for fut in as_completed(futures):
                 row = fut.result()
@@ -704,7 +775,45 @@ def scan_speech_folder(
         with lock:
             completed.add("cer")
 
-    # Phase 4: speaker embeddings on the clips still passing, one clip per pass
+    # Phase 4: language ID on the clips still passing (#208), one clip's
+    # fixed-size windows per pass under the GPU lease. A dispute is flagged;
+    # it rejects the clip only with reject_language_mismatch.
+    if cfg.language_id:
+        session = language_id.get_session(cfg.language_id_device)
+        pending = [rows[rel] for rel in order if rel in rows and rows[rel].passed]
+        emit("language", 0, len(pending))
+        batch = []
+        for i, row in enumerate(pending, 1):
+            check_cancelled()
+            decoded = mono_of(row)
+            try:
+                if decoded is None:
+                    raise ValueError("the clip could not be read again")
+                probs = language_id.identify(session, decoded[0], decoded[1], cfg.language_id_device)
+                language_id.judge(row, probs, cfg.language_dispute_below)
+            except GPU_UNAVAILABLE:
+                raise
+            except Exception as exc:
+                row.language_error = str(exc) or type(exc).__name__
+                logger.warning("speech_language_id_failed", rel_path=row.rel_path, error=row.language_error)
+            if cfg.reject_language_mismatch and row.language_mismatch:
+                _settle(
+                    row,
+                    {
+                        "language": f"the language-ID model gives the corpus label {row.language!r} "
+                        f"p={row.language_label_confidence:g} (it hears {row.language_predicted!r}, "
+                        f"p={row.language_confidence:g})"
+                    },
+                )
+            batch.append(row)
+            if i == len(pending) or len(batch) >= CHUNK_SIZE:
+                emit("language", i, len(pending))
+                deliver("language", i, len(pending), batch, finished="language" if i == len(pending) else None)
+                batch = []
+        with lock:
+            completed.add("language")
+
+    # Phase 5: speaker embeddings on the clips still passing, one clip per pass
     # under the GPU lease, then the clustering. The embeddings stay in memory.
     embeddings: dict[str, np.ndarray] = {}
     if cfg.speakers:
@@ -738,6 +847,7 @@ def scan_speech_folder(
             completed.add("speakers")
     summary = snapshot()
     summary.speaker_clusters, summary.speaker_mismatches = speaker_clusters, mismatches
+    summary.language_mismatches = language_id.count_mismatches(summary.clips)
     summary.embeddings.update(embeddings)
     logger.info("speech_scan_done", folder=folder_str, total=summary.total, passed=summary.passed)
     return summary

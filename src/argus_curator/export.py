@@ -343,6 +343,8 @@ def write_manifest(
                 consent_release_sha256=consent.release_sha256 if consent else None,
                 consent_record_sha256=consent.record_sha256 if consent else None,
                 provenance=consent.provenance[r.rel_path] if consent else None,
+                pose_labels=r.pose_labels,
+                pose_cluster=r.pose_cluster,
             )
             f.write(row.model_dump_json() + "\n")
 
@@ -450,6 +452,11 @@ def write_report(
         "primary_face_age_body",
         "people_count",
         "body_ages",
+        "pose_check",
+        "pose_stance",
+        "pose_arms",
+        "pose_facing",
+        "pose_cluster",
         "scene",
         "scene_conf",
         "scene_environment",
@@ -517,6 +524,11 @@ def write_report(
                     "body_ages": ";".join(
                         f"{p.age_years:.1f}" for p in r.people if p.face_index is None and p.age_years is not None
                     ),
+                    "pose_check": r.pose_check or "",
+                    "pose_stance": r.pose_labels.stance if r.pose_labels else "",
+                    "pose_arms": r.pose_labels.arms if r.pose_labels else "",
+                    "pose_facing": r.pose_labels.facing if r.pose_labels else "",
+                    "pose_cluster": _blank(r.pose_cluster),
                     "scene": r.scene.categories[0].label if r.scene and r.scene.categories else "",
                     "scene_conf": r.scene.categories[0].conf if r.scene and r.scene.categories else "",
                     "scene_environment": r.scene.environment if r.scene else "",

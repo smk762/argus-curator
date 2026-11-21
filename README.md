@@ -180,6 +180,7 @@ narrows that to exposure on the young person's box; see
 - [Face sources](docs/face-sources.md): head pose, face sharpness, eyes and mouth, identity distance, the argus-mask preset
 - [Scene tags](docs/scene-tags.md): Places365 scenes and indoor/outdoor
 - [Garments](docs/garments.md): Fashionpedia garments, colours and cut-off
+- [Body pose](docs/body-pose.md): argus-puppet stance, arms and facing per image, and scan-level pose clusters
 - [Nudity detection](docs/nudity.md): NudeNet, the EraX second pass, content rating
 - [Policy check](docs/policy-check.md): SingGuard verdicts, policies and context
 - [Prefilter](docs/prefilter.md): drop images before the slow checks

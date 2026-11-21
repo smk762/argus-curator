@@ -214,6 +214,11 @@ VRAM_MB: dict[str, dict[str, int]] = {
     # loaded (CUDA context included) and 420 MB at peak over 30 passes of one
     # clip's 4 windows of 3 s (3090, 1 GB arena cap).
     "speakers": {"load": 350, "run": 192},
+    # SpeechBrain VoxLingua107 ECAPA-TDNN language ID (speech scans, #208):
+    # 352 MB once loaded (CUDA context included) and 810 MB at peak over 30
+    # passes of one clip's 3 windows of 6 s (3090, 1 GB arena cap). 7 ms a
+    # clip on the GPU against 700 ms on CPU, so unlike Silero it leases.
+    "language": {"load": 400, "run": 512},
 }
 
 # What gpu_lease raises when no GPU slot was granted: not a bad image, so a
@@ -305,21 +310,23 @@ def load_session(
     missing_hint: str,
     extra: str = "faces",
     cuda_options: dict[str, str] | None = None,
+    threads: int | None = None,
 ):
     """Build (and cache) an onnxruntime session for the model at *path*.
 
     *cuda_options* override :func:`cuda_provider_options` for this one model (a
     larger ``gpu_mem_limit`` for weights past the default cap); the arena stays
-    ``kSameAsRequested`` and capped either way.
+    ``kSameAsRequested`` and capped either way. *threads* caps the session's
+    intra-op threads, for a tiny model that several scan threads run at once.
     """
     options = cuda_options or {}
-    key = f"{path}:{','.join(providers)}:{sorted(options.items())}"
+    key = f"{path}:{','.join(providers)}:{sorted(options.items())}:{threads}"
     if key in _SESSION_CACHE:
         return _SESSION_CACHE[key]
     with _SESSION_LOCK:
         if key not in _SESSION_CACHE:
             _SESSION_CACHE[key] = _build_session(
-                path, providers, missing_hint=missing_hint, extra=extra, cuda_options=options
+                path, providers, missing_hint=missing_hint, extra=extra, cuda_options=options, threads=threads
             )
         return _SESSION_CACHE[key]
 
@@ -331,6 +338,7 @@ def _build_session(
     missing_hint: str,
     extra: str,
     cuda_options: dict[str, str] | None = None,
+    threads: int | None = None,
 ):
     try:
         import onnxruntime as ort
@@ -338,7 +346,13 @@ def _build_session(
         raise ModelUnavailable(f"This model requires onnxruntime: pip install argus-curator[{extra}]") from exc
     if not path.is_file():
         raise ModelUnavailable(f"Model not found at {path}. {missing_hint}")
-    return ort.InferenceSession(str(path), providers=session_providers(providers, **(cuda_options or {})))
+    provs = session_providers(providers, **(cuda_options or {}))
+    if threads is None:
+        return ort.InferenceSession(str(path), providers=provs)
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = threads
+    opts.inter_op_num_threads = 1
+    return ort.InferenceSession(str(path), sess_options=opts, providers=provs)
 
 
 # Faces per forward pass of an attribute model (MiVOLO, FairFace). A pass used to

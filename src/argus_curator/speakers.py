@@ -333,6 +333,38 @@ def agreement(clips: Sequence[ClipResult]) -> tuple[list[SpeakerCluster], int]:
     return out, mismatches
 
 
+# ---------------------------------------------------------------------------
+# A reference voice (#209)
+# ---------------------------------------------------------------------------
+
+
+def reference_centroid(vectors: Sequence[np.ndarray]) -> np.ndarray | None:
+    """The unit centroid of *vectors* (speaker embeddings), or None when they give no usable one.
+
+    None for no vectors, a vector that is not :data:`EMBEDDING_DIM` long or not
+    finite, or vectors that cancel out. The centroid is a voiceprint: the
+    caller holds it in memory for one check and never stores it.
+    """
+    rows = [np.asarray(v, dtype=np.float32).ravel() for v in vectors]
+    if not rows or any(r.shape != (EMBEDDING_DIM,) or not np.all(np.isfinite(r)) for r in rows):
+        return None
+    norms = [float(np.linalg.norm(r)) for r in rows]
+    if min(norms) < 1e-6:
+        return None
+    mean = np.mean([r / n for r, n in zip(rows, norms, strict=True)], axis=0)
+    if float(np.linalg.norm(mean)) < 1e-3:
+        return None
+    return _unit(mean)
+
+
+def reference_distance(vector: np.ndarray, centroid: np.ndarray) -> float | None:
+    """Cosine distance from a speaker embedding to a unit *centroid*, rounded; None for an unusable vector."""
+    v = np.asarray(vector, dtype=np.float32).ravel()
+    if v.shape != centroid.shape or not np.all(np.isfinite(v)) or float(np.linalg.norm(v)) < 1e-6:
+        return None
+    return round(max(0.0, 1.0 - float(_unit(v) @ centroid)), 4)
+
+
 def fetch_model(dest: Path | None = None) -> Path:
     """Download (once) the pinned speaker model to *dest* (default :func:`model_path`) and verify it."""
     dest = dest or model_path()
