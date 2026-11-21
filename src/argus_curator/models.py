@@ -24,7 +24,7 @@ from argus_cortex.moderation.policies import PolicyName
 from argus_cortex.taxonomy import (  # re-exported: the suite's one taxonomy, not a local copy
     TARGET_CATEGORIES,  # noqa: F401
     TARGET_STYLES,  # noqa: F401
-    TargetCategory,  # noqa: F401
+    TargetCategory,
     TargetStyle,  # noqa: F401
 )
 from argus_cortex.taxonomy import TargetProfile as _CortexTargetProfile
@@ -122,7 +122,10 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # scan's set_age. Additive (#130).
 # 2.4: rows carry split ("train" / "held_out") when the export asked for a
 # train/held-out split, else null. Additive (#183).
-MANIFEST_VERSION = "2.4"
+# 2.5: target_profile carries modality, always "image" (argus-cortex 0.12's
+# TargetProfile, narrowed to the image modality: target_category keeps its
+# image-only enum). Additive.
+MANIFEST_VERSION = "2.5"
 
 # Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
 # written to disk verbatim, so a runaway payload must not fill the export root.
@@ -134,9 +137,34 @@ RUN_STATS_MAX_BYTES = 5 * 1024 * 1024
 # ---------------------------------------------------------------------------
 
 
-# Not a local copy: argus-cortex's, which every stage inherits unchanged (curator -> lens -> forge -> proof).
-# Re-exported here because it is part of curator's wire contract.
-TargetProfile = _CortexTargetProfile
+# Not a local copy: a subclass of argus-cortex's that inherits every field,
+# default and validator, so an instance is a cortex TargetProfile and flows to
+# lens, forge and proof unchanged. It narrows modality and target_category to
+# images because curator's scoring (face counts, framing) has no meaning for a
+# speech target, and keeps the manifest's target_category enum image-only (a
+# consumer validating it never meets a speech value). from_attributes lets a
+# cortex image profile built by a library caller convert; a cortex speech
+# profile is refused the same way.
+class TargetProfile(_CortexTargetProfile):
+    """What a dataset was curated for, shared verbatim across the suite.
+
+    argus-cortex's ``TargetProfile`` for an image dataset: ``modality`` is
+    always ``image`` and ``target_category`` an image category. argus-curator
+    curates images, so a speech profile is refused.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    modality: Literal["image"] = "image"
+    target_category: TargetCategory = "identity"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _image_only(cls, data: Any) -> Any:
+        modality = data.get("modality", "image") if isinstance(data, dict) else getattr(data, "modality", "image")
+        if modality != "image":
+            raise ValueError(f"argus-curator curates images: a {modality!r} target profile is not supported")
+        return data
 
 
 # ---------------------------------------------------------------------------

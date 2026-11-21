@@ -19,10 +19,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import PurePosixPath
 
-from argus_cortex.moderation._http import CheckFailed, post_json, service_url
-
 # The request shape and number check are NudeNet's: EraX speaks the same API.
-from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE, _is_number, _multipart, to_result
+from argus_cortex.moderation._http import CheckFailed, is_number, multipart_image, post_json, service_url
+from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE, to_result
 
 from argus_curator.models import EraxDetection, EraxLabel, EraxResult, ImageResult, NsfwConfig
 from argus_curator.remote import RemoteService, check_all
@@ -66,11 +65,11 @@ def to_erax_result(raw: list) -> EraxResult:
         if (
             not isinstance(label, str)
             or label not in known
-            or not _is_number(score)
+            or not is_number(score)
             or score < MIN_REPORTED_SCORE
             or not isinstance(box, list)
             or len(box) != 4
-            or not all(_is_number(v) for v in box)
+            or not all(is_number(v) for v in box)
         ):
             continue
         dets.append(EraxDetection(label=label, score=round(float(score), 4), bbox=[round(float(v), 1) for v in box]))
@@ -141,7 +140,7 @@ class EraxClient:
         self.timeout = timeout
 
     def check(self, data: bytes, filename: str = "image") -> EraxResult:
-        body, content_type = _multipart(data, filename)
+        body, content_type = multipart_image(data, filename)
         payload = post_json(self.url, body, content_type, self.timeout, "EraX", EraxCheckFailed)
         prediction = payload.get("prediction") if isinstance(payload, dict) else None
         if not (isinstance(payload, dict) and payload.get("success") is True and isinstance(prediction, list)):

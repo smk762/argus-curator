@@ -1,5 +1,5 @@
 {
-  "manifest_version": "2.4",
+  "manifest_version": "2.5",
   "schema": {
     "$defs": {
       "CropBox": {
@@ -261,7 +261,7 @@
         "type": "object"
       },
       "TargetProfile": {
-        "description": "What a dataset was curated for \u2014 shared verbatim across the suite.\n\nInherited unchanged from stage to stage (curator \u2192 lens \u2192 forge \u2192 proof) so\na decision made once at curation time is honoured everywhere downstream; no\nstage remaps the taxonomy.",
+        "description": "What a dataset was curated for, shared verbatim across the suite.\n\nargus-cortex's ``TargetProfile`` for an image dataset: ``modality`` is\nalways ``image`` and ``target_category`` an image category. argus-curator\ncurates images, so a speech profile is refused.",
         "properties": {
           "checkpoint": {
             "anyOf": [
@@ -274,6 +274,12 @@
             ],
             "default": null,
             "title": "Checkpoint"
+          },
+          "modality": {
+            "const": "image",
+            "default": "image",
+            "title": "Modality",
+            "type": "string"
           },
           "target_backend": {
             "anyOf": [
@@ -339,7 +345,7 @@
         "type": "string"
       },
       "manifest_version": {
-        "default": "2.4",
+        "default": "2.5",
         "title": "Manifest Version",
         "type": "string"
       },
