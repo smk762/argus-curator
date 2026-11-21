@@ -44,7 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `speech.license`) or a cortex `ConsentRecord` for a real person's voice
     (`speech.consent_record`, checked for `training` of the `voice` at
     `speech.consent_delivery`, bound to its reference recordings' speaker
-    clusters). The corpus's `gender` label is carried with `speaker`,
+    clusters). A consented row's provenance names no one: `subject` is
+    cortex's subject ref `consent:<release_sha256>` and `source` leaves out
+    who collected the release. The corpus's `gender` label is carried with `speaker`,
     `accent`, `language` and `age`; age is never estimated.
 - **Semantic near-duplicates (#196).** With embeddings on, `ScanConfig.semantic_duplicates`
   (CLI `--semantic-dupes`) also groups images whose CLIP embeddings reach

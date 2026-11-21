@@ -212,7 +212,10 @@ held-out part becomes proof's reference set: export each part to its own
   sha256, and the scan must have clustered speakers: only clips in those
   recordings' clusters are kept (`consent:other-speaker`), and rows carry
   `consent_release_sha256`, `consent_record_sha256` and a `consented`
-  provenance. Binding by distance to the reference recordings is
+  provenance that names no one: its `subject` is argus-cortex's subject ref
+  `consent:<release_sha256>`, never the record's name, and its `source`
+  doesn't name who collected the release. `speaker_label` and the transcript
+  are your corpus's own text and are carried as they are. Binding by distance to the reference recordings is
   [#209](https://github.com/smk762/argus-curator/issues/209).
 
 Age is never estimated from a voice. A clip's corpus age label is carried as
@@ -258,7 +261,7 @@ key is always present; a field with no value is `null`.
 | `score`, `similar_group` | number | as scanned |
 | `split` | string or null | `train` or `held_out` with a split, else null |
 | `corpus`, `license` | string | where every clip came from |
-| `provenance` | object | argus-cortex's `Provenance` (`stock` for a corpus, `consented` under a record) |
+| `provenance` | object | argus-cortex's `Provenance` (`stock` for a corpus, `consented` under a record, whose `subject` is the subject ref `consent:<release_sha256>`, never a name) |
 | `consent_release_sha256`, `consent_record_sha256` | string or null | a consented voice only |
 
 argus-forge reading this file is
