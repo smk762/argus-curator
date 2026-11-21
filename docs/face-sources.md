@@ -80,3 +80,79 @@ written into the manifest when an export asks (`--landmarks`,
 `landmarks: true`; see [Manifest](manifest.md)).
 [Synthetic source portraits](synthetic-face-sets.md) walks through a
 face-source shortlist end to end.
+
+## Refused sources
+
+Every face-source selection reads each candidate's `<stem>.json` sidecar again
+when it runs, and keeps out an image whose sidecar says
+`"likeness_consent": false` (`face-source:not-consented`). argus-quarry writes
+that mark on every photo of a real person: a licence to a photo is not its
+subject's consent to become a face.
+
+## Consented face sets of a real person
+
+The docs lead with synthetic faces, but some routes need a real, consenting
+person (the multi-view captures of the Gaussian-splat route, say). Curator
+makes sure every image in such a set is of the person who consented, adult,
+sourced and current. It does not collect consent and gives no legal advice.
+
+The consent is argus-mask's record, argus-cortex's `ConsentRecord`, in a file
+beside the images (`consent.json` at the folder root, say). It binds the
+signed release by its sha256 and lists the sha256 of each reference image of
+the person; the signed document itself stays outside curator.
+
+```bash
+argus-curator scan shoot/ --consent consent.json --face-source-consent \
+    --blur-threshold 0 --copy-to faceset/
+```
+
+Over HTTP, scan with `"consent": {"record": "consent.json"}` and export (or
+select) with `"face_source": {"consent": true}`.
+
+**The scan reads the record** and checks it with cortex's
+`consent_valid(record, use="avatar", likeness="face", at=now)`. A missing,
+invalid, revoked, not-yet-signed, expired or out-of-scope record makes the set
+ineligible, and `consent.reason` and `consent.detail` on the scan say why. A
+consent scan turns on face detection, MiVOLO and the set age.
+
+**It binds the set to one identity.** The record's reference images are found
+in the scanned folder by their sha256, and the centroid of their primary faces
+is the identity reference (`faces.reference_embedding`, held in memory only;
+a consent scan refuses a reference of its own). Each image then gets
+`consent`: `bound`, the primary face's `distance`, and a `reason` when not
+bound:
+
+| reason | meaning |
+|---|---|
+| `not-consented` | its sidecar marks its subject as not consenting (argus-quarry) |
+| `provenance` | its sidecar's `provenance` is unreadable, outside the folder, or names another source than this release |
+| `unchecked` | face detection failed on it |
+| `no-face` | no face |
+| `bystander` | someone else is in the frame: another face, or another person the body detector found |
+| `mismatch` | the primary face is further than `consent.max_distance` (0.4; `--consent-max-distance`) from the reference |
+
+The distances stay on the scan, so the borderline ones can be reviewed.
+
+**The export is gated** (`face_source.consent`, `--face-source-consent`). It
+runs the face-source preset over the bound images only, and refuses (400; exit
+2 on the CLI) when:
+
+- the scan read no record, or the record made the set ineligible;
+- the scan read no adult set age, or any face bound to the record reads
+  under 18 (one young estimate refuses the whole set);
+- the record, read again now, no longer covers the set: revoked or expired
+  since the scan, gone, or replaced by another release;
+- no image qualifies.
+
+`face_source.consent` cannot be combined with `require_adult: false` or a
+named `selection`. Each manifest row then carries `consent_release_sha256`,
+`consent_record_sha256` (the record file as read at export) and `provenance`:
+the image's `<stem>.json` sidecar `provenance` when it has one (it must be
+this release's), else `kind: "consented"` under the record's release, with
+`source` naming who collected it. See [Manifest](manifest.md).
+
+Nothing about the consent outlives the scan: the scan keeps only the verdict,
+the record's hashes, which images are the references and each image's
+binding, inside its own cached summary, and never the record or the reference
+embedding. Deleting or purging the scan removes it all. Over HTTP the record
+resolves under the scanned folder, as images do; the CLI takes any path.

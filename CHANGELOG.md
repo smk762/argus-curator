@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Consented face sets of a real person (#133).** A scan can read a consent
+  record (`ScanRequest.consent`: `ConsentConfig` with `record`, a path under
+  the scanned folder, and `max_distance`; CLI `--consent`,
+  `--consent-max-distance`). It checks the record with argus-cortex's
+  `consent_valid(use="avatar", likeness="face")`, and `ScanSummary.consent`
+  (`ConsentCheck`) says whether the set is eligible and, if not, why. The
+  record's reference images, found in the scan by sha256, become the identity
+  reference, and each image gets `ImageResult.consent` (`ConsentBinding`:
+  `bound`, `distance`, `reason`): an image whose primary face doesn't match,
+  or that shows anyone else, is not bound. `face_source.consent` (CLI
+  `--face-source-consent`) exports only bound images, re-reads and re-checks
+  the record at select and export (so one revoked since the scan blocks the
+  export), needs an adult set age, refuses the set when any bound face reads
+  under 18, and refuses when nothing qualifies. Nothing about the consent
+  outlives the scan: a purge removes it with the scan.
+- **Face-source selections refuse argus-quarry's not-consented images.** Every
+  `face_source` selection re-reads each image's `<stem>.json` and keeps out one
+  marked `likeness_consent: false` (`face-source:not-consented`).
+- **Manifest 2.6: consented face sets carry `consent_release_sha256`,
+  `consent_record_sha256` and `provenance`** (argus-cortex's `Provenance`).
+  Additive.
+
 - **Semantic novelty in selection (#188, item 1).** An opt-in scan phase,
   `ScanRequest.embeddings` (`EmbeddingConfig`: `enabled`, `device`; CLI
   `--embeddings`), runs the image tower of DataComp-1B's CLIP ViT-L/14 (MIT)

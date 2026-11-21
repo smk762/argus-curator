@@ -185,6 +185,21 @@ def scan(
         help="Export only face-source images (one identity, frontal and level, large, sharp, eyes open, "
         "mouth closed, adult; needs --mivolo), ranked best first",
     ),
+    consent: str | None = Option(
+        None,
+        "--consent",
+        help="A real person's consent record (argus-cortex ConsentRecord JSON), relative to the scanned folder "
+        "or absolute: bind the set to its reference images (implies --mivolo --set-age)",
+    ),
+    consent_max_distance: float = Option(
+        0.4, "--consent-max-distance", help="Ceiling on a face's distance from the record's reference to be bound"
+    ),
+    face_source_consent: bool = Option(
+        False,
+        "--face-source-consent",
+        help="Export a consented face set: --face-source over the images bound to --consent's record, re-checked "
+        "at export, adult only; refused when none qualifies (implies --face-source)",
+    ),
     landmarks: bool = Option(False, "--landmarks", help="Write the primary face's landmarks into the manifest"),
     face_poses: str | None = Option(
         None, "--pose", help="Export only these primary-face poses (comma-separated: frontal,three_quarter,profile)"
@@ -373,6 +388,7 @@ def scan(
     from argus_curator.export import export_selection
     from argus_curator.models import (
         DEFAULT_NSFW_THRESHOLD,
+        ConsentConfig,
         CropConfig,
         EmbeddingConfig,
         ExportRequest,
@@ -476,6 +492,25 @@ def scan(
     if diversify_semantic and not embeddings:
         typer.echo("Error: --diversify-semantic needs --embeddings", err=True)
         raise typer.Exit(2)
+    face_source = face_source or face_source_consent
+    if face_source_consent and consent is None:
+        typer.echo("Error: --face-source-consent needs a consent record (--consent)", err=True)
+        raise typer.Exit(2)
+    try:
+        consent_cfg = ConsentConfig(record=consent, max_distance=consent_max_distance)
+    except ValidationError as exc:
+        raise _invalid(exc) from exc
+    if consent is not None:
+        from argus_curator.consent import faces_for_consent
+
+        if outside_refs is not None:
+            typer.echo("Error: --consent takes its reference from the record; drop --face-reference", err=True)
+            raise typer.Exit(2)
+        try:
+            faces_cfg = faces_for_consent(faces_cfg)
+        except ValueError as exc:
+            typer.echo(f"Error: --consent: {exc}", err=True)
+            raise typer.Exit(2) from exc
     if face_source and not faces_cfg.mivolo:
         typer.echo("Error: --face-source checks for an adult age, which needs --mivolo", err=True)
         raise typer.Exit(2)
@@ -572,7 +607,7 @@ def scan(
             guard_rules=_csv_list(guard_rules),
             guard_policies=_csv_list(guard_policies),
             **({"nsfw_exposed_labels": _csv_list(nsfw_exposed_labels)} if nsfw_exposed_labels else {}),
-            face_source=FaceSourceFilter() if face_source else None,
+            face_source=FaceSourceFilter(consent=face_source_consent) if face_source else None,
             write_manifest=dest is not None,
             landmarks=landmarks,
             write_xmp=xmp,
@@ -587,7 +622,7 @@ def scan(
 
     needed = (
         (fairface, fairface_available, "FairFace", fairface_mod.MODEL_ENV, "fairface-convert <weights.pt>"),
-        (mivolo, mivolo_available, "MiVOLO", mivolo_mod.MODEL_ENV, "mivolo-convert"),
+        (faces_cfg.mivolo, mivolo_available, "MiVOLO", mivolo_mod.MODEL_ENV, "mivolo-convert"),
         (scenes, scenes_mod.scenes_available, "Places365", scenes_mod.MODEL_ENV, "places365-convert"),
         (garments, garments_mod.garments_available, "garment-detector", garments_mod.MODEL_ENV, "garments-convert"),
         (
@@ -674,6 +709,7 @@ def scan(
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
         crop_cfg=CropConfig(enabled=crops, detect=detect_watermarks, max_cut=max_cut, reject_overlay=not keep_overlays),
+        consent_cfg=consent_cfg,
     )
 
     typer.echo("=" * 56)
@@ -741,6 +777,14 @@ def scan(
         thinking = f", {gc.thinking}" + (" (refused, ran fast)" if gc.fell_back else "") if gc.thinking else ""
         typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{thinking}{tail}")
     typer.echo("=" * 56)
+    if summary.consent is not None:
+        check = summary.consent
+        if check.eligible:
+            bound = sum(1 for r in summary.results if r.consent is not None and r.consent.bound)
+            refs = len(check.references)
+            typer.echo(f"  Consent:               eligible; {bound} image(s) bound ({refs} reference image(s))")
+        else:
+            typer.echo(f"  Consent:               INELIGIBLE ({check.reason}): {check.detail}")
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
         for reason, count in sorted(summary.reject_reasons.items(), key=lambda x: -x[1]):
@@ -797,7 +841,14 @@ def scan(
         # With no --copy-to/--move-to/--symlink-to there is nowhere to transfer
         # to: exporting would copy every file onto itself (SameFileError per
         # image) for a report-only run, so skip it and report no exported paths.
-        result = export_selection(summary, req) if dest is not None else None
+        from argus_curator.consent import ConsentRefused, face_source_gate
+
+        try:
+            result = export_selection(summary, req) if dest is not None else None
+            gate = face_source_gate(req, summary) if csv_out else None
+        except ConsentRefused as exc:
+            typer.echo(f"Error: consent refused: {exc}", err=True)
+            raise typer.Exit(2) from exc
         if csv_out:
             from argus_curator.export import write_report
             from argus_curator.selection import decide_selection
@@ -808,6 +859,7 @@ def scan(
                 summary.config.diversity_weight,
                 set_age=summary.set_age,
                 embeddings=summary.embeddings,
+                gate=gate,
             )
             exported_paths = result.exported_paths if result is not None else {}
             write_report(summary.results, keep_reason, {r.rel_path for r in selected}, exported_paths, csv_out)
