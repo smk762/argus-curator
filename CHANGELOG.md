@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Requires argus-cortex 0.13** (`>=0.13,<0.14`) for its consent subject ref
+  (`subject_ref`, `pseudonymise`).
+
 ### Added
 
 - **Consented face sets of a real person (#133).** A scan can read a consent
@@ -29,7 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marked `likeness_consent: false` (`face-source:not-consented`).
 - **Manifest 2.6: consented face sets carry `consent_release_sha256`,
   `consent_record_sha256` and `provenance`** (argus-cortex's `Provenance`).
-  Additive.
+  Additive. The export never names the consenting person: `provenance.subject`
+  is argus-cortex 0.13's subject ref, `consent:<release_sha256>`, applied with
+  `pseudonymise` to both the default and a sidecar's provenance. The default
+  `source` no longer names who collected the release. With `carry_sidecars`, a
+  carried `<stem>.json` is a copy with its provenance pseudonymised, under every
+  mode, and the source sidecar is never changed (under `move` it stays put).
 - **Speech scans (#186).** `POST /scan/folder` (and its stream) and
   `argus-curator scan --modality speech` score a folder of WAV/FLAC clips when
   `target_profile.modality` is `speech`. `SpeechTargetProfile` (cortex's

@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 import structlog
 from argus_cortex.moderation import rule_letter
+from argus_cortex.provenance import Provenance
 from argus_cortex.xmp import XmpData, XmpError, XmpRegion, XmpRegions, sidecar_path, write_xmp
 
 from argus_curator import crops
@@ -202,7 +203,43 @@ def _sidecar_users(results: list[ImageResult]) -> Counter[Path]:
     return users
 
 
-def _carry_sidecars(src: Path, dst: Path, mode: ExportMode, rel_path: str, waiting: Counter[Path]) -> tuple[int, int]:
+def _write_pseudonymised_sidecar(side: Path, target: Path, provenance: Provenance | None) -> None:
+    """Write a copy of the ``<stem>.json`` *side* to *target*, its ``provenance`` swapped for *provenance*.
+
+    For a consented face set: the source sidecar's provenance names the subject (cortex's
+    ``consent_matches`` needs it to), and the export must not. *provenance* is the image's
+    pseudonymised provenance from the :class:`~argus_curator.consent.ConsentHold`. A sidecar
+    with no ``provenance`` is copied as it is. The source is only read, under every mode:
+    a move leaves it where it is rather than carry the name along.
+
+    Raises when the sidecar has a provenance and *provenance* is None (the image is not
+    one the hold covers), so the name is never carried; and when *target* is *side*.
+    """
+    data = json.loads(side.read_text(encoding="utf-8"))
+    if isinstance(data, dict) and "provenance" in data:
+        if provenance is None:
+            raise ValueError("its sidecar names a provenance the consent hold does not cover")
+        data["provenance"] = provenance.model_dump(mode="json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not target.is_symlink() and os.path.samefile(target, side):
+        raise shutil.SameFileError(f"{target} is the source sidecar")
+    tmp = target.with_name(f".{target.name}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        # os.replace swaps a link left at *target* for the file, never writing through it.
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _carry_sidecars(
+    src: Path,
+    dst: Path,
+    mode: ExportMode,
+    rel_path: str,
+    waiting: Counter[Path],
+    consent: ConsentHold | None = None,
+) -> tuple[int, int]:
     """Transfer the sidecars beside *src* to the matching names beside *dst*. Returns ``(carried, failed)``.
 
     Same mode and the same overwrite semantics as the image (:func:`_transfer_one`):
@@ -220,6 +257,10 @@ def _carry_sidecars(src: Path, dst: Path, mode: ExportMode, rel_path: str, waiti
     image that is not exported keeps it. A failed
     transfer never counts down: an image that could not leave, or a sidecar that
     did not reach it, keeps the source sidecar where it is.
+
+    With *consent* (a consented face set) the ``<stem>.json`` is written as a
+    pseudonymised copy (:func:`_write_pseudonymised_sidecar`) under every mode,
+    so no carried sidecar names the subject and the source is never changed.
     """
     carried = failed = 0
     seen: set[Path] = set()
@@ -233,8 +274,11 @@ def _carry_sidecars(src: Path, dst: Path, mode: ExportMode, rel_path: str, waiti
             if target.is_dir() and not target.is_symlink():
                 # copy2 / move would put the sidecar *inside* it, under a name no consumer looks for.
                 raise IsADirectoryError(f"destination is a directory: {target}")
-            # A symlinked image is read-only by nature; a symlinked sidecar would be a write path into the source.
-            _transfer_one(side, target, "copy" if mode == "symlink" or waiting[side] > 1 else mode)
+            if consent is not None and side.suffix.lower() == ".json":
+                _write_pseudonymised_sidecar(side, target, consent.provenance.get(rel_path))
+            else:
+                # A symlinked image is read-only by nature; a symlinked sidecar would be a write path into the source.
+                _transfer_one(side, target, "copy" if mode == "symlink" or waiting[side] > 1 else mode)
             waiting[side] -= 1
             carried += 1
         except Exception as exc:
@@ -791,7 +835,8 @@ def export_selection(
                 # sidecar, so under move nothing is left behind and the result
                 # is the source's sidecar plus curator's data.
                 if req.carry_sidecars:
-                    carried, failed = _carry_sidecars(src, dst, req.mode, r.rel_path, waiting)
+                    hold = gate.consent if gate is not None else None
+                    carried, failed = _carry_sidecars(src, dst, req.mode, r.rel_path, waiting, hold)
                     sidecars_carried += carried
                     sidecars_failed += failed
                 if req.write_xmp and (data := xmp_data(r, req.face_names)) is not None:

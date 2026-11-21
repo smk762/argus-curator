@@ -148,8 +148,22 @@ runs the face-source preset over the bound images only, and refuses (400; exit
 named `selection`. Each manifest row then carries `consent_release_sha256`,
 `consent_record_sha256` (the record file as read at export) and `provenance`:
 the image's `<stem>.json` sidecar `provenance` when it has one (it must be
-this release's), else `kind: "consented"` under the record's release, with
-`source` naming who collected it. See [Manifest](manifest.md).
+this release's), else `kind: "consented"` under the record's release. See
+[Manifest](manifest.md).
+
+The export never names the person. Every row's `provenance.subject` is
+argus-cortex's subject ref, `consent:<release_sha256>` (`subject_ref`,
+applied with cortex's `pseudonymise`), not the name in the record or the
+sidecar, and the default `source` doesn't name who collected the release.
+The ref is the release's own key, already on the row as
+`consent_release_sha256`; unlike a hash of the name, guessing names can't
+reverse it. cortex's `consent_matches` still matches a row to its record.
+With `carry_sidecars`, a carried `<stem>.json` is written as a copy with its
+`provenance` pseudonymised the same way, under every mode: the source sidecar
+is only read, so under `move` it stays in the source folder. `source`,
+`license` and `notes` are free text and are carried as the sidecar's writer
+wrote them, so keep names out of them. So are carried captions (`.txt`) and
+the source's own `.xmp`, which hold whatever you or another tool put there.
 
 Nothing about the consent outlives the scan: the scan keeps only the verdict,
 the record's hashes, which images are the references and each image's
