@@ -598,23 +598,14 @@ def test_a_speech_scan_folder_is_contained(speech_server: tuple[TestClient, Path
     assert resp.status_code == 400
 
 
-def test_a_speech_scan_has_no_select_or_export_yet(speech_server: tuple[TestClient, Path]) -> None:
+def test_a_speech_scan_selects_and_exports_only_with_its_provenance(speech_server: tuple[TestClient, Path]) -> None:
+    """Select and export take a speech scan (#187); an export must say where its clips came from."""
     client, _ = speech_server
     scan_id = client.post("/scan/folder", json=SPEECH_SCAN).json()["scan_id"]
-    resp = client.post(f"/scan/{scan_id}/select", json={})
-    assert resp.status_code == 400 and "#187" in resp.text
+    resp = client.post(f"/scan/{scan_id}/select", json={"min_score": 0})
+    assert resp.status_code == 200 and resp.json()["kept"] == 2
     resp = client.post("/export", json={"scan_id": scan_id, "dest": "out", "selection": ["spk1/a.wav"]})
-    assert resp.status_code == 400 and "#187" in resp.text
-
-
-def test_export_selection_refuses_a_speech_scan(tmp_path: Path) -> None:
-    from argus_curator.export import export_selection
-
-    _with_line(clip(tmp_path / "a.wav"))
-    summary = scan_speech_folder(tmp_path)
-    with pytest.raises(ValueError, match="#187"):
-        export_selection(summary, ExportRequest(scan_id=summary.scan_id, dest=str(tmp_path / "out")))
-    assert not (tmp_path / "out").exists()
+    assert resp.status_code == 400 and "speech.corpus and speech.license" in resp.text
 
 
 def test_health_and_detectors_report_speech(speech_server: tuple[TestClient, Path]) -> None:

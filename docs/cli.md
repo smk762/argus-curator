@@ -25,6 +25,7 @@ $ argus-curator [OPTIONS] COMMAND [ARGS]...
 * `garments-convert`: Fetch, verify and convert the Fashionpedia...
 * `embeddings-convert`: Fetch, verify and convert the CLIP image...
 * `dnsmos-fetch`: Fetch the DNSMOS P.835 model a speech...
+* `speaker-fetch`: Fetch the speaker-embedding model a speech...
 * `schema`: Emit the wire-contract JSON Schema...
 
 ## `argus-curator scan`
@@ -64,6 +65,8 @@ $ argus-curator scan [OPTIONS] {source}
 * `--transcripts <str>`: Speech: auto (default), sidecar, ljspeech or common_voice
 * `--mos`: Speech: score each passing clip with DNSMOS (see dnsmos-fetch)
 * `--dnsmos-model <path>`: Speech: DNSMOS ONNX model (ARGUS_CURATOR_DNSMOS_MODEL)
+* `--speakers`: Speech: embed and cluster each passing clip&#x27;s speaker (see speaker-fetch)
+* `--speaker-model <path>`: Speech: speaker-embedding ONNX model (ARGUS_CURATOR_SPEAKER_MODEL)
 * `--speech-config <path>`: Speech: a JSON SpeechConfig with the thresholds (the flags above override it)
 * `--faces`: Run InsightFace detection + identity clustering
 * `--faces-model <str>`: InsightFace model name  [default: buffalo_l]
@@ -297,6 +300,25 @@ commit and sha256; 1.2 MB, runs on onnxruntime (argus-curator).
 
 ```console
 $ argus-curator dnsmos-fetch [OPTIONS]
+```
+
+**Options**:
+
+* `-o, --output <path>`: Where to write the model (default: model cache)
+* `--help`: Show this message and exit.
+
+## `argus-curator speaker-fetch`
+
+Fetch the speaker-embedding model a speech scan&#x27;s --speakers runs.
+
+WeSpeaker&#x27;s ECAPA-TDNN (VoxCeleb2, large-margin fine-tuned; code
+Apache-2.0, model CC BY 4.0), pinned by Hugging Face revision and
+sha256; 25 MB, runs on onnxruntime (argus-curator).
+
+**Usage**:
+
+```console
+$ argus-curator speaker-fetch [OPTIONS]
 ```
 
 **Options**:

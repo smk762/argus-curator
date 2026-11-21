@@ -210,6 +210,10 @@ VRAM_MB: dict[str, dict[str, int]] = {
     # DNSMOS P.835 (speech scans): 270 MB once loaded (CUDA context included) and
     # 650 MB at peak over 30 windows of 9.01 s, one per pass (3090, 1 GB arena cap).
     "mos": {"load": 300, "run": 384},
+    # WeSpeaker ECAPA-TDNN speaker embeddings (speech scans, #187): 298 MB once
+    # loaded (CUDA context included) and 420 MB at peak over 30 passes of one
+    # clip's 4 windows of 3 s (3090, 1 GB arena cap).
+    "speakers": {"load": 350, "run": 192},
 }
 
 # What gpu_lease raises when no GPU slot was granted: not a bad image, so a

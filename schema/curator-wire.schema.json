@@ -132,6 +132,18 @@
           "title": "Fingerprint",
           "type": "string"
         },
+        "gender": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gender"
+        },
         "group_size": {
           "default": 1,
           "title": "Group Size",
@@ -297,6 +309,47 @@
           "default": null,
           "title": "Speaker"
         },
+        "speaker_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Cluster"
+        },
+        "speaker_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Distance"
+        },
+        "speaker_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Error"
+        },
+        "speaker_mismatch": {
+          "default": false,
+          "title": "Speaker Mismatch",
+          "type": "boolean"
+        },
         "speech_ratio": {
           "anyOf": [
             {
@@ -395,6 +448,11 @@
         "accent",
         "language",
         "age",
+        "gender",
+        "speaker_cluster",
+        "speaker_distance",
+        "speaker_mismatch",
+        "speaker_error",
         "fingerprint",
         "score_breakdown"
       ],
@@ -1377,6 +1435,17 @@
           "default": null,
           "title": "Selection"
         },
+        "speech": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "split": {
           "anyOf": [
             {
@@ -1465,6 +1534,15 @@
           "title": "Manifest Version",
           "type": "string"
         },
+        "modality": {
+          "default": "image",
+          "enum": [
+            "image",
+            "speech"
+          ],
+          "title": "Modality",
+          "type": "string"
+        },
         "mode": {
           "enum": [
             "copy",
@@ -1507,6 +1585,16 @@
           "title": "Skipped",
           "type": "integer"
         },
+        "speech_manifest_version": {
+          "default": "1.0",
+          "title": "Speech Manifest Version",
+          "type": "string"
+        },
+        "transcripts_written": {
+          "default": 0,
+          "title": "Transcripts Written",
+          "type": "integer"
+        },
         "xmp_written": {
           "default": 0,
           "title": "Xmp Written",
@@ -1528,7 +1616,10 @@
         "sidecars_carried",
         "sidecars_failed",
         "cropped",
-        "run_stats_path"
+        "run_stats_path",
+        "modality",
+        "speech_manifest_version",
+        "transcripts_written"
       ],
       "title": "ExportResult",
       "type": "object"
@@ -3983,6 +4074,18 @@
           "title": "Similar Clusters",
           "type": "integer"
         },
+        "speaker_clusters": {
+          "items": {
+            "$ref": "#/$defs/SpeakerCluster"
+          },
+          "title": "Speaker Clusters",
+          "type": "array"
+        },
+        "speaker_mismatches": {
+          "default": 0,
+          "title": "Speaker Mismatches",
+          "type": "integer"
+        },
         "speech_config": {
           "anyOf": [
             {
@@ -4038,6 +4141,8 @@
         "results",
         "speech_config",
         "clips",
+        "speaker_clusters",
+        "speaker_mismatches",
         "legacy_min_short_side",
         "offset",
         "limit",
@@ -4621,6 +4726,17 @@
           "default": null,
           "title": "Scenes"
         },
+        "speech": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "split": {
           "anyOf": [
             {
@@ -4675,6 +4791,17 @@
           "title": "Scan Id",
           "type": "string"
         },
+        "speech": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechSelectStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "total": {
           "title": "Total",
           "type": "integer"
@@ -4699,7 +4826,8 @@
         "rank",
         "train",
         "held_out",
-        "rows"
+        "rows",
+        "speech"
       ],
       "title": "SelectResult",
       "type": "object"
@@ -4732,6 +4860,18 @@
           "title": "Rel Path",
           "type": "string"
         },
+        "speaker_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Id"
+        },
         "split": {
           "anyOf": [
             {
@@ -4754,7 +4894,8 @@
         "abs_path",
         "keep_reason",
         "rank",
-        "split"
+        "split",
+        "speaker_id"
       ],
       "title": "SelectRow",
       "type": "object"
@@ -4786,6 +4927,44 @@
         "share"
       ],
       "title": "SetAge",
+      "type": "object"
+    },
+    "SpeakerCluster": {
+      "description": "A speaker found by clustering a speech scan's embeddings (#187).\n\n``corpus_speakers`` counts the corpus speaker labels among its clips (empty\nwhen the corpus names none). ``mismatch`` is True when the clustering and\nthe corpus disagree about it: it holds more than one label, or a label it\nholds also has clips in another cluster. A centroid is a voiceprint, so\nnone is stored.",
+      "properties": {
+        "clips": {
+          "title": "Clips",
+          "type": "integer"
+        },
+        "cluster_id": {
+          "title": "Cluster Id",
+          "type": "string"
+        },
+        "corpus_speakers": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Corpus Speakers",
+          "type": "object"
+        },
+        "mismatch": {
+          "default": false,
+          "title": "Mismatch",
+          "type": "boolean"
+        },
+        "seconds": {
+          "title": "Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "cluster_id",
+        "clips",
+        "seconds",
+        "corpus_speakers",
+        "mismatch"
+      ],
+      "title": "SpeakerCluster",
       "type": "object"
     },
     "SpeechConfig": {
@@ -4976,6 +5155,23 @@
           "title": "Snr Ref Db",
           "type": "number"
         },
+        "speaker_device": {
+          "default": "auto",
+          "title": "Speaker Device",
+          "type": "string"
+        },
+        "speaker_threshold": {
+          "default": 0.5,
+          "exclusiveMaximum": 2.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Speaker Threshold",
+          "type": "number"
+        },
+        "speakers": {
+          "default": false,
+          "title": "Speakers",
+          "type": "boolean"
+        },
         "transcripts": {
           "default": "auto",
           "enum": [
@@ -5009,6 +5205,246 @@
       "title": "SpeechConfig",
       "type": "object"
     },
+    "SpeechManifestRow": {
+      "description": "One line of a speech export's ``speech_manifest.jsonl`` (#187; ``speech_export.write_manifest``).\n\nIts own shape and version (:data:`SPEECH_MANIFEST_VERSION`), never mixed\nwith image rows: a consumer reads ``speech_manifest_version`` and refuses a\nmajor it does not know. Rows exist only for clips whose transfer and\ntranscript sidecar both succeeded.\n\nPaths follow :class:`ManifestRow`: ``exported_path`` and\n``exported_abs_path`` are the de-collided files on disk, ``abs_path`` is\nwhere the clip can be read (the destination under ``mode=\"move\"``), and\n``transcript_path`` / ``transcript_abs_path`` name the ``<stem>.txt``\nbeside the exported clip holding ``transcript``.\n\n``speaker_id`` is the corpus's speaker label when it has one, else the\nspeaker cluster; ``speaker_label`` and ``speaker_cluster`` are each on its\nown. A split keeps every speaker (label and cluster alike) in one\npart. ``accent``, ``language``, ``gender`` and ``age`` are the corpus's\nlabels verbatim; ``age`` is null when the corpus gives none, and is never\nestimated. ``corpus``, ``license`` and ``provenance`` say where every clip\ncame from; a clip used under a consent record also names its hashes.",
+      "properties": {
+        "abs_path": {
+          "title": "Abs Path",
+          "type": "string"
+        },
+        "accent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accent"
+        },
+        "age": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age"
+        },
+        "channels": {
+          "title": "Channels",
+          "type": "integer"
+        },
+        "consent_record_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Record Sha256"
+        },
+        "consent_release_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Release Sha256"
+        },
+        "corpus": {
+          "title": "Corpus",
+          "type": "string"
+        },
+        "duration_s": {
+          "title": "Duration S",
+          "type": "number"
+        },
+        "exported_abs_path": {
+          "title": "Exported Abs Path",
+          "type": "string"
+        },
+        "exported_path": {
+          "title": "Exported Path",
+          "type": "string"
+        },
+        "gender": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gender"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "license": {
+          "title": "License",
+          "type": "string"
+        },
+        "modality": {
+          "const": "speech",
+          "default": "speech",
+          "title": "Modality",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "rel_path": {
+          "title": "Rel Path",
+          "type": "string"
+        },
+        "sample_rate": {
+          "title": "Sample Rate",
+          "type": "integer"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "similar_group": {
+          "title": "Similar Group",
+          "type": "integer"
+        },
+        "speaker_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Cluster"
+        },
+        "speaker_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Id"
+        },
+        "speaker_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Label"
+        },
+        "speaker_mismatch": {
+          "default": false,
+          "title": "Speaker Mismatch",
+          "type": "boolean"
+        },
+        "speech_manifest_version": {
+          "default": "1.0",
+          "title": "Speech Manifest Version",
+          "type": "string"
+        },
+        "split": {
+          "anyOf": [
+            {
+              "enum": [
+                "train",
+                "held_out"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Split"
+        },
+        "target_profile": {
+          "$ref": "#/$defs/SpeechTargetProfile"
+        },
+        "transcript": {
+          "title": "Transcript",
+          "type": "string"
+        },
+        "transcript_abs_path": {
+          "title": "Transcript Abs Path",
+          "type": "string"
+        },
+        "transcript_path": {
+          "title": "Transcript Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "speech_manifest_version",
+        "modality",
+        "rel_path",
+        "abs_path",
+        "exported_path",
+        "exported_abs_path",
+        "transcript_path",
+        "transcript_abs_path",
+        "target_profile",
+        "transcript",
+        "duration_s",
+        "sample_rate",
+        "channels",
+        "speaker_id",
+        "speaker_label",
+        "speaker_cluster",
+        "speaker_mismatch",
+        "accent",
+        "language",
+        "gender",
+        "age",
+        "score",
+        "similar_group",
+        "split",
+        "corpus",
+        "license",
+        "provenance",
+        "consent_release_sha256",
+        "consent_record_sha256"
+      ],
+      "title": "SpeechManifestRow",
+      "type": "object"
+    },
     "SpeechMos": {
       "description": "DNSMOS P.835 predictions for a clip, each 1-5: speech (SIG), background (BAK), overall (OVRL).",
       "properties": {
@@ -5038,6 +5474,211 @@
         "ovrl"
       ],
       "title": "SpeechMos",
+      "type": "object"
+    },
+    "SpeechSelectStats": {
+      "description": "What a speech selection keeps, in hours of audio (#187).",
+      "properties": {
+        "hours": {
+          "title": "Hours",
+          "type": "number"
+        },
+        "hours_by_accent": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Hours By Accent",
+          "type": "object"
+        },
+        "hours_by_speaker": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Hours By Speaker",
+          "type": "object"
+        },
+        "hours_by_split": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Hours By Split",
+          "type": "object"
+        },
+        "speakers_by_split": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Speakers By Split",
+          "type": "object"
+        }
+      },
+      "required": [
+        "hours",
+        "hours_by_speaker",
+        "hours_by_accent",
+        "hours_by_split",
+        "speakers_by_split"
+      ],
+      "title": "SpeechSelectStats",
+      "type": "object"
+    },
+    "SpeechSelection": {
+      "description": "How a speech scan's clips are selected, and where they came from (#187).\n\nThe speech part of :class:`ExportRequest` and :class:`SelectRequest`, and\nthe only part a speech scan reads besides ``min_score``, ``keep_similar``,\n``max_keep``, ``split`` and the transfer fields; the image filters are\nrefused on a speech scan.\n\nFilters: ``speakers`` (by ``speaker_id``), ``accents`` and ``languages``\n(the corpus labels, exact). ``exclude_speaker_mismatch`` drops clips whose\ncorpus speaker label the clustering disputes. Caps, in hours of audio,\nbest-scoring clips first: ``min_hours_per_speaker`` drops a speaker with\nless, ``max_hours_per_speaker`` caps one, ``max_hours_per_accent`` caps an\naccent, and ``balance_accents`` caps every accent at the smallest one's\nhours. An accent cap takes clips from its speakers in turn, so it keeps\nthem as even as it can.\n\nProvenance, required to export (not to select): ``corpus`` and\n``license`` name the licensed corpus every clip comes from; or\n``consent_record`` names a cortex ``ConsentRecord`` (a path under the\nscanned folder, as ``ConsentConfig.record``) for a real person's voice\noutside a licensed corpus, checked for ``training`` of the ``voice`` at\n``consent_delivery``. Nothing estimates a speaker's age: the corpus's\nlabel is carried, and an unknown age stays unknown.",
+      "properties": {
+        "accents": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accents"
+        },
+        "balance_accents": {
+          "default": false,
+          "title": "Balance Accents",
+          "type": "boolean"
+        },
+        "consent_delivery": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Delivery"
+        },
+        "consent_record": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Record"
+        },
+        "corpus": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Corpus"
+        },
+        "exclude_speaker_mismatch": {
+          "default": false,
+          "title": "Exclude Speaker Mismatch",
+          "type": "boolean"
+        },
+        "languages": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Languages"
+        },
+        "license": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "License"
+        },
+        "max_hours_per_accent": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Hours Per Accent"
+        },
+        "max_hours_per_speaker": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Hours Per Speaker"
+        },
+        "min_hours_per_speaker": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Hours Per Speaker"
+        },
+        "speakers": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speakers"
+        }
+      },
+      "title": "SpeechSelection",
       "type": "object"
     },
     "SpeechTargetProfile": {
@@ -5104,7 +5745,8 @@
           "default": "image",
           "enum": [
             "image",
-            "face_cluster"
+            "face_cluster",
+            "speaker"
           ],
           "title": "Group By",
           "type": "string"

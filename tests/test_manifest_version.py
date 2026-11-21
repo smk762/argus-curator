@@ -6,7 +6,7 @@ import copy
 import json
 
 import pytest
-from manifest_compat import SNAPSHOT_PATH, breaking_changes, live_snapshot, verdict
+from manifest_compat import SNAPSHOT_PATH, SPEECH, breaking_changes, live_snapshot, verdict
 
 
 def _snapshot() -> dict:
@@ -17,6 +17,34 @@ def _snapshot() -> dict:
 def test_manifest_version_matches_the_recorded_row() -> None:
     problem = verdict(_snapshot(), live_snapshot())
     assert problem is None, problem
+
+
+def test_speech_manifest_version_matches_the_recorded_row() -> None:
+    """SPEECH_MANIFEST_VERSION moves with SpeechManifestRow under the same rule (#187)."""
+    assert SPEECH.path.exists(), "run `make manifest-snapshot` to record the speech manifest row"
+    snapshot = json.loads(SPEECH.path.read_text(encoding="utf-8"))
+    problem = verdict(snapshot, live_snapshot(SPEECH), SPEECH)
+    assert problem is None, problem
+
+
+def test_an_unbumped_speech_row_change_is_refused() -> None:
+    live = live_snapshot(SPEECH)
+    new = copy.deepcopy(live)
+    del new["schema"]["properties"]["speaker_id"]
+    new["schema"]["required"].remove("speaker_id")
+    problem = verdict(live, {**new, "manifest_version": "1.9"}, SPEECH)
+    assert problem is not None and "SpeechManifestRow.speaker_id: field removed" in problem
+    assert "SPEECH_MANIFEST_VERSION is still 1.x" in problem
+    added = copy.deepcopy(live)
+    added["schema"]["properties"]["new_field"] = {"type": "string"}
+    problem = verdict(live, added, SPEECH)
+    assert problem is not None and "SPEECH_MANIFEST_VERSION is still" in problem and "Bump the minor" in problem
+
+
+def test_the_image_row_and_version_are_unchanged_by_speech() -> None:
+    """Speech has its own row: ManifestRow and MANIFEST_VERSION stay as recorded (2.6)."""
+    assert live_snapshot()["manifest_version"] == _snapshot()["manifest_version"] == "2.6"
+    assert "speaker_id" not in live_snapshot()["schema"]["properties"]
 
 
 # The checks the test above relies on, against planted changes to the live row.
