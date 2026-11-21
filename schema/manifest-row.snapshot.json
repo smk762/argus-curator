@@ -1,5 +1,5 @@
 {
-  "manifest_version": "2.3",
+  "manifest_version": "2.4",
   "schema": {
     "$defs": {
       "CropBox": {
@@ -339,7 +339,7 @@
         "type": "string"
       },
       "manifest_version": {
-        "default": "2.3",
+        "default": "2.4",
         "title": "Manifest Version",
         "type": "string"
       },
@@ -406,6 +406,22 @@
         "title": "Similar Group",
         "type": "integer"
       },
+      "split": {
+        "anyOf": [
+          {
+            "enum": [
+              "train",
+              "held_out"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Split"
+      },
       "target_profile": {
         "$ref": "#/$defs/TargetProfile"
       }
@@ -423,7 +439,8 @@
       "similar_group",
       "crop",
       "primary_face",
-      "set_age"
+      "set_age",
+      "split"
     ],
     "title": "ManifestRow",
     "type": "object"

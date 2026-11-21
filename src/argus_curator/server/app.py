@@ -9,7 +9,7 @@ Routes (section 4 of the brief):
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
     GET  /image?path=<rel> -> original bytes (same containment as /thumb)
-    POST /scan/{id}/select -> SelectResult  (decide_selection, writes nothing)
+    POST /scan/{id}/select -> SelectResult  (plan_selection, writes nothing)
     POST /scan/{id}/delete -> remove scanned files from the source folder
     POST /upload           -> save images into a folder under the source root
     POST /export           -> ExportResult
@@ -72,13 +72,11 @@ from argus_curator.models import (
 from argus_curator.runtime import GPU_UNAVAILABLE, ModelUnavailable, gpu_coordinator
 from argus_curator.scenes import scenes_available
 from argus_curator.selection import (
-    decide_selection,
-    face_source_problem,
-    garment_floor_problem,
-    guard_filter_problem,
+    SplitError,
     minor_exposed,
     minor_exposed_mode,
-    nsfw_filter_problem,
+    plan_selection,
+    selection_problem,
 )
 from argus_curator.store import ScanStore
 
@@ -1083,40 +1081,53 @@ def create_app(
 
     @app.post("/scan/{scan_id}/select", response_model=SelectResult)
     async def select_scan(scan_id: str, req: SelectRequest) -> SelectResult:
-        """Apply the export filter to a cached scan and return keep reasons.
+        """Apply the export filter, cap, ranking and split to a cached scan.
 
         Nothing is copied, symlinked, or moved, and the export root is not
-        created. ``keep_reason`` is empty for images the filter keeps.
+        created. Kept rows come first, best first (``rank`` is the 1-based
+        position), each with its ``split`` part when one was asked for; the
+        rest follow in scan order with their ``keep_reason``. The same
+        ``plan_selection`` export runs, so an export with the same fields keeps
+        exactly these rows.
         """
         summary = store.load(scan_id)
         if summary is None:
             raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
         _scan_root_or_400(summary)
         export_req = req.as_export_request()
-        for problem in (
-            garment_floor_problem(export_req, summary.garments_config.min_conf),
-            nsfw_filter_problem(export_req, summary),
-            face_source_problem(export_req, summary),
-            guard_filter_problem(export_req, summary),
-        ):
-            if problem is not None:
-                raise HTTPException(status_code=400, detail=problem)
-        _selected, reasons = await asyncio.to_thread(
-            decide_selection,
-            summary.results,
-            export_req,
-            summary.config.diversity_weight,
-            set_age=summary.set_age,
-        )
-        rows = [
-            SelectRow(rel_path=r.rel_path, abs_path=r.abs_path, keep_reason=reasons.get(r.rel_path, ""))
-            for r in summary.results
+        if (problem := selection_problem(export_req, summary)) is not None:
+            raise HTTPException(status_code=400, detail=problem)
+        try:
+            plan = await asyncio.to_thread(
+                plan_selection,
+                summary.results,
+                export_req,
+                summary.config.diversity_weight,
+                set_age=summary.set_age,
+            )
+        except SplitError as exc:
+            raise HTTPException(status_code=400, detail=f"split refused: {exc}") from None
+        kept = [
+            SelectRow(rel_path=r.rel_path, abs_path=r.abs_path, rank=i, split=plan.split.get(r.rel_path))
+            for i, r in enumerate(plan.chosen, 1)
         ]
+        kept_rel = {r.rel_path for r in plan.chosen}
+        left_out = [
+            SelectRow(
+                rel_path=r.rel_path, abs_path=r.abs_path, keep_reason=plan.keep_reason.get(r.rel_path) or "left-out"
+            )
+            for r in summary.results
+            if r.rel_path not in kept_rel
+        ]
+        held = sum(1 for part in plan.split.values() if part == "held_out")
         return SelectResult(
             scan_id=scan_id,
-            total=len(rows),
-            kept=sum(1 for row in rows if row.keep_reason == ""),
-            rows=rows,
+            total=len(summary.results),
+            kept=len(kept),
+            rank=export_req.rank,
+            train=len(kept) - held if export_req.split is not None else None,
+            held_out=held if export_req.split is not None else None,
+            rows=[*kept, *left_out],
         )
 
     @app.post("/scan/{scan_id}/delete")
@@ -1314,14 +1325,8 @@ def create_app(
                 status_code=400,
                 detail="inline selection export requires a scan_id for the manifest target_profile",
             )
-        for problem in (
-            garment_floor_problem(req, summary.garments_config.min_conf),
-            nsfw_filter_problem(req, summary),
-            face_source_problem(req, summary),
-            guard_filter_problem(req, summary),
-        ):
-            if problem is not None:
-                raise HTTPException(status_code=400, detail=problem)
+        if (problem := selection_problem(req, summary)) is not None:
+            raise HTTPException(status_code=400, detail=problem)
         if req.mode != "copy" and any(r.crop is not None for r in summary.results):
             # Its cropped images must be written cropped; a link or a move would pass on the watermark.
             raise HTTPException(
@@ -1406,6 +1411,8 @@ def create_app(
         await _check_caption_url(req)
         try:
             return await asyncio.to_thread(_export_and_drop, summary, req)
+        except SplitError as exc:  # raised before anything is transferred
+            raise HTTPException(status_code=400, detail=f"split refused: {exc}") from None
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"export failed: {exc}") from exc
 

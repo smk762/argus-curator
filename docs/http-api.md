@@ -58,7 +58,7 @@ no port), or its writes get 403.
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
 | `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount, of the cropped frame when that scan cropped it |
 | `GET  /image?path=<rel>&scan_id=<id>` | Original image bytes, same containment as `/thumb` |
-| `POST /scan/{scan_id}/select` | Dry-run of the export filter → `{total, kept, rows: [{rel_path, abs_path, keep_reason}]}`. Writes nothing |
+| `POST /scan/{scan_id}/select` | Dry-run of the export filter, cap, ranking and split → `{total, kept, rank, train, held_out, rows: [{rel_path, abs_path, keep_reason, rank, split}]}`, kept rows first and best first. Writes nothing. See [Ranking, max_keep and splits](#ranking-max_keep-and-splits) |
 | `POST /scan/{scan_id}/delete` | Delete source files in the scan (`rel_path` or `rel_paths`, all or nothing: a path not in the scan is a 404, a running scan a 409) and drop their rows → `{rel_paths, total}`. Any image needs `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1` (else 403 unless under-18 exposed); `/health` reports `delete_any` |
 | `POST /upload` | Multipart image upload (`files` + `folder`) into a folder under the source root. Each file is capped at `CURATOR_MAX_UPLOAD_MB` (default 50); a larger one is a 413 and nothing is saved |
 | `POST /export` | Structure-preserving transfer + manifest → `ExportResult` |
@@ -137,6 +137,9 @@ has it.
   "min_scene_conf": 0.1, "diversify_scenes": false,
   "garments": ["dress"], "exclude_garments": ["bag_wallet"],  // optional: Fashionpedia
   "min_garment_conf": 0.5, "garments_uncropped": false, "diversify_outfits": true,
+  "max_keep": null, "diversity_weight": null,  // optional cap; null weight = the scan's
+  "rank": "score",                  // "score" | "identity": the order kept images come in
+  "split": null, "split_part": "train",        // optional train/held-out split; export one part
   "write_manifest": true,
   "caption_url": null,              // optional: POST manifest to argus-lens (internal hosts: CURATOR_CAPTION_ALLOWED_HOSTS)
   "carry_sidecars": false,          // optional: transfer .txt / .xmp / .json sidecars with each image
@@ -155,6 +158,54 @@ covered in [Sidecars and run stats](sidecars.md), and every filter field in its
 feature's page ([Face attributes](face-attributes.md), [Scene tags](scene-tags.md),
 [Garments](garments.md), [Nudity detection](nudity.md),
 [Policy check](policy-check.md), [Face sources](face-sources.md)).
+
+## Ranking, max_keep and splits
+
+`POST /scan/{id}/select` and `POST /export` run the same selection
+(`selection.plan_selection`): the filters, then the cap, then the ranking,
+then the split. A select and an export with the same fields keep the same
+images, in the same order, in the same parts.
+
+- **`rank`** orders the kept images, best first. `"score"` (the default): the
+  curation score, then the primary face's identity distance. `"identity"`: the
+  identity distance (the face's `reference_distance` when the scan had
+  `faces.reference_paths`, else its `cluster_distance`; an image with no face or
+  no distance comes last), then the score. Ties end on `rel_path`. `"identity"`
+  needs a scan that ran face detection (else 400). The manifest is written in
+  this order, and each select row's `rank` is its 1-based position.
+- **`max_keep`** caps the kept images; the rest get `diversity-trimmed`. The
+  pick blends merit under `rank` with spread (pHash, plus scenes and outfits
+  with `diversify_scenes` / `diversify_outfits`) by `diversity_weight`
+  (0 = the best `max_keep` by rank, 1 = the widest spread; null = the scan's
+  `config.diversity_weight`).
+- **`split`** divides the kept images into `train` and `held_out`:
+
+  ```jsonc
+  "split": {
+    "held_out": 8,              // or "held_out_fraction": 0.2 (exactly one)
+    "group_by": "image",        // "image" | "face_cluster": a group never spans both parts
+    "method": "spread",         // "spread": evenly through the ranking | "random": shuffled by seed
+    "seed": 0
+  }
+  ```
+
+  Whole groups go to one part. With `group_by: "face_cluster"` one identity
+  (the primary face's cluster) is never in both parts; an image with no
+  clustered face is a group of its own. A group that would push `held_out`
+  past its target is skipped, so it can fall short of the target, never
+  exceed it. A split that leaves either part empty (too few images, or one
+  group) is refused with 400. The split is deterministic: the same request on
+  the same scan always gives the same parts. Select reports both parts (each
+  kept row's `split`, and the `train` / `held_out` counts). An export
+  transfers only `split_part`, and its manifest rows carry `split`; export
+  each part to its own `dest` (argus-forge trains on everything under one).
+  A split can't be combined with an inline `selection`.
+
+argus-mint's identity training, for example, selects with
+`{"face_source": {...}, "rank": "identity", "max_keep": train + held_out,
+"diversity_weight": 0, "split": {"held_out": held_out}}`, then exports the
+`train` part to the training export and the `held_out` part to proof's
+references.
 
 ## Scan cache
 

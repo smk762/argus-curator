@@ -234,6 +234,20 @@
           "title": "Diversify Scenes",
           "type": "boolean"
         },
+        "diversity_weight": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diversity Weight"
+        },
         "exclude_garments": {
           "anyOf": [
             {
@@ -532,6 +546,7 @@
         "max_keep": {
           "anyOf": [
             {
+              "minimum": 0,
               "type": "integer"
             },
             {
@@ -674,6 +689,15 @@
           "title": "Preserve Structure",
           "type": "boolean"
         },
+        "rank": {
+          "default": "score",
+          "enum": [
+            "score",
+            "identity"
+          ],
+          "title": "Rank",
+          "type": "string"
+        },
         "run_stats": {
           "anyOf": [
             {
@@ -748,6 +772,26 @@
           "default": null,
           "title": "Selection"
         },
+        "split": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SplitConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "split_part": {
+          "default": "train",
+          "enum": [
+            "train",
+            "held_out"
+          ],
+          "title": "Split Part",
+          "type": "string"
+        },
         "write_manifest": {
           "default": true,
           "title": "Write Manifest",
@@ -812,7 +856,7 @@
           "title": "Manifest Path"
         },
         "manifest_version": {
-          "default": "2.3",
+          "default": "2.4",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -2489,7 +2533,7 @@
           "type": "string"
         },
         "manifest_version": {
-          "default": "2.3",
+          "default": "2.4",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -2556,6 +2600,22 @@
           "title": "Similar Group",
           "type": "integer"
         },
+        "split": {
+          "anyOf": [
+            {
+              "enum": [
+                "train",
+                "held_out"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Split"
+        },
         "target_profile": {
           "$ref": "#/$defs/TargetProfile"
         }
@@ -2573,7 +2633,8 @@
         "similar_group",
         "crop",
         "primary_face",
-        "set_age"
+        "set_age",
+        "split"
       ],
       "title": "ManifestRow",
       "type": "object"
@@ -3202,7 +3263,7 @@
       "type": "object"
     },
     "SelectRequest": {
-      "description": "Filter body for ``POST /scan/{id}/select``.\n\nThe filter fields of :class:`ExportRequest`, and none of the transfer\nfields (``dest``, ``mode``, ``selection``). ``max_keep`` and the diversify\nflags are absent on purpose: this route never diversity-trims.",
+      "description": "Filter body for ``POST /scan/{id}/select``.\n\nThe filter, ranking, cap and split fields of :class:`ExportRequest`, and\nnone of the transfer fields (``dest``, ``mode``, ``selection``). Select and\nexport run the same ``selection.plan_selection``, so an export with the\nsame fields keeps exactly the rows this route marks kept, in this order.",
       "properties": {
         "content_ratings": {
           "anyOf": [
@@ -3224,6 +3285,30 @@
           ],
           "default": null,
           "title": "Content Ratings"
+        },
+        "diversify_outfits": {
+          "default": false,
+          "title": "Diversify Outfits",
+          "type": "boolean"
+        },
+        "diversify_scenes": {
+          "default": false,
+          "title": "Diversify Scenes",
+          "type": "boolean"
+        },
+        "diversity_weight": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diversity Weight"
         },
         "exclude_garments": {
           "anyOf": [
@@ -3500,6 +3585,19 @@
           "default": null,
           "title": "Max Age Years"
         },
+        "max_keep": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Keep"
+        },
         "min_age_years": {
           "anyOf": [
             {
@@ -3618,6 +3716,15 @@
           "default": null,
           "title": "Nsfw Threshold"
         },
+        "rank": {
+          "default": "score",
+          "enum": [
+            "score",
+            "identity"
+          ],
+          "title": "Rank",
+          "type": "string"
+        },
         "scene_environments": {
           "anyOf": [
             {
@@ -3651,17 +3758,49 @@
           ],
           "default": null,
           "title": "Scenes"
+        },
+        "split": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SplitConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "title": "SelectRequest",
       "type": "object"
     },
     "SelectResult": {
-      "description": "What the current filter would keep, without writing the export root.",
+      "description": "What the current filter would keep, without writing the export root.\n\n``rows`` lists the kept images first, best first by ``rank`` (each row's\n``rank`` is its position), then the images left out, in scan order.",
       "properties": {
+        "held_out": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Held Out"
+        },
         "kept": {
           "title": "Kept",
           "type": "integer"
+        },
+        "rank": {
+          "default": "score",
+          "enum": [
+            "score",
+            "identity"
+          ],
+          "title": "Rank",
+          "type": "string"
         },
         "rows": {
           "items": {
@@ -3677,12 +3816,27 @@
         "total": {
           "title": "Total",
           "type": "integer"
+        },
+        "train": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Train"
         }
       },
       "required": [
         "scan_id",
         "total",
         "kept",
+        "rank",
+        "train",
+        "held_out",
         "rows"
       ],
       "title": "SelectResult",
@@ -3700,15 +3854,45 @@
           "title": "Keep Reason",
           "type": "string"
         },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rank"
+        },
         "rel_path": {
           "title": "Rel Path",
           "type": "string"
+        },
+        "split": {
+          "anyOf": [
+            {
+              "enum": [
+                "train",
+                "held_out"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Split"
         }
       },
       "required": [
         "rel_path",
         "abs_path",
-        "keep_reason"
+        "keep_reason",
+        "rank",
+        "split"
       ],
       "title": "SelectRow",
       "type": "object"
@@ -3740,6 +3924,63 @@
         "share"
       ],
       "title": "SetAge",
+      "type": "object"
+    },
+    "SplitConfig": {
+      "description": "A deterministic train/held-out split of the kept images (#183).\n\nSet exactly one of ``held_out`` (images) or ``held_out_fraction``. Whole\ngroups (``group_by``) go to one part, never both; a group that would take\nthe held-out part past its target is skipped, so the held-out count can\nfall short of it, never exceed it. Both parts must end up non-empty.\n\n``method`` \"spread\" takes held-out groups evenly through the ranking, so\nthe held-out images are as good as the training ones (argus-mint's rule);\n\"random\" shuffles the groups with ``seed``. The same request on the same\nscan always gives the same split.",
+      "properties": {
+        "group_by": {
+          "default": "image",
+          "enum": [
+            "image",
+            "face_cluster"
+          ],
+          "title": "Group By",
+          "type": "string"
+        },
+        "held_out": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Held Out"
+        },
+        "held_out_fraction": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 1.0,
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Held Out Fraction"
+        },
+        "method": {
+          "default": "spread",
+          "enum": [
+            "spread",
+            "random"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "seed": {
+          "default": 0,
+          "title": "Seed",
+          "type": "integer"
+        }
+      },
+      "title": "SplitConfig",
       "type": "object"
     },
     "TargetProfile": {

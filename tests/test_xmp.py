@@ -102,7 +102,7 @@ def test_content_ratings_filter(tmp_path: Path) -> None:
     ]
     req = SelectRequest(min_score=0.0, content_ratings=["safe", "suggestive"]).as_export_request()
     selected, reasons = decide_selection(results, req, 0.0)
-    assert [r.rel_path for r in selected] == ["safe.png", "lingerie.png"]
+    assert sorted(r.rel_path for r in selected) == ["lingerie.png", "safe.png"]
     assert reasons["nude.png"] == "content-rating:explicit"
     assert reasons["unchecked.png"] == "nsfw-unchecked"
     summary = _summary(tmp_path, results)

@@ -7,8 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`/scan/{id}/select` ranks, caps and splits (#183).** Select and export now
+  run one `selection.plan_selection`, so they can't disagree. Kept rows come
+  first, best first, each with its 1-based `rank`; `rank` picks the order
+  (`"score"`, or `"identity"`: closest face first, by reference or cluster
+  distance). `max_keep`, `diversity_weight`, `diversify_scenes` and
+  `diversify_outfits` now apply to select too. An optional `split`
+  (`held_out` or `held_out_fraction`, `group_by` `image` | `face_cluster`,
+  `method` `spread` | `random`, `seed`) gives a deterministic train/held-out
+  split in which no group spans both parts; select reports both parts, and an
+  export transfers `split_part`. The group key is a table
+  (`selection.SPLIT_GROUP_KEYS`) over a generic `split_held_out`, so other
+  kinds of item can reuse it. This replaces argus-mint's own ranking and split.
+- **Manifest 2.4: rows carry `split`** (`train` / `held_out`, or null). Additive.
+
 ### Changed
 
+- **Kept images are always ranked.** Exports without `face_source` used to
+  write the manifest in scan order (or the diversity pick's order with
+  `max_keep`); every manifest is now in `rank` order.
 - **`guard_eval.py` runs are repeatable and its reports weigh noise (#113).**
   Expectations moved out of the script into `eval/guard_cases.toml`: per
   bucket and policy, a correct verdict is `flag`, `pass` or `either`, an

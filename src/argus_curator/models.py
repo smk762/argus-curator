@@ -120,7 +120,9 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # 2.3: rows carry primary_face (box, yaw / pitch / roll, face sharpness, eye and
 # mouth openness, identity distances, age, and landmarks when asked) and the
 # scan's set_age. Additive (#130).
-MANIFEST_VERSION = "2.3"
+# 2.4: rows carry split ("train" / "held_out") when the export asked for a
+# train/held-out split, else null. Additive (#183).
+MANIFEST_VERSION = "2.4"
 
 # Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
 # written to disk verbatim, so a runaway payload must not fill the export root.
@@ -917,6 +919,49 @@ class FaceSourceFilter(BaseModel):
     require_adult: bool = True
 
 
+# How the kept images are ordered, best first (selection.rank_key). "score":
+# the curation score, then the primary face's identity distance. "identity":
+# the identity distance (reference_distance, else cluster_distance; no face
+# last), then the score. Ties fall back to rel_path, so the order is total.
+RankBy = Literal["score", "identity"]
+
+# Which part of a train/held-out split an image is in.
+SplitPart = Literal["train", "held_out"]
+
+# What keeps images together across a split (selection.SPLIT_GROUP_KEYS):
+# "image" = every image is its own group; "face_cluster" = the primary face's
+# identity, so one identity never lands in both parts (an image with no
+# clustered face is a group of its own).
+SplitGroup = Literal["image", "face_cluster"]
+
+
+class SplitConfig(BaseModel):
+    """A deterministic train/held-out split of the kept images (#183).
+
+    Set exactly one of ``held_out`` (images) or ``held_out_fraction``. Whole
+    groups (``group_by``) go to one part, never both; a group that would take
+    the held-out part past its target is skipped, so the held-out count can
+    fall short of it, never exceed it. Both parts must end up non-empty.
+
+    ``method`` "spread" takes held-out groups evenly through the ranking, so
+    the held-out images are as good as the training ones (argus-mint's rule);
+    "random" shuffles the groups with ``seed``. The same request on the same
+    scan always gives the same split.
+    """
+
+    held_out: int | None = Field(None, ge=1)
+    held_out_fraction: float | None = Field(None, gt=0.0, lt=1.0)
+    group_by: SplitGroup = "image"
+    method: Literal["spread", "random"] = "spread"
+    seed: int = 0
+
+    @model_validator(mode="after")
+    def _one_size(self) -> SplitConfig:
+        if (self.held_out is None) == (self.held_out_fraction is None):
+            raise ValueError("split needs exactly one of held_out or held_out_fraction")
+        return self
+
+
 class ExportRequest(BaseModel):
     scan_id: str | None = None
     # Inline selection of rel_paths (alternative to scan_id-driven selection).
@@ -936,7 +981,20 @@ class ExportRequest(BaseModel):
     min_score: float = 0.6
     include_rejected: bool = Field(False, description=_INCLUDE_REJECTED_IGNORED)
     keep_similar: bool = False
-    max_keep: int | None = None
+    # Cap on the kept images: the best by `rank`, spread by diversity_weight
+    # (and the diversify flags). /scan/{id}/select applies the same cap.
+    max_keep: int | None = Field(None, ge=0)
+    # The max_keep blend, 0 = best by rank only, 1 = widest spread. None = the
+    # scan's ScanConfig.diversity_weight.
+    diversity_weight: float | None = Field(None, ge=0.0, le=1.0)
+    # How kept images are ordered (RankBy), in the manifest too. "identity"
+    # needs a scan that ran face detection.
+    rank: RankBy = "score"
+    # Optional train/held-out split of the kept images; the export transfers
+    # only split_part of it, and each manifest row names its part. Two exports
+    # with the same filter and split, one per part, give disjoint sets.
+    split: SplitConfig | None = None
+    split_part: SplitPart = "train"
 
     # Optional: export only images whose primary face is in these clusters.
     face_clusters: list[str] | None = None
@@ -1075,6 +1133,12 @@ class ExportRequest(BaseModel):
         return rules
 
     @model_validator(mode="after")
+    def _split_needs_the_filter(self) -> ExportRequest:
+        if self.split is not None and self.selection is not None:
+            raise ValueError("split applies to the filter's selection; a named selection is already split")
+        return self
+
+    @model_validator(mode="after")
     def _age_range_in_order(self) -> ExportRequest:
         if (
             self.min_age_years is not None
@@ -1157,6 +1221,8 @@ class ManifestRow(BaseModel):
     # scan's set age when FaceConfig.set_age read one.
     primary_face: ManifestFace | None = None
     set_age: SetAge | None = None
+    # Manifest 2.4: the row's part of ExportRequest.split, None without one.
+    split: SplitPart | None = None
 
 
 class ExportResult(BaseModel):
@@ -1218,19 +1284,31 @@ class SelectRow(BaseModel):
     rel_path: str
     abs_path: str
     keep_reason: str = ""
+    # 1-based position among the kept images, best first (SelectRequest.rank);
+    # None for an image left out.
+    rank: int | None = None
+    # Its part of SelectRequest.split; None without a split or when left out.
+    split: SplitPart | None = None
 
 
 class SelectRequest(BaseModel):
     """Filter body for ``POST /scan/{id}/select``.
 
-    The filter fields of :class:`ExportRequest`, and none of the transfer
-    fields (``dest``, ``mode``, ``selection``). ``max_keep`` and the diversify
-    flags are absent on purpose: this route never diversity-trims.
+    The filter, ranking, cap and split fields of :class:`ExportRequest`, and
+    none of the transfer fields (``dest``, ``mode``, ``selection``). Select and
+    export run the same ``selection.plan_selection``, so an export with the
+    same fields keeps exactly the rows this route marks kept, in this order.
     """
 
     min_score: float = 0.6
     include_rejected: bool = Field(False, description=_INCLUDE_REJECTED_IGNORED)
     keep_similar: bool = False
+    max_keep: int | None = Field(None, ge=0)
+    diversity_weight: float | None = Field(None, ge=0.0, le=1.0)
+    diversify_scenes: bool = False
+    diversify_outfits: bool = False
+    rank: RankBy = "score"
+    split: SplitConfig | None = None
 
     face_clusters: list[str] | None = None
     face_poses: list[FacePose] | None = None
@@ -1278,13 +1356,21 @@ class SelectRequest(BaseModel):
 
 
 class SelectResult(BaseModel):
-    """What the current filter would keep, without writing the export root."""
+    """What the current filter would keep, without writing the export root.
+
+    ``rows`` lists the kept images first, best first by ``rank`` (each row's
+    ``rank`` is its position), then the images left out, in scan order.
+    """
 
     model_config = RESPONSE_ONLY
 
     scan_id: str
     total: int
     kept: int
+    rank: RankBy = "score"
+    # With a split: how many kept images each part holds (train + held_out == kept).
+    train: int | None = None
+    held_out: int | None = None
     rows: list[SelectRow] = Field(default_factory=list)
 
 
