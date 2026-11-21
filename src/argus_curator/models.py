@@ -243,6 +243,9 @@ DEFAULT_NSFW_THRESHOLD = MIN_REPORTED_SCORE
 _INCLUDE_REJECTED_IGNORED = "Ignored: a rejected image is never kept. Accepted so older clients still validate."
 
 
+SEMANTIC_DUPLICATES_NEED_EMBEDDINGS = "config.semantic_duplicates needs the scan's embeddings: turn embeddings on"
+
+
 class ScanConfig(BaseModel):
     """Tunable parameters for a training-suitability scan."""
 
@@ -253,6 +256,17 @@ class ScanConfig(BaseModel):
 
     # Near-duplicate clustering (pHash Hamming distance). -1 disables grouping.
     cluster_distance: int = 10
+    # Semantic near-duplicates (#196): also group images whose CLIP embeddings
+    # have a cosine similarity of at least ``semantic_duplicate_cosine`` (mirrors,
+    # small crops and rescans that pHash puts far apart). Off by default. Needs
+    # the scan's embeddings (EmbeddingConfig.enabled): a scan asking for it
+    # without them is refused. Either test links an image to a group's
+    # representative (see scanner._mark_duplicates); a -1 cluster_distance turns
+    # off the pHash test only. 0.95 sits above every pair of distinct shots
+    # measured (same person or same scene: at most 0.944) and below rescans of
+    # one photo (0.98+) and most mirrors (median 0.989); see docs/scoring.md.
+    semantic_duplicates: bool = False
+    semantic_duplicate_cosine: float = Field(0.95, ge=0.0, le=1.0)
 
     # Composite score weights
     weight_sharpness: float = 0.35
@@ -883,6 +897,10 @@ def rate_content(nsfw: NsfwResult | None) -> ContentRating | None:
     return "safe"
 
 
+# Which near-duplicate test linked an image to its group's representative (#196).
+DuplicateKind = Literal["phash", "semantic", "both"]
+
+
 class ImageResult(BaseModel):
     """Per-image curation record — superset of imogen's scanner output.
 
@@ -906,6 +924,10 @@ class ImageResult(BaseModel):
     is_representative: bool = True
     is_duplicate: bool = False
     duplicate_of: str | None = None
+    # Which test tied this image to ``duplicate_of`` (None when not a duplicate):
+    # "phash" (Hamming distance within cluster_distance), "semantic" (embedding
+    # cosine at least semantic_duplicate_cosine, with semantic_duplicates on) or "both".
+    duplicate_kind: DuplicateKind | None = None
     keep_reason: str = ""
 
     # Raw metrics
@@ -1244,6 +1266,12 @@ class ScanSummary(BaseModel):
     rejected: int
     duplicates: int
     similar_clusters: int
+    # True once rows were dropped (a delete or a move) after this process lost
+    # the scan's embeddings (a restart) and some image's semantic representative
+    # went with them: the groups were rebuilt from pHash and the semantic links
+    # the rows recorded, and such an image may have a semantic near-duplicate the
+    # regroup could no longer see. Rescan with embeddings on to group it afresh.
+    semantic_groups_stale: bool = False
 
     reject_reasons: dict[str, int] = Field(default_factory=dict)
     face_clusters: list[FaceCluster] = Field(default_factory=list)
@@ -1352,6 +1380,15 @@ class ScanRequest(BaseModel):
         return self.target_profile.modality == "speech"
 
     @model_validator(mode="after")
+    def _semantic_duplicates_need_embeddings(self) -> ScanRequest:
+        # Refused, never silently pHash-only: the grouping needs the vectors.
+        if self.is_speech:
+            return self  # refused below as an image check
+        if self.config.semantic_duplicates and not self.embeddings.enabled:
+            raise ValueError(SEMANTIC_DUPLICATES_NEED_EMBEDDINGS)
+        return self
+
+    @model_validator(mode="after")
     def _no_image_checks_on_speech(self) -> ScanRequest:
         if not self.is_speech:
             return self
@@ -1362,6 +1399,7 @@ class ScanRequest(BaseModel):
                 ("scenes", self.scenes.enabled),
                 ("garments", self.garments.enabled),
                 ("embeddings", self.embeddings.enabled),
+                ("config.semantic_duplicates", self.config.semantic_duplicates),
                 ("nsfw", self.nsfw.enabled is True),
                 ("guard", self.guard.enabled is True),
                 ("crops", self.crops.enabled),

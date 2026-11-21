@@ -2738,6 +2738,23 @@
           "default": null,
           "title": "Crop Source"
         },
+        "duplicate_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "phash",
+                "semantic",
+                "both"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Kind"
+        },
         "duplicate_of": {
           "anyOf": [
             {
@@ -3095,6 +3112,7 @@
         "is_representative",
         "is_duplicate",
         "duplicate_of",
+        "duplicate_kind",
         "keep_reason",
         "sharpness",
         "artifact_score",
@@ -3822,6 +3840,18 @@
           "title": "Resolution Ref",
           "type": "integer"
         },
+        "semantic_duplicate_cosine": {
+          "default": 0.95,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Semantic Duplicate Cosine",
+          "type": "number"
+        },
+        "semantic_duplicates": {
+          "default": false,
+          "title": "Semantic Duplicates",
+          "type": "boolean"
+        },
         "sharpness_ref": {
           "default": 800.0,
           "minimum": 0.0,
@@ -4047,6 +4077,11 @@
         "scenes_config": {
           "$ref": "#/$defs/SceneConfig"
         },
+        "semantic_groups_stale": {
+          "default": false,
+          "title": "Semantic Groups Stale",
+          "type": "boolean"
+        },
         "set_age": {
           "anyOf": [
             {
@@ -4132,6 +4167,7 @@
         "rejected",
         "duplicates",
         "similar_clusters",
+        "semantic_groups_stale",
         "reject_reasons",
         "face_clusters",
         "set_age",
