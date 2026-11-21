@@ -12,6 +12,8 @@ from argus_cortex.taxonomy import SPEECH_CATEGORIES, TARGET_CATEGORIES
 if TYPE_CHECKING:
     from pydantic import ValidationError
 
+    from argus_curator.models import ExportRequest, ScanSummary
+
 try:
     import typer
     from typer import Argument, Option
@@ -170,6 +172,62 @@ def scan(
     ),
     speech_config: Path | None = Option(
         None, "--speech-config", help="Speech: a JSON SpeechConfig with the thresholds (the flags above override it)"
+    ),
+    speaker_ids: str | None = Option(
+        None, "--speaker-id", help="Speech export: keep only these speakers (comma-separated speaker_id)"
+    ),
+    accents: str | None = Option(
+        None, "--accent", help="Speech export: keep only these accents (comma-separated corpus labels, exact)"
+    ),
+    languages: str | None = Option(
+        None, "--language", help="Speech export: keep only these languages (comma-separated corpus labels, exact)"
+    ),
+    exclude_speaker_mismatch: bool = Option(
+        False,
+        "--exclude-speaker-mismatch",
+        help="Speech export: drop clips whose corpus speaker label the clustering disputes (needs --speakers)",
+    ),
+    min_hours_per_speaker: float | None = Option(
+        None, "--min-hours-per-speaker", help="Speech export: drop a speaker with fewer hours of kept audio"
+    ),
+    max_hours_per_speaker: float | None = Option(
+        None, "--max-hours-per-speaker", help="Speech export: cap each speaker's hours, best clips first"
+    ),
+    max_hours_per_accent: float | None = Option(
+        None, "--max-hours-per-accent", help="Speech export: cap each accent's hours, taking its speakers in turn"
+    ),
+    balance_accents: bool = Option(
+        False, "--balance-accents", help="Speech export: cap every accent at the smallest accent's hours"
+    ),
+    corpus: str | None = Option(
+        None, "--corpus", help="Speech export: the licensed corpus every clip comes from (with --license)"
+    ),
+    corpus_license: str | None = Option(
+        None, "--license", help="Speech export: the corpus's licence, e.g. CC0-1.0 (with --corpus)"
+    ),
+    voice_consent: str | None = Option(
+        None,
+        "--voice-consent",
+        help="Speech export: a real person's voice consent record (argus-cortex ConsentRecord JSON), "
+        "relative to the scanned folder or absolute, instead of --corpus (with --consent-delivery; needs --speakers)",
+    ),
+    consent_delivery: str | None = Option(
+        None, "--consent-delivery", help="Speech export: the voice delivery --voice-consent must cover, e.g. neutral"
+    ),
+    held_out: int | None = Option(
+        None, "--held-out", help="Speech export: hold out about this many clips, by whole speakers (or a fraction)"
+    ),
+    held_out_fraction: float | None = Option(
+        None, "--held-out-fraction", help="Speech export: hold out about this fraction of the clips, by whole speakers"
+    ),
+    split_method: str = Option(
+        "spread",
+        "--split-method",
+        help="Speech export: spread (held-out speakers evenly through the ranking) or random",
+    ),
+    split_seed: int = Option(0, "--split-seed", help="Speech export: the seed --split-method random shuffles with"),
+    split_part: str = Option(
+        "train", "--split-part", help="Speech export: which part of the split to export, train or held_out"
     ),
     faces: bool = Option(False, "--faces", help="Run InsightFace detection + identity clustering"),
     faces_model: str = Option("buffalo_l", "--faces-model", help="InsightFace model name"),
@@ -470,12 +528,43 @@ def scan(
     if modality not in ("image", "speech"):
         typer.echo("Error: --modality must be image or speech", err=True)
         raise typer.Exit(2)
+    speech_export_flags = {
+        "--speaker-id": speaker_ids,
+        "--accent": accents,
+        "--language": languages,
+        "--exclude-speaker-mismatch": exclude_speaker_mismatch,
+        "--min-hours-per-speaker": min_hours_per_speaker is not None,
+        "--max-hours-per-speaker": max_hours_per_speaker is not None,
+        "--max-hours-per-accent": max_hours_per_accent is not None,
+        "--balance-accents": balance_accents,
+        "--corpus": corpus,
+        "--license": corpus_license,
+        "--voice-consent": voice_consent,
+        "--consent-delivery": consent_delivery,
+        "--held-out": held_out is not None,
+        "--held-out-fraction": held_out_fraction is not None,
+        "--split-method": split_method != "spread",
+        "--split-seed": split_seed != 0,
+        "--split-part": split_part != "train",
+    }
     if modality == "speech":
         image_only = {
-            "--copy-to": copy_to,
-            "--move-to": move_to,
-            "--symlink-to": symlink_to,
             "--csv": csv_out,
+            "--face-clusters": face_clusters,
+            "--pose/--race/--gender/--age": face_poses or face_races or face_genders or face_ages,
+            "--min-age/--max-age": min_age_years is not None or max_age_years is not None,
+            "--min-attr-conf": min_attribute_conf != 0.0,
+            "--scene/--environment": scene_filter or environment,
+            "--garment/--exclude-garment/--uncropped": garment_filter or exclude_garments or garments_uncropped,
+            "--diversify-*": diversify_scenes or diversify_outfits or diversify_semantic,
+            "--diversity-weight": diversity_weight != 0.40,
+            "--nsfw-threshold/--nsfw-label/--content-ratings": (
+                nsfw_threshold is not None or nsfw_label_thresholds or nsfw_exposed_labels or content_ratings
+            ),
+            "--guard-unsafe/--guard-rules/--guard-policies": guard_unsafe or guard_rules or guard_policies,
+            "--landmarks": landmarks,
+            "--face-names": face_names,
+            "--carry-sidecars": carry_sidecars,
             "--faces": faces or fairface or mivolo or set_age or mivolo_body or bool(face_reference),
             "--scenes": scenes,
             "--garments": garments,
@@ -489,12 +578,40 @@ def scan(
         }
         if asked := [flag for flag, value in image_only.items() if value]:
             typer.echo(
-                f"Error: a speech scan runs no image checks, and exports over HTTP (POST /export with speech); "
-                f"drop {', '.join(asked)}",
+                f"Error: a speech scan runs no image checks or image filters; drop {', '.join(asked)}",
                 err=True,
             )
             raise typer.Exit(2)
-        _scan_speech(
+        # Every flag is checked before a clip is read; the export itself runs after the scan.
+        speech_req = _speech_export_request(
+            source,
+            dest=move_to or copy_to or symlink_to,
+            mode="move" if move_to else ("symlink" if symlink_to else "copy"),
+            flags=speech_export_flags,
+            min_score=min_score,
+            keep_similar=keep_similar,
+            max_keep=max_keep,
+            speaker_ids=speaker_ids,
+            accents=accents,
+            languages=languages,
+            exclude_speaker_mismatch=exclude_speaker_mismatch,
+            min_hours_per_speaker=min_hours_per_speaker,
+            max_hours_per_speaker=max_hours_per_speaker,
+            max_hours_per_accent=max_hours_per_accent,
+            balance_accents=balance_accents,
+            corpus=corpus,
+            corpus_license=corpus_license,
+            voice_consent=voice_consent,
+            consent_delivery=consent_delivery,
+            speakers_clustered=speech_speakers,
+            held_out=held_out,
+            held_out_fraction=held_out_fraction,
+            split_method=split_method,
+            split_seed=split_seed,
+            split_part=split_part,
+            run_stats=run_stats,
+        )
+        summary = _scan_speech(
             source,
             style=style,
             target_backend=target_backend,
@@ -512,6 +629,8 @@ def scan(
             json_out=json_out,
             verbose=verbose,
         )
+        if speech_req is not None:
+            _export_speech(summary, speech_req)
         return
     if transcripts or mos or dnsmos_model or speech_config or speech_speakers or speaker_model:
         typer.echo(
@@ -519,6 +638,9 @@ def scan(
             "need --modality speech",
             err=True,
         )
+        raise typer.Exit(2)
+    if asked := [flag for flag, value in speech_export_flags.items() if value]:
+        typer.echo(f"Error: {', '.join(asked)}: speech export options; they need --modality speech", err=True)
         raise typer.Exit(2)
     import os
 
@@ -707,18 +829,7 @@ def scan(
         if on and dest is None:
             typer.echo(f"Error: {flag} needs an export; add --copy-to, --move-to or --symlink-to", err=True)
             raise typer.Exit(2)
-    stats: dict | None = None
-    if run_stats is not None:
-        import json
-
-        try:
-            stats = json.loads(run_stats.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            typer.echo(f"Error: --run-stats: {exc}", err=True)
-            raise typer.Exit(2) from exc
-        if not isinstance(stats, dict):
-            typer.echo("Error: --run-stats: the file must hold a JSON object", err=True)
-            raise typer.Exit(2)
+    stats = _read_run_stats(run_stats)
     try:
         export_req = ExportRequest(
             dest=str(dest) if dest else str(source),
@@ -1026,6 +1137,187 @@ def scan(
     typer.echo(f"\nDone. scan_id={summary.scan_id}")
 
 
+def _read_run_stats(run_stats: Path | None) -> dict | None:
+    """The ``--run-stats`` file's JSON object, or None without one; exit 2 if it does not read as one."""
+    if run_stats is None:
+        return None
+    import json
+
+    try:
+        stats = json.loads(run_stats.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Error: --run-stats: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if not isinstance(stats, dict):
+        typer.echo("Error: --run-stats: the file must hold a JSON object", err=True)
+        raise typer.Exit(2)
+    return stats
+
+
+_SPEECH_PROVENANCE_HELP = (
+    "a speech export names where its clips came from: --corpus and --license for a licensed corpus, "
+    "or --voice-consent and --consent-delivery for a consented voice"
+)
+
+
+def _speech_export_request(
+    source: Path,
+    *,
+    dest: Path | None,
+    mode: str,
+    flags: dict[str, object],
+    min_score: float,
+    keep_similar: bool,
+    max_keep: int | None,
+    speaker_ids: str | None,
+    accents: str | None,
+    languages: str | None,
+    exclude_speaker_mismatch: bool,
+    min_hours_per_speaker: float | None,
+    max_hours_per_speaker: float | None,
+    max_hours_per_accent: float | None,
+    balance_accents: bool,
+    corpus: str | None,
+    corpus_license: str | None,
+    voice_consent: str | None,
+    consent_delivery: str | None,
+    speakers_clustered: bool,
+    held_out: int | None,
+    held_out_fraction: float | None,
+    split_method: str,
+    split_seed: int,
+    split_part: str,
+    run_stats: Path | None,
+) -> ExportRequest | None:
+    """The speech export ``scan --modality speech`` asks for (#207), checked before the scan; None without one.
+
+    It is an ordinary :class:`ExportRequest` with ``speech`` set, for
+    :func:`argus_curator.export.export_selection` (which routes it to
+    :func:`argus_curator.speech_export.export_speech`, as ``POST /export``
+    does), so the selection, the refusals and what is written are the
+    library's. This only turns the flags into it, and names a missing or
+    half-given provenance by its flags, before a clip is read.
+    """
+    from pydantic import ValidationError
+
+    from argus_curator.models import ExportRequest, SpeechSelection, SplitConfig
+    from argus_curator.speech_export import provenance_problem
+
+    if dest is None:
+        asked = [flag for flag, value in flags.items() if value]
+        if run_stats is not None:
+            asked.append("--run-stats")
+        if asked:
+            typer.echo(
+                f"Error: {', '.join(asked)}: speech export options; add --copy-to, --move-to or --symlink-to",
+                err=True,
+            )
+            raise typer.Exit(2)
+        return None
+    if (corpus is None) != (corpus_license is None):
+        typer.echo("Error: --corpus and --license go together: name the corpus and its licence", err=True)
+        raise typer.Exit(2)
+    if (voice_consent is None) != (consent_delivery is None):
+        typer.echo("Error: --voice-consent needs --consent-delivery (the voice delivery it covers)", err=True)
+        raise typer.Exit(2)
+    if corpus is not None and voice_consent is not None:
+        typer.echo(
+            "Error: a speech export is from a licensed corpus (--corpus) or under --voice-consent, not both", err=True
+        )
+        raise typer.Exit(2)
+    if corpus is None and voice_consent is None:
+        typer.echo(f"Error: {_SPEECH_PROVENANCE_HELP}", err=True)
+        raise typer.Exit(2)
+    if voice_consent is not None:
+        # The export reads and checks it again after the scan: this only spares a scan
+        # whose export could not start. Relative to the scanned folder, as --consent's.
+        if not (source / voice_consent).is_file():
+            typer.echo(f"Error: --voice-consent {voice_consent}: no such file", err=True)
+            raise typer.Exit(2)
+        if not speakers_clustered:
+            typer.echo("Error: --voice-consent binds the set by speaker clusters; add --speakers", err=True)
+            raise typer.Exit(2)
+    if exclude_speaker_mismatch and not speakers_clustered:
+        typer.echo("Error: --exclude-speaker-mismatch needs a scan that clusters speakers; add --speakers", err=True)
+        raise typer.Exit(2)
+    splitting = held_out is not None or held_out_fraction is not None
+    if not splitting and (asked := [f for f in ("--split-method", "--split-seed", "--split-part") if flags[f]]):
+        typer.echo(f"Error: {', '.join(asked)} need a split: --held-out or --held-out-fraction", err=True)
+        raise typer.Exit(2)
+    if held_out is not None and held_out_fraction is not None:
+        typer.echo("Error: a split takes --held-out or --held-out-fraction, not both", err=True)
+        raise typer.Exit(2)
+    try:
+        speech = SpeechSelection(
+            speakers=_csv_list(speaker_ids),
+            accents=_csv_list(accents),
+            languages=_csv_list(languages),
+            exclude_speaker_mismatch=exclude_speaker_mismatch,
+            min_hours_per_speaker=min_hours_per_speaker,
+            max_hours_per_speaker=max_hours_per_speaker,
+            max_hours_per_accent=max_hours_per_accent,
+            balance_accents=balance_accents,
+            corpus=corpus,
+            license=corpus_license,
+            consent_record=voice_consent,
+            consent_delivery=consent_delivery,
+        )
+        split = (
+            SplitConfig(
+                held_out=held_out,
+                held_out_fraction=held_out_fraction,
+                group_by="speaker",
+                method=split_method,
+                seed=split_seed,
+            )
+            if splitting
+            else None
+        )
+        req = ExportRequest(
+            dest=str(dest),
+            mode=mode,
+            min_score=min_score,
+            keep_similar=keep_similar,
+            max_keep=max_keep,
+            split=split,
+            split_part=split_part,
+            speech=speech,
+            write_manifest=True,
+            run_stats=_read_run_stats(run_stats),
+        )
+    except ValidationError as exc:
+        raise _invalid(exc) from exc
+    if provenance_problem(req) is not None:  # the library's own check, should the flags above drift from it
+        typer.echo(f"Error: {_SPEECH_PROVENANCE_HELP}", err=True)
+        raise typer.Exit(2)
+    return req
+
+
+def _export_speech(summary: ScanSummary, req: ExportRequest) -> None:
+    """Run the speech export *req* on the scan *summary* through ``export_selection``, as ``POST /export`` does."""
+    from argus_curator.consent import ConsentRefused
+    from argus_curator.export import export_selection
+
+    req = req.model_copy(update={"scan_id": summary.scan_id})
+    try:
+        result = export_selection(summary, req)
+    except ConsentRefused as exc:
+        typer.echo(f"Error: consent refused: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    except ValueError as exc:  # SplitError among them; each raised before anything is transferred
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    verb = {"copy": "Copied", "move": "Moved", "symlink": "Symlinked"}[req.mode]
+    part = f" ({req.split_part} part of the split)" if req.split is not None else ""
+    skipped = f", {result.skipped} skipped" if result.skipped else ""
+    typer.echo("")
+    typer.echo(f"{verb} {result.copied} clips with their transcripts{part}{skipped} -> {result.dest}")
+    if result.manifest_path:
+        typer.echo(f"Speech manifest -> {result.manifest_path}")
+    if result.run_stats_path:
+        typer.echo(f"Run stats -> {result.run_stats_path}")
+
+
 def _scan_speech(
     source: Path,
     *,
@@ -1044,8 +1336,8 @@ def _scan_speech(
     no_cluster: bool,
     json_out: Path | None,
     verbose: bool,
-) -> None:
-    """``scan --modality speech``: score the folder's clips (#186). Saves the scan to the store, exports nothing."""
+) -> ScanSummary:
+    """``scan --modality speech``: score the folder's clips (#186), save the scan to the store and return it."""
     import json
     import os
 
@@ -1132,6 +1424,7 @@ def _scan_speech(
         typer.echo("")
         typer.echo(f"JSON summary written -> {json_out}")
     typer.echo(f"Scan saved as {summary.scan_id}")
+    return summary
 
 
 @app.command()
