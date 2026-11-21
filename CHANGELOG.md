@@ -43,6 +43,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `speech_manifest.jsonl` and transcripts `POST /export` writes. A missing or
   half-given provenance, an image filter, or a speech flag on an image scan is
   refused before a clip is read.
+- **Silero VAD for speech scans (#204).** `SpeechConfig.vad: "silero"` (CLI
+  `--vad silero`, model from `argus-curator vad-fetch`: Silero VAD v6.2.3,
+  MIT, pinned by commit and sha256, `ARGUS_CURATOR_VAD_MODEL`) drives the
+  speech ratio and the SNR split instead of the energy VAD, which stays the
+  default. Rows record the VAD in `ClipResult.vad`, and a clip Silero couldn't
+  read gets `vad_error` and no ratio or SNR (never an energy fallback). Silero
+  runs on CPU alone, one thread per session, in fixed-shape 32 ms passes, and
+  takes no GPU lease (it was ~10x slower per pass on CUDA). On 49 real takes
+  mixed with noise its speech ratio held within 0.02 down to 0 dB SNR where
+  the energy VAD's fell to 0, and its SNR tracked the mixed SNR within 0.5 dB
+  (docs/speech.md). `GET /detectors` adds `silero_vad`. Speech manifest rows
+  are unchanged.
 
 ### Changed
 

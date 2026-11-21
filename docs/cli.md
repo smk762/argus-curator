@@ -26,6 +26,7 @@ $ argus-curator [OPTIONS] COMMAND [ARGS]...
 * `embeddings-convert`: Fetch, verify and convert the CLIP image...
 * `dnsmos-fetch`: Fetch the DNSMOS P.835 model a speech...
 * `speaker-fetch`: Fetch the speaker-embedding model a speech...
+* `vad-fetch`: Fetch the Silero VAD model a speech scan&#x27;s...
 * `schema`: Emit the wire-contract JSON Schema...
 
 ## `argus-curator scan`
@@ -72,6 +73,8 @@ $ argus-curator scan [OPTIONS] {source}
 * `--dnsmos-model <path>`: Speech: DNSMOS ONNX model (ARGUS_CURATOR_DNSMOS_MODEL)
 * `--speakers`: Speech: embed and cluster each passing clip&#x27;s speaker (see speaker-fetch)
 * `--speaker-model <path>`: Speech: speaker-embedding ONNX model (ARGUS_CURATOR_SPEAKER_MODEL)
+* `--vad <str>`: Speech: energy (default) or silero, the VAD for speech ratio and SNR (see vad-fetch)
+* `--vad-model <path>`: Speech: Silero VAD ONNX model (ARGUS_CURATOR_VAD_MODEL)
 * `--speech-config <path>`: Speech: a JSON SpeechConfig with the thresholds (the flags above override it)
 * `--speaker-id <str>`: Speech export: keep only these speakers (comma-separated speaker_id)
 * `--accent <str>`: Speech export: keep only these accents (comma-separated corpus labels, exact)
@@ -348,6 +351,24 @@ sha256; 25 MB, runs on onnxruntime (argus-curator).
 
 ```console
 $ argus-curator speaker-fetch [OPTIONS]
+```
+
+**Options**:
+
+* `-o, --output <path>`: Where to write the model (default: model cache)
+* `--help`: Show this message and exit.
+
+## `argus-curator vad-fetch`
+
+Fetch the Silero VAD model a speech scan&#x27;s --vad silero runs.
+
+snakers4/silero-vad (MIT), pinned by release commit and sha256; 2.3 MB,
+runs on onnxruntime on CPU (argus-curator).
+
+**Usage**:
+
+```console
+$ argus-curator vad-fetch [OPTIONS]
 ```
 
 **Options**:
