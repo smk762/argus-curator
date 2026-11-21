@@ -49,6 +49,8 @@ Each rule names what enforces it. A new rule nothing checks yet is marked **UNEN
 | A CUDA session (curator's own or InsightFace's) built without the capped arena (`kSameAsRequested` plus `gpu_mem_limit`), or an attribute model run on a whole crowd at once (#189: one scan held ~20 GB on 512 MB leases) | `tests/test_gpu_lease.py::test_curators_own_sessions_are_built_with_the_cap`, `::test_insightface_sessions_are_built_with_the_cap`, `::test_attribute_models_run_a_crowd_in_fixed_size_chunks` |
 | A server that starts with an unknown `minor-exposed` mode (no fallback) | `tests/test_server.py::test_unknown_minor_exposed_mode_refuses_to_start` |
 | A prefiltered image kept or exported | `tests/test_server.py::test_prefiltered_images_are_never_kept_or_exported` |
+| A train/held-out split putting one group (identity, or any `SPLIT_GROUP_KEYS` key) in both parts | `tests/test_rank_split.py::test_no_group_lands_in_both_parts` |
+| `/scan/{id}/select` and export keeping different rows, or the same rows in a different order, for the same fields (both run `selection.plan_selection`) | `tests/test_rank_split.py::test_select_and_export_keep_the_same_rows_in_the_same_order` |
 | Moderation filters applied to a scan that never ran the check | `tests/test_server.py::test_select_refuses_moderation_filters_on_unchecked_scan` |
 | XMP sidecars writing an age | `tests/test_xmp.py::test_xmp_data_names_only_named_clusters_and_never_writes_age` |
 | `POST /faces` (darkroom's age check) writing anything to disk | `tests/test_server.py::test_faces_returns_estimates_and_writes_nothing` |
