@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Speech export from the CLI (#207).** `scan --modality speech` takes
+  `--copy-to`, `--move-to` and `--symlink-to`, with the selection as flags
+  (`--speaker-id`, `--accent`, `--language`, `--exclude-speaker-mismatch`,
+  `--min-hours-per-speaker`, `--max-hours-per-speaker`,
+  `--max-hours-per-accent`, `--balance-accents`, and the shared `--min-score`,
+  `--keep-similar`, `--max-keep`, `--run-stats`), a speaker-disjoint split
+  (`--held-out` or `--held-out-fraction`, `--split-method`, `--split-seed`,
+  `--split-part`) and the provenance (`--corpus` and `--license`, or
+  `--voice-consent` and `--consent-delivery`). It builds the same
+  `ExportRequest` and runs it through `export_selection`, so it writes the
+  `speech_manifest.jsonl` and transcripts `POST /export` writes. A missing or
+  half-given provenance, an image filter, or a speech flag on an image scan is
+  refused before a clip is read.
+
 ## [0.19.0] - 2026-11-21
 
 **For downstream consumers (argus-lens, argus-forge, argus-proof, argus-mint).**

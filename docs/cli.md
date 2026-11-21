@@ -73,6 +73,23 @@ $ argus-curator scan [OPTIONS] {source}
 * `--speakers`: Speech: embed and cluster each passing clip&#x27;s speaker (see speaker-fetch)
 * `--speaker-model <path>`: Speech: speaker-embedding ONNX model (ARGUS_CURATOR_SPEAKER_MODEL)
 * `--speech-config <path>`: Speech: a JSON SpeechConfig with the thresholds (the flags above override it)
+* `--speaker-id <str>`: Speech export: keep only these speakers (comma-separated speaker_id)
+* `--accent <str>`: Speech export: keep only these accents (comma-separated corpus labels, exact)
+* `--language <str>`: Speech export: keep only these languages (comma-separated corpus labels, exact)
+* `--exclude-speaker-mismatch`: Speech export: drop clips whose corpus speaker label the clustering disputes (needs --speakers)
+* `--min-hours-per-speaker <float>`: Speech export: drop a speaker with fewer hours of kept audio
+* `--max-hours-per-speaker <float>`: Speech export: cap each speaker&#x27;s hours, best clips first
+* `--max-hours-per-accent <float>`: Speech export: cap each accent&#x27;s hours, taking its speakers in turn
+* `--balance-accents`: Speech export: cap every accent at the smallest accent&#x27;s hours
+* `--corpus <str>`: Speech export: the licensed corpus every clip comes from (with --license)
+* `--license <str>`: Speech export: the corpus&#x27;s licence, e.g. CC0-1.0 (with --corpus)
+* `--voice-consent <str>`: Speech export: a real person&#x27;s voice consent record (argus-cortex ConsentRecord JSON), relative to the scanned folder or absolute, instead of --corpus (with --consent-delivery; needs --speakers)
+* `--consent-delivery <str>`: Speech export: the voice delivery --voice-consent must cover, e.g. neutral
+* `--held-out <int>`: Speech export: hold out about this many clips, by whole speakers (or a fraction)
+* `--held-out-fraction <float>`: Speech export: hold out about this fraction of the clips, by whole speakers
+* `--split-method <str>`: Speech export: spread (held-out speakers evenly through the ranking) or random  [default: spread]
+* `--split-seed <int>`: Speech export: the seed --split-method random shuffles with  [default: 0]
+* `--split-part <str>`: Speech export: which part of the split to export, train or held_out  [default: train]
 * `--faces`: Run InsightFace detection + identity clustering
 * `--faces-model <str>`: InsightFace model name  [default: buffalo_l]
 * `--min-det-score <float>`: Minimum face detection score  [default: 0.5]
