@@ -381,6 +381,18 @@
           "title": "Score Breakdown",
           "type": "object"
         },
+        "second_voice_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Second Voice Error"
+        },
         "similar_group": {
           "default": 0,
           "title": "Similar Group",
@@ -584,6 +596,7 @@
         "speaker_distance",
         "speaker_mismatch",
         "speaker_error",
+        "second_voice_error",
         "language_predicted",
         "language_confidence",
         "language_label_confidence",
@@ -5468,6 +5481,18 @@
           "title": "Rel Path",
           "type": "string"
         },
+        "second_voice_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Second Voice Distance"
+        },
         "speaker_id": {
           "anyOf": [
             {
@@ -5504,7 +5529,8 @@
         "rank",
         "split",
         "speaker_id",
-        "consent_distance"
+        "consent_distance",
+        "second_voice_distance"
       ],
       "title": "SelectRow",
       "type": "object"
@@ -5772,6 +5798,11 @@
         "require_transcript": {
           "default": true,
           "title": "Require Transcript",
+          "type": "boolean"
+        },
+        "second_voice": {
+          "default": false,
+          "title": "Second Voice",
           "type": "boolean"
         },
         "silence_db": {
@@ -6312,6 +6343,13 @@
           ],
           "default": null,
           "title": "Min Hours Per Speaker"
+        },
+        "second_voice_max_distance": {
+          "default": 0.4,
+          "exclusiveMaximum": 2.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Second Voice Max Distance",
+          "type": "number"
         },
         "speakers": {
           "anyOf": [

@@ -23,6 +23,7 @@ from argus_curator import runtime, speakers, speech, speech_select
 from argus_curator.consent import ConsentRefused
 from argus_curator.export import export_selection
 from argus_curator.models import (
+    SECOND_VOICE_MAX_DISTANCE,
     VOICE_CONSENT_MAX_DISTANCE,
     ExportRequest,
     ScanSummary,
@@ -76,9 +77,17 @@ def fake_speakers(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, ...]]:
         peak = round(float(np.max(np.abs(mono))), 2)
         return _vector(levels[peak])
 
+    def embed_segments(_session: object, mono: np.ndarray, rate: int, speech: object, device: str) -> np.ndarray:
+        """The second-voice windows (#217): the real windowing over the scan's VAD mask, each its voice's vector."""
+        segments = speakers.segment_features(mono, rate, speech)  # type: ignore[arg-type]
+        shapes.append(segments.shape)
+        peak = round(float(np.max(np.abs(mono))), 2)
+        return np.tile(_vector(levels[peak]), (len(segments), 1)).astype(np.float16)
+
     monkeypatch.setattr(speakers, "problem", lambda: None)
     monkeypatch.setattr(speakers, "get_session", lambda device: object())
     monkeypatch.setattr(speakers, "embed", embed)
+    monkeypatch.setattr(speakers, "embed_segments", embed_segments)
     return shapes
 
 
@@ -544,7 +553,7 @@ def test_a_consented_voice_exports_only_the_consented_speaker(
 ) -> None:
     root = _corpus(tmp_path / "src", SPEAKERS[:3])
     _record(root / "consent.json", [root / "clips" / "s2_0.wav"])
-    summary = _scan(root, speakers=True)
+    summary = _scan(root, speakers=True, second_voice=True)
     speech = {"consent_record": "consent.json", "consent_delivery": "neutral"}
     result = export_selection(
         summary, ExportRequest(scan_id=summary.scan_id, dest=str(tmp_path / "out"), speech=speech)
@@ -573,7 +582,7 @@ def test_consent_subject_name_appears_nowhere_in_the_speech_export(
     record_path = _record(
         root / "consent.json", [root / "clips" / "s2_0.wav"], subject="Jo Speaker", collected_by="Example Voice Studio"
     )
-    summary = _scan(root, speakers=True)
+    summary = _scan(root, speakers=True, second_voice=True)
     speech = {"consent_record": "consent.json", "consent_delivery": "neutral"}
     dest = tmp_path / "out"
     result = export_selection(summary, ExportRequest(scan_id=summary.scan_id, dest=str(dest), speech=speech, mode=mode))
@@ -606,7 +615,7 @@ def test_a_voice_consent_record_that_does_not_cover_the_set_is_refused(
 ) -> None:
     root = _corpus(tmp_path / "src", SPEAKERS[:2])
     _record(root / "consent.json", [root / "clips" / "s1_0.wav"], **over)
-    summary = _scan(root, speakers=True)
+    summary = _scan(root, speakers=True, second_voice=True)
     speech = {"consent_record": "consent.json", "consent_delivery": "neutral"}
     with pytest.raises(ConsentRefused, match=match):
         export_selection(summary, ExportRequest(scan_id=summary.scan_id, dest=str(tmp_path / "out"), speech=speech))
@@ -645,11 +654,13 @@ def _consented_scan(root: Path, distances: dict[str, float], **cfg: object) -> S
     """Two speakers in one loose cluster; s2_0 is the reference, every other clip at the given distance from it."""
     _corpus(root, SPEAKERS[:2])
     _record(root / "consent.json", [root / "clips" / "s2_0.wav"])
-    summary = _scan(root, speakers=True, speaker_threshold=1.9, **cfg)
+    summary = _scan(root, speakers=True, second_voice=True, speaker_threshold=1.9, **cfg)
     reference = _vector(2)
     for i, rel in enumerate(sorted(summary.embeddings)):
         if rel != "clips/s2_0.wav":
             summary.embeddings[rel] = _at_distance(reference, distances.get(rel, 0.05), seed=i)
+        # One voice throughout: every window is the clip's own embedding.
+        summary.voice_windows[rel] = np.tile(summary.embeddings[rel], (4, 1)).astype(np.float16)
     return summary
 
 
@@ -701,7 +712,7 @@ def test_the_reference_voice_is_the_centroid_of_every_reference_recording(
 ) -> None:
     root = _corpus(tmp_path / "src", SPEAKERS[:2])
     _record(root / "consent.json", [root / "clips" / "s2_0.wav", root / "clips" / "s2_1.wav"])
-    summary = _scan(root, speakers=True)
+    summary = _scan(root, speakers=True, second_voice=True)
     a, b = _vector(2), _vector(3)
     summary.embeddings["clips/s2_0.wav"], summary.embeddings["clips/s2_1.wav"] = a, b
     summary.embeddings["clips/s2_2.wav"] = (a + b) / np.linalg.norm(a + b)
@@ -758,6 +769,269 @@ def test_a_voice_binding_keeps_plain_distances_and_never_the_voiceprint(
     for value in vars(hold).values():
         assert not isinstance(value, np.ndarray)
     assert all(type(d) is float for d in hold.distances.values())
+    assert hold.second_voice and all(type(d) is float for d in hold.second_voice.values())
+
+
+# ---------------------------------------------------------------------------
+# A second voice inside a consented clip (#217)
+# ---------------------------------------------------------------------------
+
+
+def _with_second_voice(summary: ScanSummary, rel: str, distance: float, windows: int = 1, of: int = 12) -> None:
+    """*rel* reads as the subject overall, but *windows* of its *of* windows are another voice, *distance* away."""
+    reference = _vector(2)
+    subject = [_at_distance(reference, 0.1, seed=100 + i) for i in range(of)]
+    other = _at_distance(reference, distance, seed=999)
+    start = of // 2
+    for i in range(start, start + windows):
+        subject[i] = other
+    summary.embeddings[rel] = _at_distance(reference, 0.08, seed=7)
+    summary.voice_windows[rel] = np.stack(subject).astype(np.float16)
+
+
+def test_a_clip_with_a_second_voice_is_never_kept_in_a_consented_voice_export(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    """Must never: a clip with a second voice in it kept in a consented voice export.
+
+    The clip's own embedding sits well inside consent_max_distance (the subject
+    speaks most of it), and one window of 1.5 s is another voice: it is left out.
+    """
+    probe = "clips/s2_1.wav"
+    summary = _consented_scan(tmp_path / "src", {})
+    _with_second_voice(summary, probe, 0.6)
+    dest = tmp_path / "out"
+    result = export_selection(summary, ExportRequest(scan_id=summary.scan_id, dest=str(dest), speech=CONSENT))
+    rows = _rows(Path(result.manifest_path))
+    # Every other clip reads as the subject throughout and is kept.
+    assert {r.rel_path for r in rows} == {c.rel_path for c in summary.clips} - {probe}
+    report = _report(dest)
+    assert report[probe]["keep_reason"] == "consent:second-voice"
+    assert float(report[probe]["consent_distance"]) < VOICE_CONSENT_MAX_DISTANCE  # the binding alone keeps it
+    assert float(report[probe]["second_voice_distance"]) == pytest.approx(0.6, abs=2e-3)
+    assert float(report["clips/s2_2.wav"]["second_voice_distance"]) <= SECOND_VOICE_MAX_DISTANCE
+
+
+@pytest.mark.parametrize(
+    ("distance", "ceiling", "kept"),
+    [(0.3, None, True), (SECOND_VOICE_MAX_DISTANCE + 0.03, None, False), (0.3, 0.25, False), (0.6, 0.7, True)],
+)
+def test_second_voice_max_distance_is_the_ceiling(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]], distance: float, ceiling: float | None, kept: bool
+) -> None:
+    probe = "clips/s2_1.wav"
+    summary = _consented_scan(tmp_path / "src", {})
+    _with_second_voice(summary, probe, distance)
+    speech = {**CONSENT, **({"second_voice_max_distance": ceiling} if ceiling is not None else {})}
+    hold = voice_consent_gate(summary, SpeechSelection(**speech))
+    assert hold is not None and hold.second_voice[probe] == pytest.approx(distance, abs=2e-3)
+    assert (probe not in hold.excluded) is kept
+    assert hold.second_voice_max_distance == (ceiling if ceiling is not None else SECOND_VOICE_MAX_DISTANCE)
+
+
+def test_a_consented_voice_export_refuses_without_the_second_voice_check(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    """Must never: the second-voice check skipped. No windows held means refusal, never a pass."""
+    root = tmp_path / "src"
+    speech = SpeechSelection(**CONSENT)
+    # A scan that embedded speakers but never asked for the windows.
+    _corpus(root, SPEAKERS[:2])
+    _record(root / "consent.json", [root / "clips" / "s2_0.wav"])
+    plain = _scan(root, speakers=True)
+    assert plain.embeddings and not plain.voice_windows
+    with pytest.raises(ConsentRefused, match="speech.second_voice"):
+        voice_consent_gate(plain, speech)
+    # Windows that a restart dropped while the embeddings were somehow still held.
+    summary = _consented_scan(tmp_path / "again", {})
+    summary.voice_windows.clear()
+    with pytest.raises(ConsentRefused, match="second-voice windows"):
+        export_speech(summary, ExportRequest(dest=str(tmp_path / "out"), speech=speech))
+    assert not (tmp_path / "out").exists()
+    # Windows held, but the summary says the scan never ran the check: not trusted either.
+    summary = _consented_scan(tmp_path / "third", {})
+    assert summary.speech_config is not None
+    summary.speech_config = summary.speech_config.model_copy(update={"second_voice": False})
+    with pytest.raises(ConsentRefused, match="speech.second_voice"):
+        voice_consent_gate(summary, speech)
+
+
+def test_the_second_voice_check_measures_against_the_reference_recordings_windows(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    """Windows are measured against the references' own windows, not their whole-clip embedding."""
+    summary = _consented_scan(tmp_path / "src", {})
+    elsewhere = _vector(5)
+    summary.voice_windows["clips/s2_0.wav"] = np.tile(elsewhere, (4, 1)).astype(np.float16)
+    summary.voice_windows["clips/s2_1.wav"] = np.tile(elsewhere, (6, 1)).astype(np.float16)
+    hold = voice_consent_gate(summary, SpeechSelection(**CONSENT))
+    assert hold is not None and hold.second_voice["clips/s2_1.wav"] == pytest.approx(0.0, abs=2e-3)
+    # The reference recordings with no windows of their own: no voice to check against, so refused.
+    del summary.voice_windows["clips/s2_0.wav"]
+    with pytest.raises(ConsentRefused, match="no second-voice windows"):
+        voice_consent_gate(summary, SpeechSelection(**CONSENT))
+
+
+def test_a_clip_with_no_second_voice_windows_is_never_kept(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    summary = _consented_scan(tmp_path / "src", {})
+    del summary.voice_windows["clips/s2_2.wav"]
+    summary.voice_windows["clips/s2_1.wav"] = np.zeros((3, speakers.EMBEDDING_DIM), dtype=np.float16)
+    hold = voice_consent_gate(summary, SpeechSelection(**CONSENT))
+    assert hold is not None
+    assert hold.excluded["clips/s2_2.wav"] == "consent:no-voice-windows"
+    assert hold.excluded["clips/s2_1.wav"] == "consent:no-voice-windows"
+    assert "clips/s2_0.wav" not in hold.excluded
+
+
+def test_the_second_voice_flag_changes_nothing_outside_a_consented_export(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    """Without a consent record there is no reference voice to measure against: a corpus export is unchanged."""
+    summary = _consented_scan(tmp_path / "src", {})
+    _with_second_voice(summary, "clips/s2_1.wav", 0.9, windows=6)
+    result = _export(summary, tmp_path / "out")
+    assert "clips/s2_1.wav" in {r.rel_path for r in _rows(Path(result.manifest_path))}
+    assert _report(tmp_path / "out")["clips/s2_1.wav"]["second_voice_distance"] == ""
+
+
+def test_select_route_reports_the_second_voice_distance(tmp_path: Path, fake_speakers: list[tuple[int, ...]]) -> None:
+    source = _corpus(tmp_path / "corpus", SPEAKERS[:2])
+    _record(source / "consent.json", [source / "clips" / "s2_0.wav"])
+    (tmp_path / "exports").mkdir()
+    client = TestClient(
+        create_app(cache_dir=str(tmp_path / "cache"), source_root=str(source), export_root=str(tmp_path / "exports"))
+    )
+    scan = {"folder": "", "target_profile": {"modality": "speech"}, "speech": {"speakers": True}}
+    scan_id = client.post("/scan/folder", json=scan).json()["scan_id"]
+    resp = client.post(f"/scan/{scan_id}/select", json={"speech": CONSENT})
+    assert resp.status_code == 400 and "speech.second_voice" in resp.text, resp.text
+
+    scan["speech"] = {"speakers": True, "second_voice": True}
+    scan_id = client.post("/scan/folder", json=scan).json()["scan_id"]
+    resp = client.post(f"/scan/{scan_id}/select", json={"speech": CONSENT})
+    assert resp.status_code == 200, resp.text
+    rows = {r["rel_path"]: r for r in resp.json()["rows"]}
+    assert rows["clips/s2_1.wav"]["second_voice_distance"] == pytest.approx(0.0, abs=2e-3)
+    assert not rows["clips/s2_1.wav"]["keep_reason"]
+    served = client.get(f"/scan/{scan_id}").text
+    assert "second_voice_distance" not in served  # the measurement is the select's, never the stored scan's
+
+
+def test_second_voice_windows_are_held_in_memory_and_purged_with_the_scan(
+    tmp_path: Path, fake_speakers: list[tuple[int, ...]]
+) -> None:
+    """Must never: a voiceprint persisted. The windows live beside the embeddings and go with the scan."""
+    summary = _scan(_corpus(tmp_path / "src", SPEAKERS[:2]), speakers=True, second_voice=True)
+    assert set(summary.voice_windows) == set(summary.embeddings)
+    window = next(iter(summary.voice_windows.values()))
+    assert window.ndim == 2 and window.shape[1] == speakers.EMBEDDING_DIM and window.dtype == np.float16
+    store = ScanStore(tmp_path / "cache")
+    store.save(summary)
+    on_disk = (tmp_path / "cache" / f"{summary.scan_id}.json").read_text(encoding="utf-8")
+    assert str(float(window[0, 0]))[:6] not in on_disk
+    loaded = store.load(summary.scan_id)
+    assert loaded is not None and set(loaded.voice_windows) == set(summary.voice_windows)
+    # A dropped clip's windows go with it, and all of them with the scan.
+    gone = sorted(summary.voice_windows)[0]
+    speech.drop_clips(loaded, {gone})
+    store.save(loaded)
+    assert gone not in store.held_voice_windows(summary.scan_id)
+    store.delete(summary.scan_id)
+    assert store.held_voice_windows(summary.scan_id) == {}
+
+
+def test_second_voice_needs_speakers() -> None:
+    with pytest.raises(ValidationError, match="turn speakers on"):
+        SpeechConfig(second_voice=True)
+
+
+def test_second_voice_windows_cover_only_speech() -> None:
+    """Silence is dropped before windowing, speech under one window is tiled, and none gives no windows."""
+    x = voice(6.0)
+    frames = len(speakers.fbank(x))
+    every = speakers.segment_features(x, 16000, None)
+    assert every.shape[1:] == (speakers.SEGMENT_FRAMES, speakers.N_MELS) and every.dtype == np.float32
+    half = np.zeros(frames, dtype=bool)
+    half[: frames // 2] = True
+    assert len(speakers.segment_features(x, 16000, half)) < len(every)
+    # The windows step by the hop, and the last one ends on the last speech frame.
+    starts = len(every) - 1
+    assert starts == -(-(frames - speakers.SEGMENT_FRAMES) // speakers.SEGMENT_HOP_FRAMES)
+    short = np.zeros(frames, dtype=bool)
+    short[:40] = True
+    assert speakers.segment_features(x, 16000, short).shape == (1, speakers.SEGMENT_FRAMES, speakers.N_MELS)
+    assert speakers.segment_features(x, 16000, np.zeros(frames, dtype=bool)).shape[0] == 0
+    # A mask of another length is clipped or padded, never an error.
+    assert len(speakers.segment_features(x, 16000, np.ones(frames + 50, dtype=bool))) == len(every)
+
+
+def test_second_voice_windows_run_in_fixed_shape_passes_under_the_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every pass is (SEGMENT_BATCH, SEGMENT_FRAMES, N_MELS), whatever the clip's length, under the GPU lease."""
+    leases: list[str] = []
+    shapes: list[tuple[int, ...]] = []
+
+    class _Recorder:
+        name = "recorder"
+
+        def lease(self, *, caller: str, min_vram_mb: int, **_options: object):  # noqa: ANN202
+            import contextlib
+
+            leases.append(caller)
+            return contextlib.nullcontext()
+
+    class _Session:
+        def get_inputs(self):  # noqa: ANN202
+            return [type("I", (), {"name": "feats"})()]
+
+        def run(self, _outputs: object, feeds: dict[str, np.ndarray]) -> list[np.ndarray]:
+            x = feeds["feats"]
+            shapes.append(x.shape)
+            # Each row's embedding carries its window's first feature, so the order can be checked.
+            out = np.zeros((len(x), speakers.EMBEDDING_DIM), dtype=np.float32)
+            out[:, 0] = 1.0
+            out[:, 1] = x[:, 0, 0]
+            return [out]
+
+    monkeypatch.setattr(runtime, "providers", lambda device: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    monkeypatch.setattr(runtime, "_coordinator", _Recorder())
+    for seconds in (1.0, 7.3, 19.5):
+        shapes.clear()
+        leases.clear()
+        x = voice(seconds)
+        windows = speakers.embed_segments(_Session(), x, 16000, None, "cuda")
+        assert leases == ["argus-curator:speakers:run"]
+        assert set(shapes) == {(speakers.SEGMENT_BATCH, speakers.SEGMENT_FRAMES, speakers.N_MELS)}
+        expected = speakers.segment_features(x, 16000, None)
+        assert windows.shape == (len(expected), speakers.EMBEDDING_DIM) and windows.dtype == np.float16
+        assert len(shapes) == -(-len(expected) // speakers.SEGMENT_BATCH)
+    # A pass holds no more frames than a clip's embedding pass, so the speakers VRAM figure covers it.
+    assert speakers.SEGMENT_BATCH * speakers.SEGMENT_FRAMES <= speakers.WINDOWS * speakers.WINDOW_FRAMES
+
+
+def test_second_voice_distance_takes_the_farthest_run_of_windows() -> None:
+    centroid = _vector(2)
+    near = [_at_distance(centroid, 0.1, seed=i) for i in range(8)]
+    assert speakers.second_voice_distance(np.stack(near), centroid) == pytest.approx(0.1, abs=1e-3)
+    stray = list(near)
+    stray[3] = _at_distance(centroid, 0.7, seed=50)
+    assert speakers.second_voice_distance(np.stack(stray), centroid, run=1) == pytest.approx(0.7, abs=1e-3)
+    # With a run of two, one stray window is not enough; two in a row are.
+    assert speakers.second_voice_distance(np.stack(stray), centroid, run=2) == pytest.approx(0.1, abs=1e-3)
+    stray[4] = _at_distance(centroid, 0.6, seed=51)
+    assert speakers.second_voice_distance(np.stack(stray), centroid, run=2) == pytest.approx(0.6, abs=1e-3)
+    # Fewer windows than the run: all of them.
+    assert speakers.second_voice_distance(np.stack(stray[3:4]), centroid, run=2) == pytest.approx(0.7, abs=1e-3)
+    for bad in (
+        np.zeros((0, speakers.EMBEDDING_DIM)),
+        np.zeros((2, speakers.EMBEDDING_DIM)),
+        np.full((2, speakers.EMBEDDING_DIM), np.nan),
+        np.ones((2, 5)),
+    ):
+        assert speakers.second_voice_distance(bad, centroid) is None
 
 
 # ---------------------------------------------------------------------------
@@ -853,7 +1127,7 @@ def test_select_and_export_routes_bind_a_consented_voice_and_refuse_after_a_rest
         )
 
     client = app()
-    scan = {"folder": "", "target_profile": {"modality": "speech"}, "speech": {"speakers": True}}
+    scan = {"folder": "", "target_profile": {"modality": "speech"}, "speech": {"speakers": True, "second_voice": True}}
     scan_id = client.post("/scan/folder", json=scan).json()["scan_id"]
     resp = client.post(f"/scan/{scan_id}/select", json={"speech": CONSENT})
     assert resp.status_code == 200, resp.text

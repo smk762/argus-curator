@@ -528,6 +528,7 @@ def drop_clips(summary: ScanSummary, gone: set[str] | list[str]) -> None:
     summary.language_mismatches = language_id.count_mismatches(clips)
     for rel in gone:
         summary.embeddings.pop(rel, None)
+        summary.voice_windows.pop(rel, None)
     passed = [c for c in clips if c.passed]
     reasons: dict[str, int] = {}
     for c in clips:
@@ -814,8 +815,11 @@ def scan_speech_folder(
             completed.add("language")
 
     # Phase 5: speaker embeddings on the clips still passing, one clip per pass
-    # under the GPU lease, then the clustering. The embeddings stay in memory.
+    # under the GPU lease, then the clustering. With cfg.second_voice, each
+    # clip's speech (the scan's VAD) is also embedded in short windows (#217),
+    # in fixed-shape passes under one lease. Both stay in memory.
     embeddings: dict[str, np.ndarray] = {}
+    voice_windows: dict[str, np.ndarray] = {}
     if cfg.speakers:
         session = speakers.get_session(cfg.speaker_device)
         pending = [rows[rel] for rel in order if rel in rows and rows[rel].passed]
@@ -832,6 +836,17 @@ def scan_speech_folder(
             except Exception as exc:
                 row.speaker_error = str(exc) or type(exc).__name__
                 logger.warning("speech_speaker_failed", rel_path=row.rel_path, error=row.speaker_error)
+            if cfg.second_voice and decoded is not None and row.rel_path in embeddings:
+                try:
+                    mono, rate = decoded
+                    mask, _ = speech_mask(mono, rate, frame_db(mono, rate), cfg, vad_session)
+                    voice_windows[row.rel_path] = speakers.embed_segments(session, mono, rate, mask, cfg.speaker_device)
+                except GPU_UNAVAILABLE:
+                    raise
+                except Exception as exc:
+                    # No windows: a consented export leaves the clip out, it never skips the check.
+                    row.second_voice_error = str(exc) or type(exc).__name__
+                    logger.warning("speech_second_voice_failed", rel_path=row.rel_path, error=row.second_voice_error)
             if i == len(pending) or i % 5 == 0:
                 emit("speakers", i, len(pending))
 
@@ -849,5 +864,6 @@ def scan_speech_folder(
     summary.speaker_clusters, summary.speaker_mismatches = speaker_clusters, mismatches
     summary.language_mismatches = language_id.count_mismatches(summary.clips)
     summary.embeddings.update(embeddings)
+    summary.voice_windows.update(voice_windows)
     logger.info("speech_scan_done", folder=folder_str, total=summary.total, passed=summary.passed)
     return summary

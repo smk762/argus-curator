@@ -71,6 +71,17 @@ WINDOW_FRAMES = (WINDOW_SAMPLES - FRAME_SAMPLES) // HOP_SAMPLES + 1
 # Windows per clip, run as one batch: every pass has the shape (WINDOWS, WINDOW_FRAMES, N_MELS).
 WINDOWS = 4
 
+# The second-voice check (#217): windows of 1.5 s every 0.75 s over a clip's
+# speech, SEGMENT_BATCH per pass, so every pass has the shape
+# (SEGMENT_BATCH, SEGMENT_FRAMES, N_MELS): about as many frames as a clip's
+# (WINDOWS, WINDOW_FRAMES) pass, inside the same VRAM figure.
+SEGMENT_SAMPLES = 3 * FEATURE_RATE // 2
+SEGMENT_FRAMES = (SEGMENT_SAMPLES - FRAME_SAMPLES) // HOP_SAMPLES + 1
+SEGMENT_HOP_FRAMES = 75
+SEGMENT_BATCH = 8
+# How many consecutive windows must all sit far from the reference voice.
+SECOND_VOICE_RUN = 1
+
 # Reassignment passes after the first clustering pass.
 REFINE_PASSES = 3
 
@@ -363,6 +374,105 @@ def reference_distance(vector: np.ndarray, centroid: np.ndarray) -> float | None
     if v.shape != centroid.shape or not np.all(np.isfinite(v)) or float(np.linalg.norm(v)) < 1e-6:
         return None
     return round(max(0.0, 1.0 - float(_unit(v) @ centroid)), 4)
+
+
+# ---------------------------------------------------------------------------
+# A second voice inside a clip (#217)
+# ---------------------------------------------------------------------------
+
+
+def segment_features(
+    mono: np.ndarray,
+    rate: int,
+    speech: np.ndarray | None,
+    *,
+    frames: int = SEGMENT_FRAMES,
+    hop: int = SEGMENT_HOP_FRAMES,
+) -> np.ndarray:
+    """The second-voice check's input for one clip: ``(k, frames, N_MELS)`` short windows over its speech.
+
+    *speech* is the scan's VAD mask on the 10 ms frame grid (one value per
+    filterbank frame, shorter or longer is clipped or padded with False);
+    None counts every frame. The clip's speech frames are kept in order and
+    the silence between them dropped, normalised by their own mean (WeSpeaker's
+    CMN), and cut into windows of *frames* every *hop*, the last one ending on
+    the last speech frame. Speech shorter than one window is tiled up to one.
+    No speech gives no windows.
+    """
+    audio = resample(np.asarray(mono, dtype=np.float32), rate, FEATURE_RATE)
+    feats = fbank(audio)
+    if speech is not None:
+        mask = np.zeros(len(feats), dtype=bool)
+        given = np.asarray(speech, dtype=bool)[: len(feats)]
+        mask[: len(given)] = given
+        feats = feats[mask]
+    if len(feats) == 0:
+        return np.zeros((0, frames, N_MELS), dtype=np.float32)
+    feats = feats - feats.mean(axis=0, keepdims=True)
+    if len(feats) < frames:
+        feats = np.resize(feats, (frames, N_MELS))  # tiled, then cut to one window
+    starts = list(range(0, len(feats) - frames + 1, hop))
+    if starts[-1] != len(feats) - frames:
+        starts.append(len(feats) - frames)
+    return np.stack([feats[s : s + frames] for s in starts]).astype(np.float32)
+
+
+def predict_segments(session, segments: np.ndarray, batch: int = SEGMENT_BATCH) -> np.ndarray:
+    """``(k, EMBEDDING_DIM)`` unit embeddings of *segments*, in fixed-shape passes of *batch* windows.
+
+    The last pass is filled up by repeating its own windows, so every pass has
+    the shape ``(batch, frames, N_MELS)`` and the capped arena never grows with
+    a clip's length.
+    """
+    k = len(segments)
+    if k == 0:
+        return np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
+    name = session.get_inputs()[0].name
+    out = []
+    for start in range(0, k, batch):
+        chunk = segments[start : start + batch]
+        n = len(chunk)
+        if n < batch:
+            chunk = chunk[np.arange(batch) % n]
+        embs = np.asarray(session.run(None, {name: np.ascontiguousarray(chunk)})[0], dtype=np.float32)[:n]
+        out.append(embs)
+    x = np.concatenate(out)
+    return x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-9)
+
+
+def embed_segments(session, mono: np.ndarray, rate: int, speech: np.ndarray | None, device: str) -> np.ndarray:
+    """One clip's second-voice windows (:func:`segment_features`) embedded under one GPU lease, as float16.
+
+    These are voiceprints too: the caller holds them in memory beside the
+    clip's embedding and never stores them.
+    """
+    segments = segment_features(mono, rate, speech)
+    if len(segments) == 0:
+        raise ValueError("the VAD found no speech to check for a second voice")
+    with gpu_lease(device, "speakers"):
+        return predict_segments(session, segments).astype(np.float16)
+
+
+def second_voice_distance(segments: np.ndarray, centroid: np.ndarray, run: int = SECOND_VOICE_RUN) -> float | None:
+    """How far the clip's farthest stretch of speech sits from the reference voice: a plain number.
+
+    The cosine distance of each window (*segments*, ``(k, EMBEDDING_DIM)``,
+    in time order) to the unit *centroid*; then, over every *run* consecutive
+    windows, the nearest of them; and the largest of those. So one stretch of
+    *run* windows all far from the subject's voice reads far, while a single
+    stray window does not. A clip with fewer windows than *run* takes them
+    all. None for no windows, or ones that are not finite or of the wrong length.
+    """
+    x = np.asarray(segments, dtype=np.float32)
+    if x.ndim != 2 or len(x) == 0 or x.shape[1] != centroid.shape[0] or not np.all(np.isfinite(x)):
+        return None
+    norms = np.linalg.norm(x, axis=1)
+    if float(norms.min()) < 1e-6:
+        return None
+    d = np.maximum(0.0, 1.0 - (x / norms[:, None]) @ centroid)
+    run = max(1, min(run, len(d)))
+    worst = max(float(d[i : i + run].min()) for i in range(len(d) - run + 1))
+    return round(worst, 4)
 
 
 def fetch_model(dest: Path | None = None) -> Path:
