@@ -1343,7 +1343,7 @@ def test_select_validates_like_export(contained: tuple[TestClient, Path]) -> Non
         assert client.post(f"/scan/{scan['scan_id']}/select", json=body).status_code == 422, body
 
 
-def test_select_request_has_every_export_filter() -> None:
+def test_select_request_has_every_export_filter_cap_rank_and_split() -> None:
     """A new ExportRequest filter must be added to SelectRequest too."""
     from argus_curator.models import ExportRequest, SelectRequest
 
@@ -1360,9 +1360,10 @@ def test_select_request_has_every_export_filter() -> None:
         "face_names",
         "carry_sidecars",
         "run_stats",
+        "split_part",  # select reports both parts
     }
-    trims = {"max_keep", "diversify_scenes", "diversify_outfits"}
-    assert set(SelectRequest.model_fields) == set(ExportRequest.model_fields) - not_filters - trims
+    # The cap, ranking and split are here too: select runs export's plan_selection (#183).
+    assert set(SelectRequest.model_fields) == set(ExportRequest.model_fields) - not_filters
 
 
 def test_image_serves_original_bytes(contained: tuple[TestClient, Path]) -> None:

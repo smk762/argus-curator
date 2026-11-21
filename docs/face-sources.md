@@ -37,7 +37,8 @@ Which identity it keeps:
 
 Set any check to `null` to turn it off. An image that fails gets
 `face-source:<check>` as its keep reason, and the kept images come back ranked
-best first. A scan without face detection, or (for the age check) without
+best first (by `rank`: score by default, or `"identity"` for the closest face
+first; see [Ranking, max_keep and splits](http-api.md#ranking-max_keep-and-splits)). A scan without face detection, or (for the age check) without
 MiVOLO, is refused with a 400 rather than keeping nothing. The measurements are
 not an expression classifier: a closed-lip smile passes.
 

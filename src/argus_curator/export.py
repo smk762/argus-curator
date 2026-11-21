@@ -34,8 +34,9 @@ from argus_curator.models import (
     ManifestFace,
     ManifestRow,
     ScanSummary,
+    SplitPart,
 )
-from argus_curator.selection import decide_selection, hard_exclusion, primary_face
+from argus_curator.selection import hard_exclusion, plan_selection, primary_face
 
 logger = structlog.get_logger()
 
@@ -244,6 +245,7 @@ def write_manifest(
     mode: ExportMode = "copy",
     *,
     landmarks: bool = False,
+    split: dict[str, SplitPart] | None = None,
 ) -> None:
     """Write the JSONL handoff manifest (one :class:`ManifestRow` per line).
 
@@ -262,9 +264,11 @@ def write_manifest(
     moved export produced a manifest it could not use at all.
 
     Each row carries the primary face's measurements (``primary_face``), with
-    its landmarks only when *landmarks* asks, and the scan's set age.
+    its landmarks only when *landmarks* asks, and the scan's set age; with
+    *split* (rel_path -> part), its part of the train/held-out split.
     """
     abs_paths = exported_abs_paths or {}
+    parts = split or {}
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for r in exported:
@@ -282,6 +286,7 @@ def write_manifest(
                 crop=r.crop,
                 primary_face=_manifest_face(r, landmarks),
                 set_age=summary.set_age,
+                split=parts.get(r.rel_path),
             )
             f.write(row.model_dump_json() + "\n")
 
@@ -685,6 +690,7 @@ def export_selection(
     :class:`ExportResult` comes back.
     """
     results = summary.results
+    split: dict[str, SplitPart] = {}
 
     if req.selection is not None:
         wanted = set(req.selection)
@@ -695,7 +701,16 @@ def export_selection(
         }
         selected = [r for r in results if keep_reason[r.rel_path] == ""]
     else:
-        selected, keep_reason = decide_selection(results, req, summary.config.diversity_weight, set_age=summary.set_age)
+        # The same plan /scan/{id}/select reports: filter, cap, ranking, split.
+        plan = plan_selection(results, req, summary.config.diversity_weight, set_age=summary.set_age)
+        selected, keep_reason = plan.chosen, plan.keep_reason
+        if req.split is not None:
+            split = plan.split
+            # Only split_part is transferred; the other part is accounted for, not lost.
+            for r in selected:
+                if split[r.rel_path] != req.split_part:
+                    keep_reason[r.rel_path] = f"split-{split[r.rel_path].replace('_', '-')}"
+            selected = [r for r in selected if split[r.rel_path] == req.split_part]
 
     selected_rel = {r.rel_path for r in selected}
     # A cropped image is written cropped; a link or a move would hand on the
@@ -771,7 +786,16 @@ def export_selection(
     manifest_path: Path | None = None
     if req.write_manifest:
         manifest_path = dest_root / MANIFEST_NAME
-        write_manifest(transferred, summary, manifest_path, exported, exported_abs, req.mode, landmarks=req.landmarks)
+        write_manifest(
+            transferred,
+            summary,
+            manifest_path,
+            exported,
+            exported_abs,
+            req.mode,
+            landmarks=req.landmarks,
+            split=split or None,
+        )
         write_report(results, keep_reason, selected_rel, exported, dest_root / REPORT_NAME)
 
     run_stats_path: Path | None = None
