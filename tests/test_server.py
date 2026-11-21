@@ -250,7 +250,12 @@ def test_scan_records_the_prefilter(contained: tuple[TestClient, Path], monkeypa
     resp = client.post("/scan/folder", json={"folder": "", "prefilter": {"drop_nsfw": True}})
     assert resp.status_code == 200
     summary = resp.json()
-    assert summary["prefilter_config"] == {"drop_nsfw": True, "drop_no_face": False, "drop_no_age": False}
+    assert summary["prefilter_config"] == {
+        "drop_nsfw": True,
+        "drop_no_face": False,
+        "drop_no_age": False,
+        "drop_junk": False,
+    }
     assert summary["passed"] == 3
     again = client.get(f"/scan/{summary['scan_id']}").json()
     assert again["prefilter_config"] == summary["prefilter_config"]

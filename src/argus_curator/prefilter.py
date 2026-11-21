@@ -1,7 +1,8 @@
 """Scan prefilter: opt-in drops before the late phases (see :class:`PrefilterConfig`).
 
-Applied once, right after the identities phase (so a set age counts), to the
-images that still pass. A dropped image becomes a reject with a
+Applied right after the identities phase (so a set age counts), to the
+images that still pass, and again after the embeddings phase for
+``drop_junk``, whose zero-shot junk score only exists from then on. A dropped image becomes a reject with a
 ``prefilter:<rule>`` reason and stays in the results; scenes, garments and
 SingGuard skip it like any reject, which is where the time goes, and it stops
 counting toward its identity. Like any reject it is never kept or exported, a
@@ -18,6 +19,7 @@ PREFIX = "prefilter:"
 NSFW = f"{PREFIX}nsfw"
 NO_FACE = f"{PREFIX}no-face"
 NO_AGE = f"{PREFIX}no-age"
+JUNK = f"{PREFIX}junk"
 
 
 def is_prefiltered(result: ImageResult) -> bool:
@@ -31,7 +33,7 @@ def has_age(result: ImageResult) -> bool:
 
 
 def reason(result: ImageResult, cfg: PrefilterConfig) -> str | None:
-    """The first rule *cfg* turns on that drops *result*, in nsfw, no-face, no-age order."""
+    """The first rule *cfg* turns on that drops *result*, in nsfw, no-face, no-age, junk order."""
     # An image NudeNet and EraX could not score is kept: no reading, no drop.
     if cfg.drop_nsfw and is_exposed(result):
         return NSFW
@@ -40,6 +42,10 @@ def reason(result: ImageResult, cfg: PrefilterConfig) -> str | None:
         return NO_FACE
     if cfg.drop_no_age and not has_age(result):
         return NO_AGE
+    # junk_kind is set only at or above ScanConfig.junk_threshold; an image
+    # with no zero-shot score (no embedding) is kept: no reading, no drop.
+    if cfg.drop_junk and result.zero_shot is not None and result.zero_shot.junk_kind is not None:
+        return JUNK
     return None
 
 

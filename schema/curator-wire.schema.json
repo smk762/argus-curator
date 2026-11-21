@@ -3154,6 +3154,17 @@
           "default": 0,
           "title": "Width",
           "type": "integer"
+        },
+        "zero_shot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ZeroShotResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -3169,6 +3180,7 @@
         "duplicate_of",
         "duplicate_kind",
         "keep_reason",
+        "zero_shot",
         "sharpness",
         "artifact_score",
         "width",
@@ -3763,6 +3775,11 @@
     "PrefilterConfig": {
       "description": "Opt-in drops applied before the late scan phases (see prefilter.py).\n\nRight after the identities phase, a passing image that matches a rule is\nturned into a reject (``passed`` False, ``reject_reason``\n``prefilter:nsfw`` / ``prefilter:no-face`` / ``prefilter:no-age``, the\nfirst that applies in that order). It stays in the results, but scenes,\ngarments and SingGuard never run on it. Hard rejects keep their own reason.\n\n``drop_nsfw``: an exposed NudeNet reading of at least 0.2 (an image NudeNet\nand EraX could not score is kept; needs the NudeNet check). ``drop_no_face``:\nno face detected (needs face detection; an image whose detection failed,\n``face_error``, is kept). ``drop_no_age``: no MiVOLO age on any face, no\nbody-only age, and no set age (needs MiVOLO; a failed detection has no age,\nso it is dropped).",
       "properties": {
+        "drop_junk": {
+          "default": false,
+          "title": "Drop Junk",
+          "type": "boolean"
+        },
         "drop_no_age": {
           "default": false,
           "title": "Drop No Age",
@@ -3874,6 +3891,25 @@
           "title": "Diversity Weight",
           "type": "number"
         },
+        "junk_check": {
+          "default": false,
+          "title": "Junk Check",
+          "type": "boolean"
+        },
+        "junk_threshold": {
+          "default": 0.8,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Junk Threshold",
+          "type": "number"
+        },
+        "junk_weight": {
+          "default": 0.15,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Junk Weight",
+          "type": "number"
+        },
         "max_aspect_ratio": {
           "default": 3.0,
           "title": "Max Aspect Ratio",
@@ -3889,6 +3925,18 @@
           "minimum": 512,
           "title": "Min Short Side",
           "type": "integer"
+        },
+        "profile_fit": {
+          "default": false,
+          "title": "Profile Fit",
+          "type": "boolean"
+        },
+        "profile_fit_weight": {
+          "default": 0.1,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Profile Fit Weight",
+          "type": "number"
         },
         "resolution_ref": {
           "default": 1024,
@@ -6026,6 +6074,60 @@
         "bbox"
       ],
       "title": "WatermarkDetection",
+      "type": "object"
+    },
+    "ZeroShotResult": {
+      "description": "Zero-shot CLIP scores for one image (#197; see zeroshot.py).\n\nPlain scores only: the image's embedding itself is never stored. A field\nis None when its check was not asked for.",
+      "properties": {
+        "junk": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Junk"
+        },
+        "junk_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "screenshot",
+                "collage",
+                "text",
+                "meme"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Junk Kind"
+        },
+        "profile_fit": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile Fit"
+        }
+      },
+      "required": [
+        "profile_fit",
+        "junk",
+        "junk_kind"
+      ],
+      "title": "ZeroShotResult",
       "type": "object"
     }
   },

@@ -53,6 +53,9 @@ $ argus-curator scan [OPTIONS] {source}
 * `--cluster-distance <int>`: pHash Hamming distance for near-duplicates  [default: 10]
 * `--semantic-dupes`: Also group near-duplicates by CLIP embedding similarity (needs --embeddings)
 * `--semantic-dupes-cosine <float>`: With --semantic-dupes, the cosine similarity that makes a duplicate  [default: 0.95]
+* `--profile-fit`: Score each image&#x27;s zero-shot CLIP fit to the target profile (needs --embeddings)
+* `--junk-check`: Score each image&#x27;s zero-shot CLIP junk probability: screenshot, collage, text, meme (needs --embeddings)
+* `--junk-threshold <float>`: The junk probability that names a junk kind (and that --drop-junk drops at)  [default: 0.8]
 * `--max-keep <int>`: Cap keepers to a diverse N
 * `--diversity-weight <float>`: 0=pure score, 1=pure spread  [default: 0.4]
 * `--min-short-side <int>`: Minimum short-side pixels (512 at least)  [default: 512]
@@ -131,6 +134,7 @@ $ argus-curator scan [OPTIONS] {source}
 * `--drop-nsfw`: Reject images NudeNet reads as exposed (&gt;= 0.2) before scenes, garments and SingGuard
 * `--drop-no-face`: Reject images with no face before scenes, garments and SingGuard (needs --faces)
 * `--drop-no-age`: Reject images with no MiVOLO, body-only or set age before scenes, garments and SingGuard (needs --mivolo)
+* `--drop-junk`: Reject images whose zero-shot junk probability reaches --junk-threshold, before SingGuard (needs --embeddings)
 * `--minor-exposed <str>`: Under-18 rule: frame (default; a young age and any exposure in the frame) or overlap (the exposure must also sit on a young person&#x27;s box). Or ARGUS_CURATOR_MINOR_EXPOSED
 * `--crops`: Crop each image that has a &lt;image&gt;.crop.json sidecar ({left, top, right, bottom}, displayed pixels) in memory before every check, and export it cropped (--copy-to only). Sources are never changed.
 * `--detect-watermarks`: Find watermarks with the detector (--watermark-url) and cut them away at the frame&#x27;s edges; implies --crops. A watermark no edge cut removes rejects the image (crop:overlay).
@@ -276,7 +280,9 @@ Fetch, verify and convert the CLIP image tower for --embeddings.
 
 Weights: huggingface.co/laion/CLIP-ViT-L-14-DataComp.XL-s13B-b90K (MIT;
 DataComp-1B CLIP ViT-L/14), pinned by commit and sha256. Only the image
-tower and its projection are exported (~1.2 GB fp32).
+tower and its projection are exported (~1.2 GB fp32). With --prompts, the
+text tower embeds the zero-shot prompts into the pinned prompt file the
+package ships (a maintainer step; scans never run the text tower).
 Needs: pip install argus-curator
 
 **Usage**:
@@ -289,6 +295,7 @@ $ argus-curator embeddings-convert [OPTIONS]
 
 * `--checkpoint <path>`: Local dir with config.json + pytorch_model.bin (default: download the pinned one)
 * `-o, --output <path>`: Where to write the ONNX model (default: model cache)
+* `--prompts`: Instead, embed the zero-shot prompts with the text tower and write the pinned prompt file (default: the package&#x27;s data/clip_prompts.json; a maintainer step)
 * `--help`: Show this message and exit.
 
 ## `argus-curator dnsmos-fetch`
