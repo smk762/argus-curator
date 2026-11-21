@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ARGUS_CURATOR_PUPPET_MAX_SET` / `_MAX_JSON_BYTES`, refused, failed; never
   truncated). Clusters span the whole scan; a UI counts a selection's share of
   its most common cluster itself. On whenever the URL is set, like NudeNet:
-  `pose.enabled` (`--pose/--no-pose`, `--puppet-url`) opts out or requires it,
+  `pose.enabled` (`--body-pose/--no-body-pose`, `--puppet-url`) opts out or requires it,
   and `GET /detectors` reports `puppet`. It never fails a scan: a failed image
   keeps null, and after 8 failures with no success puppet is taken to be down.
   No keypoints are stored anywhere. Manifest rows (2.7) carry `pose_labels`

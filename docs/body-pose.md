@@ -20,7 +20,7 @@ report or the manifest.
 
 The rule is the moderation checks' rule: the stage is on whenever the URL is
 set, unless a scan opts out with `"pose": {"enabled": false}` (CLI
-`--no-pose`). `"enabled": true` (`--pose`) makes it required: a scan is refused
+`--no-body-pose`). `"enabled": true` (`--body-pose`) makes it required: a scan is refused
 with 400 when the URL is unset. A malformed URL refuses the scan with 400 naming
 the variable, never its value (it can hold a credential). The URL is process
 configuration only: no request field can point the stage at another host. The

@@ -397,10 +397,10 @@ def scan(
     singguard_url: str | None = Option(
         None, "--singguard-url", help="SingGuard server origin, e.g. http://guard:9150 (ARGUS_CURATOR_SINGGUARD_URL)"
     ),
-    pose: bool | None = Option(
+    body_pose: bool | None = Option(
         None,
-        "--pose/--no-pose",
-        help="Body pose from argus-puppet (default: on when a puppet URL is configured; --no-pose opts out)",
+        "--body-pose/--no-body-pose",
+        help="Body pose from argus-puppet (default: on when a puppet URL is configured; --no-body-pose opts out)",
     ),
     puppet_url: str | None = Option(
         None, "--puppet-url", help="argus-puppet server origin, e.g. http://puppet:8220 (ARGUS_CURATOR_PUPPET_URL)"
@@ -690,7 +690,7 @@ def scan(
         if detector is not None and (why := detector.unreachable()) is not None:
             typer.echo(f"Error: --detect-watermarks: the detector {why}", err=True)
             raise typer.Exit(2)
-    if bodypose_mod.resolve_enabled(PoseConfig(enabled=pose)):
+    if bodypose_mod.resolve_enabled(PoseConfig(enabled=body_pose)):
         from argus_curator.runtime import ModelUnavailable
 
         try:
@@ -699,7 +699,7 @@ def scan(
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(2) from exc
         if puppet is None:
-            typer.echo(f"Error: --pose needs a server: --puppet-url or {bodypose_mod.URL_ENV}", err=True)
+            typer.echo(f"Error: --body-pose needs a server: --puppet-url or {bodypose_mod.URL_ENV}", err=True)
             raise typer.Exit(2)
 
     try:
@@ -964,7 +964,7 @@ def scan(
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
         crop_cfg=CropConfig(enabled=crops, detect=detect_watermarks, max_cut=max_cut, reject_overlay=not keep_overlays),
-        pose_cfg=PoseConfig(enabled=pose),
+        pose_cfg=PoseConfig(enabled=body_pose),
         consent_cfg=consent_cfg,
     )
 

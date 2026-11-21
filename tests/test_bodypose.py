@@ -592,3 +592,16 @@ def test_without_the_url_no_image_is_sent(server: str, monkeypatch: pytest.Monke
     monkeypatch.setattr(bodypose.PuppetClient, "_post", lambda self, url, *a: sent.append(url))
     summary = _scan(THREE)
     assert summary.pose_config.enabled is False and sent == [] and _Puppet.requests == []
+
+
+def test_the_cli_refuses_body_pose_without_a_server_or_with_a_malformed_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from argus_curator.cli import app
+
+    result = CliRunner().invoke(app, ["scan", str(tmp_path), "--body-pose"])
+    assert result.exit_code == 2 and "--body-pose needs a server" in result.output
+    result = CliRunner().invoke(app, ["scan", str(tmp_path), "--puppet-url", "ftp://user:secret@puppet"])
+    assert result.exit_code == 2 and bodypose.URL_ENV in result.output and "secret" not in result.output
