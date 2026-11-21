@@ -82,6 +82,7 @@ pip install argus-curator                 # engine only (Pillow, numpy, ImageHas
 pip install "argus-curator[server,cli]"   # FastAPI server + CLI
 pip install "argus-curator[faces]"        # + InsightFace identity clustering (CPU onnxruntime)
 pip install "argus-curator[gpu]"          # + onnxruntime-gpu for GPU face detection
+pip install "argus-curator[speech]"       # + WAV/FLAC decoding and DNSMOS for speech scans
 pip install "argus-curator[all]"          # everything
 ```
 
@@ -183,6 +184,7 @@ narrows that to exposure on the young person's box; see
 - [Policy check](docs/policy-check.md): SingGuard verdicts, policies and context
 - [Prefilter](docs/prefilter.md): drop images before the slow checks
 - [Crops](docs/crops.md): watermarks and borders, given or detected
+- [Speech scans](docs/speech.md): voice clips and transcripts: duration, clipping, silence, SNR, speech ratio, speaking rate, DNSMOS, near-duplicates
 
 **Export and handoff**
 

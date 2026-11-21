@@ -554,11 +554,18 @@ def semantic_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
     return None
 
 
+# A speech scan (#186) writes no manifest rows yet: its selection, split and
+# export (speakers, speaker-disjoint held-out) are #187.
+SPEECH_EXPORT_PROBLEM = "a speech scan has no selection or export yet (smk762/argus-curator#187)"
+
+
 def selection_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
     """The first reason *req*'s selection cannot be applied to *summary*, else ``None``.
 
     Every check select and export share, so the two routes refuse the same requests.
     """
+    if summary.is_speech:
+        return SPEECH_EXPORT_PROBLEM
     for problem in (
         garment_floor_problem(req, summary.garments_config.min_conf),
         nsfw_filter_problem(req, summary),

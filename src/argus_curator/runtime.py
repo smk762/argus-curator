@@ -207,6 +207,9 @@ VRAM_MB: dict[str, dict[str, int]] = {
     # CLIP ViT-L/14 image tower, fp32, one batch of 8: 1,432 MB once loaded (CUDA
     # context included) and 1,680 MB at peak over 30 batches (3090, 2 GB arena cap).
     "embeddings": {"load": 1600, "run": 384},
+    # DNSMOS P.835 (speech scans): 270 MB once loaded (CUDA context included) and
+    # 650 MB at peak over 30 windows of 9.01 s, one per pass (3090, 1 GB arena cap).
+    "mos": {"load": 300, "run": 384},
 }
 
 # What gpu_lease raises when no GPU slot was granted: not a bad image, so a

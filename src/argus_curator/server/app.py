@@ -13,6 +13,9 @@ Routes (section 4 of the brief):
     POST /scan/{id}/delete -> remove scanned files from the source folder
     POST /upload           -> save images into a folder under the source root
     POST /export           -> ExportResult
+
+``POST /scan/folder`` (and its stream) with ``target_profile.modality`` ``speech``
+scans the folder's WAV/FLAC clips instead (#186): rows in ``clips``, no export yet.
 """
 
 from __future__ import annotations
@@ -47,10 +50,12 @@ from PIL import Image, ImageFilter
 from pydantic import BaseModel, Field
 
 from argus_curator import __version__, crops, export, scanner
+from argus_curator import dnsmos as dnsmos_mod
 from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator import prefilter as prefilter_mod
+from argus_curator import speech as speech_mod
 from argus_curator import watermarks as watermarks_mod
 from argus_curator.attributes import fairface_available, mivolo_available
 from argus_curator.bodies import bodies_available
@@ -228,6 +233,9 @@ def _detectors() -> dict[str, bool | list[str] | str | None]:
         # names none; empty and null without a server or with a misconfigured mode.
         "singguard_thinking_modes": thinking_modes,
         "singguard_thinking_default": thinking_default,
+        # Speech scans (#186): clips can be decoded (argus-curator[speech]), and DNSMOS is in place.
+        "speech": speech_mod.speech_available(),
+        "dnsmos": dnsmos_mod.dnsmos_available(),
     }
 
 
@@ -671,6 +679,9 @@ def create_app(
             # POST /faces is up when InsightFace and MiVOLO can run (darkroom probes this).
             # Off the event loop: the first probe imports the whole InsightFace stack.
             "faces": await asyncio.to_thread(lambda: faces_available() and mivolo_available()),
+            # ScanRequest.target_profile.modality "speech" scans WAV/FLAC clips (#186);
+            # False when this install cannot decode them (argus-curator[speech]).
+            "speech_scan": speech_mod.speech_available(),
             # The host-wide GPU lease curator takes on CUDA: "none" or "lease" (ARGUS_GPU_COORDINATOR).
             "gpu_coordinator": gpu_coordinator().name,
         }
@@ -766,6 +777,12 @@ def create_app(
         Without this the scan would score every image first and only then fail.
         The detail names the env var, not the server's filesystem layout.
         """
+        if req.is_speech:
+            # The image checks are refused by ScanRequest itself; a speech scan
+            # needs only its decoder and, when asked, DNSMOS.
+            if (why := speech_mod.problem(req.speech)) is not None:
+                raise HTTPException(status_code=400, detail=why)
+            return
         # A prefilter rule needs its check: without it drop_nsfw drops nothing
         # and the face rules drop every image.
         if (why := prefilter_mod.problem(req.prefilter, req.faces, nsfw_mod.resolve_enabled(req.nsfw))) is not None:
@@ -869,7 +886,50 @@ def create_app(
             raise HTTPException(status_code=503, detail=f"watermark detection requested but the detector {why}")
 
     def _requested_checks(req: ScanRequest) -> list[str]:
+        if req.is_speech:
+            return speech_mod.requested_checks(req.speech)
         return scanner.requested_checks(req.faces, req.nsfw, req.guard)
+
+    def _run_scan(
+        req: ScanRequest,
+        folder: Path,
+        scan_id: str,
+        *,
+        progress: Any,
+        chunk: Any = None,
+        save: Any = None,
+    ) -> ScanSummary:
+        """The scan *req* asks for: its images, or with a speech profile its clips (never both)."""
+        cancelled = lambda: gate.cancelled(scan_id)  # noqa: E731
+        if req.is_speech:
+            return speech_mod.scan_speech_folder(
+                folder,
+                req.target_profile,
+                req.speech,
+                scan_id=scan_id,
+                progress=progress,
+                chunk=chunk,
+                save=save,
+                cancelled=cancelled,
+            )
+        return scanner.scan_folder(
+            folder,
+            req.target_profile,
+            req.config,
+            req.faces,
+            scene_cfg=req.scenes,
+            garment_cfg=req.garments,
+            embed_cfg=req.embeddings,
+            nsfw_cfg=req.nsfw,
+            guard_cfg=req.guard,
+            prefilter_cfg=req.prefilter,
+            crop_cfg=req.crops,
+            scan_id=scan_id,
+            progress=progress,
+            chunk=chunk,
+            save=save,
+            cancelled=cancelled,
+        )
 
     def _claim_scan(folder: Path, req: ScanRequest) -> str:
         scan_id = uuid.uuid4().hex
@@ -907,21 +967,11 @@ def create_app(
         requested = _requested_checks(req)
         try:
             summary = await asyncio.to_thread(
-                scanner.scan_folder,
+                _run_scan,
+                req,
                 folder,
-                req.target_profile,
-                req.config,
-                req.faces,
-                scene_cfg=req.scenes,
-                garment_cfg=req.garments,
-                embed_cfg=req.embeddings,
-                nsfw_cfg=req.nsfw,
-                guard_cfg=req.guard,
-                prefilter_cfg=req.prefilter,
-                crop_cfg=req.crops,
-                scan_id=scan_id,
+                scan_id,
                 progress=lambda payload: _note_progress(scan_id, requested, payload),
-                cancelled=lambda: gate.cancelled(scan_id),
             )
             store.save(summary)
             return summary
@@ -939,7 +989,8 @@ def create_app(
         """Same as POST /scan/folder, but streams progress and image batches over SSE.
 
         Emits ``event: progress`` frames ({phase, done, total}) and ``event: chunk``
-        frames (those counts plus the images finished since the previous chunk),
+        frames (those counts plus the images finished since the previous chunk, or
+        on a speech scan ``clips`` with ``modality: "speech"``),
         then a single ``event: complete`` frame carrying the full ScanSummary, or
         ``event: error``, or ``event: cancelled`` after ``POST /scan/{id}/cancel``
         (either way the partial summary is dropped). A second scan is refused
@@ -976,23 +1027,8 @@ def create_app(
 
         def run_scan() -> None:
             try:
-                summary = scanner.scan_folder(
-                    folder,
-                    req.target_profile,
-                    req.config,
-                    req.faces,
-                    scene_cfg=req.scenes,
-                    garment_cfg=req.garments,
-                    embed_cfg=req.embeddings,
-                    nsfw_cfg=req.nsfw,
-                    guard_cfg=req.guard,
-                    prefilter_cfg=req.prefilter,
-                    crop_cfg=req.crops,
-                    scan_id=scan_id,
-                    progress=on_progress,
-                    chunk=on_chunk,
-                    save=store.save_snapshot,
-                    cancelled=lambda: gate.cancelled(scan_id),
+                summary = _run_scan(
+                    req, folder, scan_id, progress=on_progress, chunk=on_chunk, save=store.save_snapshot
                 )
                 store.save(summary)
                 store.mark_finished(scan_id)

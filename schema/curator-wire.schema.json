@@ -1,5 +1,406 @@
 {
   "$defs": {
+    "ClipResult": {
+      "description": "Per-clip record of a speech scan, keyed by ``rel_path`` like :class:`ImageResult`.\n\nA measurement is ``None`` when the scan never got to it (the clip could not\nbe decoded, or the check was not asked for). The corpus labels\n(``speaker``, ``accent``, ``language``, ``age``) are copied verbatim from\nthe corpus metadata, never estimated.",
+      "properties": {
+        "abs_path": {
+          "title": "Abs Path",
+          "type": "string"
+        },
+        "accent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accent"
+        },
+        "age": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age"
+        },
+        "cer": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cer"
+        },
+        "channels": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channels"
+        },
+        "chars_per_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chars Per S"
+        },
+        "clipping_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clipping Ratio"
+        },
+        "duplicate_of": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Of"
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration S"
+        },
+        "failed_checks": {
+          "items": {
+            "enum": [
+              "unreadable",
+              "corpus_under_18",
+              "duration",
+              "sample_rate",
+              "channels",
+              "silent",
+              "clipping",
+              "leading_silence",
+              "trailing_silence",
+              "transcript",
+              "speaking_rate",
+              "snr",
+              "speech_ratio",
+              "mos",
+              "cer"
+            ],
+            "type": "string"
+          },
+          "title": "Failed Checks",
+          "type": "array"
+        },
+        "fingerprint": {
+          "default": "",
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "group_size": {
+          "default": 1,
+          "title": "Group Size",
+          "type": "integer"
+        },
+        "is_duplicate": {
+          "default": false,
+          "title": "Is Duplicate",
+          "type": "boolean"
+        },
+        "is_representative": {
+          "default": true,
+          "title": "Is Representative",
+          "type": "boolean"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "leading_silence_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Leading Silence S"
+        },
+        "mos": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechMos"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mos_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mos Error"
+        },
+        "passed": {
+          "default": false,
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "reject_detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reject Detail"
+        },
+        "reject_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "unreadable",
+                "corpus_under_18",
+                "duration",
+                "sample_rate",
+                "channels",
+                "silent",
+                "clipping",
+                "leading_silence",
+                "trailing_silence",
+                "transcript",
+                "speaking_rate",
+                "snr",
+                "speech_ratio",
+                "mos",
+                "cer"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reject Reason"
+        },
+        "rel_path": {
+          "title": "Rel Path",
+          "type": "string"
+        },
+        "sample_rate": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Rate"
+        },
+        "score": {
+          "default": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "score_breakdown": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Score Breakdown",
+          "type": "object"
+        },
+        "similar_group": {
+          "default": 0,
+          "title": "Similar Group",
+          "type": "integer"
+        },
+        "snr_db": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snr Db"
+        },
+        "speaker": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker"
+        },
+        "speech_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speech Ratio"
+        },
+        "stt_transcript": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stt Transcript"
+        },
+        "trailing_silence_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trailing Silence S"
+        },
+        "transcript": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transcript"
+        },
+        "transcript_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "sidecar",
+                "ljspeech",
+                "common_voice"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transcript Source"
+        }
+      },
+      "required": [
+        "rel_path",
+        "abs_path",
+        "score",
+        "passed",
+        "reject_reason",
+        "failed_checks",
+        "reject_detail",
+        "similar_group",
+        "group_size",
+        "is_representative",
+        "is_duplicate",
+        "duplicate_of",
+        "duration_s",
+        "sample_rate",
+        "channels",
+        "clipping_ratio",
+        "leading_silence_s",
+        "trailing_silence_s",
+        "snr_db",
+        "speech_ratio",
+        "transcript",
+        "transcript_source",
+        "chars_per_s",
+        "mos",
+        "mos_error",
+        "stt_transcript",
+        "cer",
+        "speaker",
+        "accent",
+        "language",
+        "age",
+        "fingerprint",
+        "score_breakdown"
+      ],
+      "title": "ClipResult",
+      "type": "object"
+    },
     "CropBox": {
       "description": "A crop in pixels of the image as displayed: after its EXIF orientation, ``right``/``bottom`` exclusive.\n\nRecorded beside a source as ``<image>.crop.json`` (``{\"left\": .., \"top\": ..,\n\"right\": .., \"bottom\": ..}``) or passed inline in :class:`CropConfig`. A box\nmust lie inside the frame and be non-empty; one that does not makes the\nimage a ``crop:`` reject rather than letting it through uncropped.",
       "properties": {
@@ -3036,8 +3437,19 @@
         "scenes": {
           "$ref": "#/$defs/SceneConfig"
         },
+        "speech": {
+          "$ref": "#/$defs/SpeechConfig"
+        },
         "target_profile": {
-          "$ref": "#/$defs/TargetProfile"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TargetProfile"
+            },
+            {
+              "$ref": "#/$defs/SpeechTargetProfile"
+            }
+          ],
+          "title": "Target Profile"
         }
       },
       "required": [
@@ -3049,6 +3461,13 @@
     "ScanSummary": {
       "description": "Full result of a scan \u2014 persisted on disk and paginated by the server.",
       "properties": {
+        "clips": {
+          "items": {
+            "$ref": "#/$defs/ClipResult"
+          },
+          "title": "Clips",
+          "type": "array"
+        },
         "config": {
           "$ref": "#/$defs/ScanConfig"
         },
@@ -3193,8 +3612,27 @@
           "title": "Similar Clusters",
           "type": "integer"
         },
+        "speech_config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "target_profile": {
-          "$ref": "#/$defs/TargetProfile"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TargetProfile"
+            },
+            {
+              "$ref": "#/$defs/SpeechTargetProfile"
+            }
+          ],
+          "title": "Target Profile"
         },
         "total": {
           "title": "Total",
@@ -3226,6 +3664,8 @@
         "set_age_skipped",
         "reference_skipped",
         "results",
+        "speech_config",
+        "clips",
         "legacy_min_short_side",
         "offset",
         "limit",
@@ -3974,6 +4414,315 @@
         "share"
       ],
       "title": "SetAge",
+      "type": "object"
+    },
+    "SpeechConfig": {
+      "description": "Thresholds and options for a speech scan (``target_profile.modality == \"speech\"``).\n\nEvery threshold is a prefilter: a clip past it is rejected with the check\nnamed (:data:`SpeechCheck`). ``None`` turns a threshold off. Silence is\nmeasured against the clip's loudest 30 ms frame: a frame ``silence_db``\nor more below it is silent. ``chars_per_s`` counts a transcript's letters\nand digits over the clip less its leading and trailing silence.",
+      "properties": {
+        "duplicate_distance": {
+          "default": 6,
+          "maximum": 64,
+          "minimum": -1,
+          "title": "Duplicate Distance",
+          "type": "integer"
+        },
+        "max_cer": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cer"
+        },
+        "max_channels": {
+          "default": 1,
+          "maximum": 2,
+          "minimum": 1,
+          "title": "Max Channels",
+          "type": "integer"
+        },
+        "max_chars_per_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 30.0,
+          "title": "Max Chars Per S"
+        },
+        "max_clipping_ratio": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.001,
+          "title": "Max Clipping Ratio"
+        },
+        "max_duration_s": {
+          "default": 20.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Max Duration S",
+          "type": "number"
+        },
+        "max_leading_silence_s": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 1.0,
+          "title": "Max Leading Silence S"
+        },
+        "max_trailing_silence_s": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 1.0,
+          "title": "Max Trailing Silence S"
+        },
+        "max_workers": {
+          "default": 4,
+          "minimum": 1,
+          "title": "Max Workers",
+          "type": "integer"
+        },
+        "min_chars_per_s": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4.0,
+          "title": "Min Chars Per S"
+        },
+        "min_duration_s": {
+          "default": 1.0,
+          "minimum": 0.0,
+          "title": "Min Duration S",
+          "type": "number"
+        },
+        "min_mos": {
+          "anyOf": [
+            {
+              "maximum": 5.0,
+              "minimum": 1.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Mos"
+        },
+        "min_sample_rate": {
+          "default": 16000,
+          "minimum": 8000,
+          "title": "Min Sample Rate",
+          "type": "integer"
+        },
+        "min_snr_db": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Snr Db"
+        },
+        "min_speech_ratio": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Speech Ratio"
+        },
+        "mos": {
+          "default": false,
+          "title": "Mos",
+          "type": "boolean"
+        },
+        "mos_device": {
+          "default": "auto",
+          "title": "Mos Device",
+          "type": "string"
+        },
+        "require_transcript": {
+          "default": true,
+          "title": "Require Transcript",
+          "type": "boolean"
+        },
+        "silence_db": {
+          "default": -40.0,
+          "exclusiveMaximum": 0.0,
+          "title": "Silence Db",
+          "type": "number"
+        },
+        "snr_ref_db": {
+          "default": 40.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Snr Ref Db",
+          "type": "number"
+        },
+        "transcripts": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "sidecar",
+            "ljspeech",
+            "common_voice"
+          ],
+          "title": "Transcripts",
+          "type": "string"
+        },
+        "weight_mos": {
+          "default": 0.5,
+          "minimum": 0.0,
+          "title": "Weight Mos",
+          "type": "number"
+        },
+        "weight_snr": {
+          "default": 0.3,
+          "minimum": 0.0,
+          "title": "Weight Snr",
+          "type": "number"
+        },
+        "weight_speech_ratio": {
+          "default": 0.2,
+          "minimum": 0.0,
+          "title": "Weight Speech Ratio",
+          "type": "number"
+        }
+      },
+      "title": "SpeechConfig",
+      "type": "object"
+    },
+    "SpeechMos": {
+      "description": "DNSMOS P.835 predictions for a clip, each 1-5: speech (SIG), background (BAK), overall (OVRL).",
+      "properties": {
+        "bak": {
+          "title": "Bak",
+          "type": "number"
+        },
+        "model": {
+          "const": "dnsmos",
+          "default": "dnsmos",
+          "title": "Model",
+          "type": "string"
+        },
+        "ovrl": {
+          "title": "Ovrl",
+          "type": "number"
+        },
+        "sig": {
+          "title": "Sig",
+          "type": "number"
+        }
+      },
+      "required": [
+        "model",
+        "sig",
+        "bak",
+        "ovrl"
+      ],
+      "title": "SpeechMos",
+      "type": "object"
+    },
+    "SpeechTargetProfile": {
+      "description": "argus-cortex's ``TargetProfile`` for a speech dataset: ``modality`` is ``speech``.\n\n``target_category`` is a speech category (``voice`` by default), and\n``target_backend`` names a TTS model family (``xtts-v2``, ``qwen3-tts``) or\nis ``None``. Accepted by the speech scan only; image scoring and the image\nmanifest never see it.",
+      "properties": {
+        "checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint"
+        },
+        "modality": {
+          "const": "speech",
+          "default": "speech",
+          "title": "Modality",
+          "type": "string"
+        },
+        "target_backend": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Backend"
+        },
+        "target_category": {
+          "default": "voice",
+          "enum": [
+            "voice",
+            "accent",
+            "language",
+            "speaking_style"
+          ],
+          "title": "Target Category",
+          "type": "string"
+        },
+        "target_style": {
+          "default": "photo",
+          "enum": [
+            "photo",
+            "anime"
+          ],
+          "title": "Target Style",
+          "type": "string"
+        }
+      },
+      "title": "SpeechTargetProfile",
       "type": "object"
     },
     "SplitConfig": {

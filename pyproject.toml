@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "argus-curator"
 dynamic = ["version"]
-description = "Image curation and moderation: quality scoring, near-duplicate dedup, face clustering, and apparent-age, scene and garment tagging with auditable filters; standalone or as LoRA data prep"
+description = "Image and speech curation and moderation: quality scoring, near-duplicate dedup, face clustering, and apparent-age, scene and garment tagging with auditable filters; standalone or as LoRA and voice data prep"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -111,10 +111,24 @@ embeddings-convert = [
     "huggingface_hub>=0.23",
     "onnx>=1.16",
 ]
+# Speech scans (#186): WAV/FLAC decoding through argus_cortex.limits.open_audio
+# (soundfile, which bundles libsndfile), and onnxruntime for the optional DNSMOS
+# score (`argus-curator dnsmos-fetch`). Everything else is numpy.
+speech = ["argus-cortex[audio]>=0.12,<0.13", "onnxruntime>=1.16"]
 # Composed from the extras above rather than hand-duplicating them, so a new
 # member of `server`/`cli`/`faces` cannot silently go missing from `all`.
-all = ["argus-curator[server,cli,faces]"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5", "httpx>=0.27", "httpx2>=2.7", "certifi>=2026.10.19"]
+all = ["argus-curator[server,cli,faces,speech]"]
+# argus-cortex[audio] (soundfile) so the speech scan's tests decode real WAVs
+# in CI, which installs only [dev,server,cli]; no model or GPU is needed.
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "httpx>=0.27",
+    "httpx2>=2.7",
+    "certifi>=2026.10.19",
+    "argus-cortex[audio]>=0.12,<0.13",
+]
 
 [project.scripts]
 argus-curator = "argus_curator.cli:app"

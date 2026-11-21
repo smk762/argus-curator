@@ -373,20 +373,20 @@ def _score_image(rel: str, abs_path: str, data: bytes, profile: TargetProfile, c
 # ---------------------------------------------------------------------------
 
 
-def collect_images(root: Path) -> list[tuple[str, str, bytes]]:
-    """Load ``(rel_path, abs_path, bytes)`` for every supported image under *root*.
+def contained_files(root: Path, exts: Collection[str]) -> list[tuple[str, Path]]:
+    """``(rel_path, resolved path)`` for every file under *root* with one of *exts*, sorted.
 
     Symlinked directories are not descended into, and a file (or symlink) whose
     resolved path lies outside *root* is skipped: a link named ``x.jpg`` must not
     pull a file from elsewhere on the host into the scan.
     """
-    items: list[tuple[str, str, bytes]] = []
+    found: list[tuple[str, Path]] = []
     root_resolved = root.resolve()
     candidates: list[Path] = []
     for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
         candidates.extend(Path(dirpath) / name for name in filenames)
     for p in sorted(candidates):
-        if p.suffix.lower() not in SUPPORTED_EXTS or not p.is_file():
+        if p.suffix.lower() not in exts or not p.is_file():
             continue
         rel = p.relative_to(root).as_posix()
         try:
@@ -397,10 +397,18 @@ def collect_images(root: Path) -> list[tuple[str, str, bytes]]:
         if not resolved.is_relative_to(root_resolved):
             logger.warning("scan_collect_outside_root", rel_path=rel)
             continue
+        found.append((rel, resolved))
+    return found
+
+
+def collect_images(root: Path) -> list[tuple[str, str, bytes]]:
+    """Load ``(rel_path, abs_path, bytes)`` for every supported image under *root* (see :func:`contained_files`)."""
+    items: list[tuple[str, str, bytes]] = []
+    for rel, resolved in contained_files(root, SUPPORTED_EXTS):
         try:
-            items.append((rel, str(resolved), p.read_bytes()))
+            items.append((rel, str(resolved), resolved.read_bytes()))
         except OSError as exc:
-            logger.warning("scan_collect_read_error", path=str(p), error=str(exc))
+            logger.warning("scan_collect_read_error", path=str(resolved), error=str(exc))
     return items
 
 

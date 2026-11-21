@@ -139,6 +139,8 @@ def test_detectors_keys(client: TestClient) -> None:
         "singguard_policies",
         "singguard_thinking_modes",
         "singguard_thinking_default",
+        "speech",
+        "dnsmos",
     }
     assert resp.json()["singguard_policies"] == []  # no SingGuard server configured
     assert resp.json()["singguard_thinking_modes"] == [] and resp.json()["singguard_thinking_default"] is None
@@ -285,14 +287,24 @@ def test_prefiltered_images_are_never_kept_or_exported(contained: tuple[TestClie
     assert not (exports / "named" / "personA").exists()
 
 
-def test_scan_with_a_speech_target_profile_is_422(contained: tuple[TestClient, Path]) -> None:
+def test_a_speech_target_profile_is_never_scored_as_an_image(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A speech profile scans clips (#186): the image scanner never sees it, and image checks are refused."""
+    from argus_curator import scanner
+
     client, _ = contained
+    monkeypatch.setattr(scanner, "scan_folder", lambda *a, **k: pytest.fail("a speech profile reached the image scan"))
+    resp = client.post("/scan/folder", json={"folder": "", "target_profile": {"modality": "speech"}})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["target_profile"]["modality"] == "speech" and body["results"] == []  # the dataset holds no clips
     resp = client.post(
         "/scan/folder",
-        json={"folder": "", "target_profile": {"modality": "speech"}, "faces": {"enabled": False}},
+        json={"folder": "", "target_profile": {"modality": "speech"}, "faces": {"enabled": True}},
     )
     assert resp.status_code == 422
-    assert "curates images" in resp.text
+    assert "runs no image checks" in resp.text
 
 
 def test_scan_then_paginate_then_export(contained: tuple[TestClient, Path]) -> None:

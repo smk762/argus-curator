@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Speech scans (#186).** `POST /scan/folder` (and its stream) and
+  `argus-curator scan --modality speech` score a folder of WAV/FLAC clips when
+  `target_profile.modality` is `speech`. `SpeechTargetProfile` (cortex's
+  `TargetProfile` narrowed to speech) is taken only on that path: the image
+  scanner, `ManifestRow` and an image scan still refuse a speech profile, and a
+  speech request that turns on an image check is a 422. Transcripts come from a
+  `.txt` sidecar, LJSpeech's `metadata.csv` or Common Voice TSVs (speaker,
+  accent, locale and age carried verbatim). Each clip is read through
+  `argus_cortex.limits.open_audio` and gets duration, sample rate, channels,
+  clipping, leading/trailing silence, an SNR estimate, an energy-VAD speech
+  ratio, its speaking rate, a 64-bit spectrogram fingerprint for
+  near-duplicates and, with `speech.mos`, DNSMOS P.835 (pinned by commit and
+  sha256; `argus-curator dnsmos-fetch`; GPU kind `mos` in `gpu-tenant.yaml`).
+  Every threshold lives in `SpeechConfig` and every rejected clip names its
+  check (`reject_reason`, `failed_checks`, `reject_detail`). A clip the
+  corpus marks as under 18 is rejected undecoded. A `Transcriber` hook takes
+  an STT engine for CER (argus-echo#4, #203); without one `max_cer` is
+  refused. Rows are `ScanSummary.clips`; select and export refuse a speech
+  scan until #187, so `ManifestRow` and `MANIFEST_VERSION` are unchanged. New
+  extra `[speech]`.
+
 - **Semantic novelty in selection (#188, item 1).** An opt-in scan phase,
   `ScanRequest.embeddings` (`EmbeddingConfig`: `enabled`, `device`; CLI
   `--embeddings`), runs the image tower of DataComp-1B's CLIP ViT-L/14 (MIT)
