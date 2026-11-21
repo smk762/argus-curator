@@ -533,12 +533,12 @@ def test_reference_embedding_is_validated() -> None:
 
 
 def test_a_scan_summary_never_holds_the_reference_embedding() -> None:
-    cfg = FaceConfig(reference_embedding=[0.6, 0.8])
+    cfg = FaceConfig(reference_embedding=[0.28, 0.96])
     summary = _summary([], cfg)
     assert summary.faces_config.reference_embedding is None
-    assert cfg.reference_embedding == [0.6, 0.8]  # the scan's own config is left as it was
+    assert cfg.reference_embedding == [0.28, 0.96]  # the scan's own config is left as it was
     for dumped in (summary.model_dump_json(), summary.model_dump_json(context=STORE_CONTEXT)):
-        assert "0.6" not in dumped and "0.8" not in dumped
+        assert "0.28" not in dumped and "0.96" not in dumped
     stored = json.loads(summary.model_dump_json(context=STORE_CONTEXT))
     stored["faces_config"]["reference_embedding"] = [0.6, 0.8]  # even a cache someone edited
     assert ScanSummary.model_validate(stored).faces_config.reference_embedding is None

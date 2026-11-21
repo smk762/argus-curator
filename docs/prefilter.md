@@ -10,6 +10,13 @@ the request as `"prefilter": {...}` and on the CLI as a flag:
 | `drop_nsfw` (`--drop-nsfw`) | its exposed NudeNet reading is 0.2 or more (an image NudeNet and EraX could not score is kept) | the NudeNet check |
 | `drop_no_face` (`--drop-no-face`) | no face was detected (an image whose detection failed, with `face_error` set, is kept) | face detection |
 | `drop_no_age` (`--drop-no-age`) | no face has a MiVOLO age, no body-only age was read, and it has no [set age](face-attributes.md#an-age-for-the-frames-with-no-face) | MiVOLO |
+| `drop_junk` (`--drop-junk`) | its [zero-shot junk probability](scoring.md#profile-fit-and-junk-zero-shot) reaches `config.junk_threshold` (0.8), i.e. it has a `junk_kind` (an image with no embedding is kept) | embeddings |
+
+`drop_junk` is the exception to the timing below: the junk score exists only
+after the embeddings phase, so it drops there, as `prefilter:junk`, and spares
+only SingGuard; faces, NudeNet, scenes and garments have run. A streaming scan
+sends those rows in its `zero_shot` chunk. Asking for it without embeddings is
+refused (422, CLI exit 2).
 
 The rules run once, right after identities (so a set age counts), on the
 images that passed the hard filters. A dropped image stays in the results as

@@ -125,6 +125,17 @@ def scan(
     semantic_dupes_cosine: float = Option(
         0.95, "--semantic-dupes-cosine", help="With --semantic-dupes, the cosine similarity that makes a duplicate"
     ),
+    profile_fit: bool = Option(
+        False, "--profile-fit", help="Score each image's zero-shot CLIP fit to the target profile (needs --embeddings)"
+    ),
+    junk_check: bool = Option(
+        False,
+        "--junk-check",
+        help="Score each image's zero-shot CLIP junk probability: screenshot, collage, text, meme (needs --embeddings)",
+    ),
+    junk_threshold: float = Option(
+        0.8, "--junk-threshold", help="The junk probability that names a junk kind (and that --drop-junk drops at)"
+    ),
     max_keep: int | None = Option(None, "--max-keep", help="Cap keepers to a diverse N"),
     diversity_weight: float = Option(0.40, "--diversity-weight", help="0=pure score, 1=pure spread"),
     min_short_side: int = Option(512, "--min-short-side", help="Minimum short-side pixels (512 at least)"),
@@ -365,6 +376,12 @@ def scan(
         "--drop-no-age",
         help="Reject images with no MiVOLO, body-only or set age before scenes, garments and SingGuard (needs --mivolo)",
     ),
+    drop_junk: bool = Option(
+        False,
+        "--drop-junk",
+        help="Reject images whose zero-shot junk probability reaches --junk-threshold, before SingGuard "
+        "(needs --embeddings)",
+    ),
     minor_exposed: str | None = Option(None, "--minor-exposed", help=_MINOR_EXPOSED_HELP),
     crops: bool = Option(
         False,
@@ -456,7 +473,8 @@ def scan(
             "--embeddings": embeddings,
             "--crops": crops or detect_watermarks,
             "--guard": guard,
-            "--drop-*": drop_nsfw or drop_no_face or drop_no_age,
+            "--drop-*": drop_nsfw or drop_no_face or drop_no_age or drop_junk,
+            "--profile-fit/--junk-check": profile_fit or junk_check,
             "--xmp": xmp or xmp_sources,
             "--consent": consent or face_source_consent or face_source,
         }
@@ -557,6 +575,9 @@ def scan(
             cluster_distance=-1 if no_cluster else cluster_distance,
             semantic_duplicates=semantic_dupes,
             semantic_duplicate_cosine=semantic_dupes_cosine,
+            profile_fit=profile_fit,
+            junk_check=junk_check,
+            junk_threshold=junk_threshold,
             diversity_weight=diversity_weight,
             max_workers=max_workers,
         )
@@ -583,6 +604,14 @@ def scan(
     if semantic_dupes and not embeddings:
         typer.echo("Error: --semantic-dupes needs --embeddings", err=True)
         raise typer.Exit(2)
+    zero_shot = [
+        flag
+        for flag, on in (("--profile-fit", profile_fit), ("--junk-check", junk_check), ("--drop-junk", drop_junk))
+        if on
+    ]
+    if zero_shot and not embeddings:
+        typer.echo(f"Error: {zero_shot[0]} needs --embeddings", err=True)
+        raise typer.Exit(2)
     face_source = face_source or face_source_consent
     if face_source_consent and consent is None:
         typer.echo("Error: --face-source-consent needs a consent record (--consent)", err=True)
@@ -606,7 +635,9 @@ def scan(
         typer.echo("Error: --face-source checks for an adult age, which needs --mivolo", err=True)
         raise typer.Exit(2)
 
-    prefilter_cfg = PrefilterConfig(drop_nsfw=drop_nsfw, drop_no_face=drop_no_face, drop_no_age=drop_no_age)
+    prefilter_cfg = PrefilterConfig(
+        drop_nsfw=drop_nsfw, drop_no_face=drop_no_face, drop_no_age=drop_no_age, drop_junk=drop_junk
+    )
     nsfw_cfg = NsfwConfig(enabled=nsfw)
     nsfw_on = nsfw_mod.resolve_enabled(nsfw_cfg)
     if (gap := prefilter_missing(prefilter_cfg, faces_cfg, nsfw_on)) is not None:
@@ -1257,17 +1288,36 @@ def embeddings_convert(
         None, "--checkpoint", help="Local dir with config.json + pytorch_model.bin (default: download the pinned one)"
     ),
     output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+    prompts: bool = Option(
+        False,
+        "--prompts",
+        help="Instead, embed the zero-shot prompts with the text tower and write the pinned prompt file "
+        "(default: the package's data/clip_prompts.json; a maintainer step)",
+    ),
 ) -> None:
     """Fetch, verify and convert the CLIP image tower for --embeddings.
 
     Weights: huggingface.co/laion/CLIP-ViT-L-14-DataComp.XL-s13B-b90K (MIT;
     DataComp-1B CLIP ViT-L/14), pinned by commit and sha256. Only the image
-    tower and its projection are exported (~1.2 GB fp32).
+    tower and its projection are exported (~1.2 GB fp32). With --prompts, the
+    text tower embeds the zero-shot prompts into the pinned prompt file the
+    package ships (a maintainer step; scans never run the text tower).
     Needs: pip install argus-curator[embeddings-convert]
     """
     from argus_curator.embeddings import export_onnx, fetch_weights, model_path
     from argus_curator.runtime import ModelUnavailable
 
+    if prompts:
+        from argus_curator import zeroshot
+
+        try:
+            source = checkpoint or fetch_weights(zeroshot.PROMPT_HF_FILES)
+            written, digest = zeroshot.export_prompts(source, output or zeroshot.default_prompts_path())
+        except ModelUnavailable as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        typer.echo(f"Wrote CLIP prompt vectors -> {written}\nsha256 {digest} (set zeroshot.PROMPTS_SHA256 to it)")
+        return
     try:
         source = checkpoint or fetch_weights()
         written = export_onnx(source, output or model_path())

@@ -421,6 +421,9 @@ def write_report(
         "is_duplicate",
         "duplicate_of",
         "duplicate_kind",
+        "profile_fit",
+        "junk",
+        "junk_kind",
         "sharpness",
         "artifact_score",
         "face_count",
@@ -495,6 +498,11 @@ def write_report(
                     "is_duplicate": r.is_duplicate,
                     "duplicate_of": r.duplicate_of or "",
                     "duplicate_kind": r.duplicate_kind or "",
+                    "profile_fit": ""
+                    if r.zero_shot is None or r.zero_shot.profile_fit is None
+                    else r.zero_shot.profile_fit,
+                    "junk": "" if r.zero_shot is None or r.zero_shot.junk is None else r.zero_shot.junk,
+                    "junk_kind": (r.zero_shot.junk_kind if r.zero_shot else None) or "",
                     "sharpness": round(r.sharpness, 2),
                     "artifact_score": round(r.artifact_score, 4),
                     "face_count": r.face_count,

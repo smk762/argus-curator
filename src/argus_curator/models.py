@@ -244,6 +244,7 @@ _INCLUDE_REJECTED_IGNORED = "Ignored: a rejected image is never kept. Accepted s
 
 
 SEMANTIC_DUPLICATES_NEED_EMBEDDINGS = "config.semantic_duplicates needs the scan's embeddings: turn embeddings on"
+ZERO_SHOT_NEEDS_EMBEDDINGS = "{what} needs the scan's embeddings: turn embeddings on"
 
 
 class ScanConfig(BaseModel):
@@ -267,6 +268,19 @@ class ScanConfig(BaseModel):
     # one photo (0.98+) and most mirrors (median 0.989); see docs/scoring.md.
     semantic_duplicates: bool = False
     semantic_duplicate_cosine: float = Field(0.95, ge=0.0, le=1.0)
+
+    # Zero-shot CLIP scores (#197, see zeroshot.py), each off by default and
+    # needing the scan's embeddings (a scan asking without them is refused).
+    # ``profile_fit`` adds ``profile_fit_weight`` x the image's fit to the
+    # TargetProfile to its target bonus; ``junk_check`` takes ``junk_weight`` x
+    # its junk probability off it. Neither rejects an image: that is the opt-in
+    # PrefilterConfig.drop_junk, which drops those at or above
+    # ``junk_threshold``. Calibration: docs/scoring.md.
+    profile_fit: bool = False
+    profile_fit_weight: float = Field(0.10, ge=0.0, le=1.0)
+    junk_check: bool = False
+    junk_weight: float = Field(0.15, ge=0.0, le=1.0)
+    junk_threshold: float = Field(0.8, ge=0.0, le=1.0)
 
     # Composite score weights
     weight_sharpness: float = 0.35
@@ -658,6 +672,10 @@ class PrefilterConfig(BaseModel):
     drop_nsfw: bool = False
     drop_no_face: bool = False
     drop_no_age: bool = False
+    # A zero-shot junk probability at or above ScanConfig.junk_threshold
+    # (#197): ``prefilter:junk``. Needs the scan's embeddings; applied right
+    # after the embeddings phase, so only SingGuard is spared for those.
+    drop_junk: bool = False
 
 
 class CropBox(BaseModel):
@@ -940,6 +958,29 @@ def rate_content(nsfw: NsfwResult | None) -> ContentRating | None:
 # Which near-duplicate test linked an image to its group's representative (#196).
 DuplicateKind = Literal["phash", "semantic", "both"]
 
+# The junk kinds the zero-shot check names (see zeroshot.py), in prompt order.
+JunkKind = Literal["screenshot", "collage", "text", "meme"]
+JUNK_KINDS: tuple[JunkKind, ...] = ("screenshot", "collage", "text", "meme")
+
+
+class ZeroShotResult(BaseModel):
+    """Zero-shot CLIP scores for one image (#197; see zeroshot.py).
+
+    Plain scores only: the image's embedding itself is never stored. A field
+    is None when its check was not asked for.
+    """
+
+    model_config = RESPONSE_ONLY
+
+    # The probability that the image is the kind the TargetProfile asks for
+    # (one softmax over the style x category prompts; for concept, its style's).
+    profile_fit: float | None = None
+    # The probability that the image is a screenshot, collage, page of text or
+    # meme rather than an ordinary photo or artwork.
+    junk: float | None = None
+    # The likeliest junk kind, only once ``junk`` reaches ScanConfig.junk_threshold.
+    junk_kind: JunkKind | None = None
+
 
 class ImageResult(BaseModel):
     """Per-image curation record — superset of imogen's scanner output.
@@ -969,6 +1010,10 @@ class ImageResult(BaseModel):
     # cosine at least semantic_duplicate_cosine, with semantic_duplicates on) or "both".
     duplicate_kind: DuplicateKind | None = None
     keep_reason: str = ""
+
+    # Zero-shot profile fit and junk scores (ScanConfig.profile_fit /
+    # junk_check, #197). None = not asked for, or the image has no embedding.
+    zero_shot: ZeroShotResult | None = None
 
     # Raw metrics
     sharpness: float = 0.0
@@ -1416,6 +1461,18 @@ class ScanSummary(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def zero_shot_asked(cfg: ScanConfig, prefilter: PrefilterConfig | None = None) -> str | None:
+    """The first zero-shot setting *cfg* / *prefilter* turn on (they need embeddings), else None."""
+    for name, on in (
+        ("config.profile_fit", cfg.profile_fit),
+        ("config.junk_check", cfg.junk_check),
+        ("prefilter.drop_junk", prefilter is not None and prefilter.drop_junk),
+    ):
+        if on:
+            return name
+    return None
+
+
 class ScanRequest(BaseModel):
     # The server resolves this under its configured scan root and refuses
     # traversal escapes; relative paths are canonical ("" scans the root).
@@ -1447,6 +1504,8 @@ class ScanRequest(BaseModel):
             return self  # refused below as an image check
         if self.config.semantic_duplicates and not self.embeddings.enabled:
             raise ValueError(SEMANTIC_DUPLICATES_NEED_EMBEDDINGS)
+        if not self.embeddings.enabled and (what := zero_shot_asked(self.config, self.prefilter)):
+            raise ValueError(ZERO_SHOT_NEEDS_EMBEDDINGS.format(what=what))
         return self
 
     @model_validator(mode="after")
@@ -1461,6 +1520,8 @@ class ScanRequest(BaseModel):
                 ("garments", self.garments.enabled),
                 ("embeddings", self.embeddings.enabled),
                 ("config.semantic_duplicates", self.config.semantic_duplicates),
+                ("config.profile_fit", self.config.profile_fit),
+                ("config.junk_check", self.config.junk_check),
                 ("nsfw", self.nsfw.enabled is True),
                 ("guard", self.guard.enabled is True),
                 ("crops", self.crops.enabled),
