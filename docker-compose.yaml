@@ -38,6 +38,9 @@ services:
       # SingGuard policy check, off unless .env sets a URL (no server is bundled:
       # it runs a vision language model). Opt-out once set, like NudeNet.
       - ARGUS_CURATOR_SINGGUARD_URL=${ARGUS_CURATOR_SINGGUARD_URL-}
+      # Body pose on argus-puppet (e.g. http://<PUPPET_HOST>:8220), off unless .env sets
+      # a URL. Opt-out once set, like NudeNet; a down puppet never fails a scan.
+      - ARGUS_CURATOR_PUPPET_URL=${ARGUS_CURATOR_PUPPET_URL-}
       # cascade: fast on every frame, slow only on what fast flags (slow's verdict stands).
       - ARGUS_CURATOR_SINGGUARD_THINKING=${ARGUS_CURATOR_SINGGUARD_THINKING-cascade}
       # What the scan already knows, sent as recorded context. Empty sends the image alone.

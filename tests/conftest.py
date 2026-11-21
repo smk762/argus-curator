@@ -42,6 +42,12 @@ _CONFIG_ENV = (
     "ARGUS_CURATOR_WATERMARK_URL",
     "ARGUS_CURATOR_WATERMARK_TIMEOUT",
     "ARGUS_CURATOR_WATERMARK_WORKERS",
+    # The body-pose stage is opt-out like NudeNet: a puppet URL in the shell would turn it on.
+    "ARGUS_CURATOR_PUPPET_URL",
+    "ARGUS_CURATOR_PUPPET_TIMEOUT",
+    "ARGUS_CURATOR_PUPPET_WORKERS",
+    "ARGUS_CURATOR_PUPPET_MAX_SET",
+    "ARGUS_CURATOR_PUPPET_MAX_JSON_BYTES",
     # The under-18 rule; tests pick a mode explicitly where it matters.
     "ARGUS_CURATOR_MINOR_EXPOSED",
 )

@@ -403,6 +403,14 @@ def scan(
     singguard_url: str | None = Option(
         None, "--singguard-url", help="SingGuard server origin, e.g. http://guard:9150 (ARGUS_CURATOR_SINGGUARD_URL)"
     ),
+    body_pose: bool | None = Option(
+        None,
+        "--body-pose/--no-body-pose",
+        help="Body pose from argus-puppet (default: on when a puppet URL is configured; --no-body-pose opts out)",
+    ),
+    puppet_url: str | None = Option(
+        None, "--puppet-url", help="argus-puppet server origin, e.g. http://puppet:8220 (ARGUS_CURATOR_PUPPET_URL)"
+    ),
     guard_policy: str = Option(
         "default",
         "--guard-policy",
@@ -509,6 +517,7 @@ def scan(
         GarmentConfig,
         GuardConfig,
         NsfwConfig,
+        PoseConfig,
         PrefilterConfig,
         ScanConfig,
         SceneConfig,
@@ -643,6 +652,7 @@ def scan(
         raise typer.Exit(2)
     import os
 
+    from argus_curator import bodypose as bodypose_mod
     from argus_curator import embeddings as embeddings_mod
     from argus_curator import erax as erax_mod
     from argus_curator import fairface as fairface_mod
@@ -663,6 +673,7 @@ def scan(
         (erax_url, erax_mod.URL_ENV),
         (watermark_url, watermarks_mod.URL_ENV),
         (singguard_url, guard_mod.URL_ENV),
+        (puppet_url, bodypose_mod.URL_ENV),
     ):
         if model_file is not None:
             os.environ[env] = str(model_file)
@@ -686,6 +697,17 @@ def scan(
             raise typer.Exit(2) from exc
         if detector is not None and (why := detector.unreachable()) is not None:
             typer.echo(f"Error: --detect-watermarks: the detector {why}", err=True)
+            raise typer.Exit(2)
+    if bodypose_mod.resolve_enabled(PoseConfig(enabled=body_pose)):
+        from argus_curator.runtime import ModelUnavailable
+
+        try:
+            puppet = bodypose_mod.client()
+        except ModelUnavailable as exc:  # names the variable, never the URL
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        if puppet is None:
+            typer.echo(f"Error: --body-pose needs a server: --puppet-url or {bodypose_mod.URL_ENV}", err=True)
             raise typer.Exit(2)
 
     try:
@@ -950,6 +972,7 @@ def scan(
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
         crop_cfg=CropConfig(enabled=crops, detect=detect_watermarks, max_cut=max_cut, reject_overlay=not keep_overlays),
+        pose_cfg=PoseConfig(enabled=body_pose),
         consent_cfg=consent_cfg,
     )
 
