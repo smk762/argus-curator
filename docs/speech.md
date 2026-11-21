@@ -158,8 +158,7 @@ Checking the accent and language labels with a model is
 `POST /scan/{id}/select` and `POST /export` take a speech scan. They read
 `min_score`, `keep_similar`, `max_keep`, `split` / `split_part`, the transfer
 fields and `speech` (`SpeechSelection`); any image filter set on a speech scan
-is refused (400), and `speech` on an image scan too. The CLI exports a speech
-scan in a follow-up ([#207](https://github.com/smk762/argus-curator/issues/207)).
+is refused (400), and `speech` on an image scan too.
 
 ```json
 {"scan_id": "...", "dest": "blizzard-train", "mode": "symlink",
@@ -167,6 +166,38 @@ scan in a follow-up ([#207](https://github.com/smk762/argus-curator/issues/207))
  "speech": {"corpus": "Common Voice 17 pt", "license": "CC0-1.0",
             "max_hours_per_speaker": 2, "balance_accents": true}}
 ```
+
+The CLI exports a speech scan the same way
+([#207](https://github.com/smk762/argus-curator/issues/207)): `scan
+--modality speech` with `--copy-to`, `--move-to` or `--symlink-to` builds the
+same `ExportRequest` and runs it through `export_selection` once the scan is
+saved, so it writes what `POST /export` writes. The request above is:
+
+```bash
+argus-curator scan corpus/ --modality speech --symlink-to blizzard-train \
+  --corpus "Common Voice 17 pt" --license CC0-1.0 \
+  --max-hours-per-speaker 2 --balance-accents \
+  --held-out-fraction 0.1 --split-part train
+```
+
+| CLI flag | `ExportRequest` field |
+|---|---|
+| `--speaker-id`, `--accent`, `--language` (comma-separated) | `speech.speakers`, `speech.accents`, `speech.languages` |
+| `--exclude-speaker-mismatch` | `speech.exclude_speaker_mismatch` (needs `--speakers`) |
+| `--min-hours-per-speaker`, `--max-hours-per-speaker`, `--max-hours-per-accent`, `--balance-accents` | the `speech` hours caps |
+| `--min-score`, `--keep-similar`, `--max-keep`, `--run-stats` | as for images |
+| `--held-out` or `--held-out-fraction`, `--split-method`, `--split-seed`, `--split-part` | `split` (`group_by` is always `speaker`), `split_part` |
+| `--corpus` and `--license` | `speech.corpus`, `speech.license` |
+| `--voice-consent` and `--consent-delivery` | `speech.consent_record` (relative to the scanned folder, or absolute; needs `--speakers`), `speech.consent_delivery` |
+| `--voice-consent-max-distance` | `speech.consent_max_distance` ([consented voice binding](#consented-voice-binding); needs `--voice-consent`) |
+
+The flags are checked before a clip is read: no provenance, half of one, both
+kinds, an image filter (`--pose`, `--garment`, `--nsfw-threshold`,
+`--carry-sidecars`, ...) or a speech export flag without a destination is
+refused (exit 2). What can only be known from the scan (a split with too few
+speakers, a consent record that doesn't cover the set) is refused after it,
+before anything is transferred, and the scan stays saved. As with images, the
+CLI has no move gate: it is your own shell.
 
 **Selection.** A clip is kept when it passed, has a transcript, scores at
 least `min_score` and isn't a near-duplicate (unless `keep_similar`). Then:
