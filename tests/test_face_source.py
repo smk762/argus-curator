@@ -437,3 +437,149 @@ def test_face_source_problem_refuses_an_unknown_cluster_and_a_failed_reference()
     assert "reference" in face_source_problem(req, referenced)
     off = ExportRequest(dest=".", face_source=FaceSourceFilter(max_identity_distance=None))
     assert face_source_problem(off, referenced) is None
+
+
+# ---------------------------------------------------------------------------
+# A caller-supplied reference (#130 §3; consumed by #133)
+# ---------------------------------------------------------------------------
+
+
+class _RefFace:
+    def __init__(self, emb: np.ndarray, side: float, det_score: float = 0.9) -> None:
+        self.normed_embedding = emb
+        self.bbox = [0.0, 0.0, side, side]
+        self.det_score = det_score
+
+
+def _png(color: int = 128) -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), (color, color, color)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _fake_app(monkeypatch: pytest.MonkeyPatch, faces_by_color: dict[int, list[_RefFace]]) -> list[tuple]:
+    """Stand InsightFace in with one keyed by each image's grey level; return the leases taken."""
+    import contextlib
+
+    from argus_curator import faces as faces_mod
+
+    class App:
+        def get(self, bgr: np.ndarray) -> list[_RefFace]:
+            return faces_by_color.get(int(bgr[0, 0, 0]), [])
+
+    leases: list[tuple] = []
+
+    def lease(*args: object, **kwargs: object) -> contextlib.AbstractContextManager[None]:
+        leases.append(args)
+        return contextlib.nullcontext()
+
+    monkeypatch.setattr(faces_mod, "_get_app", lambda cfg, lease_wait_s=None: App())
+    monkeypatch.setattr(faces_mod, "gpu_lease", lease)
+    return leases
+
+
+def test_reference_embedding_averages_each_images_primary_face(monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.faces import reference_distance, reference_embedding
+
+    leases = _fake_app(
+        monkeypatch,
+        {
+            # The larger face is the primary; the small one is someone in the background.
+            10: [_RefFace(_unit(0, 0, 1), side=20.0), _RefFace(_unit(1, 0.2, 0), side=100.0)],
+            20: [_RefFace(_unit(1, -0.2, 0), side=100.0)],
+            30: [],  # no face: left out, not an error while another image has one
+        },
+    )
+    centroid = reference_embedding([_png(10), _png(20), _png(30)])
+    assert np.asarray(centroid) == pytest.approx(_unit(1, 0, 0), abs=1e-6)
+    assert len(leases) == 3 and all(args[1] == "faces" for args in leases)  # every image under the GPU lease
+    assert reference_distance(_unit(1, 0, 0), centroid) == 0.0
+    assert reference_distance(_unit(0, 1, 0), [2.0, 0.0, 0.0]) == pytest.approx(1.0)  # neither needs unit length
+    with pytest.raises(ValueError, match="values"):
+        reference_distance(_unit(1, 0), centroid)
+    with pytest.raises(ValueError, match="no reference image has a face"):
+        reference_embedding([_png(30)])
+
+
+def test_a_supplied_reference_embedding_sets_every_reference_distance() -> None:
+    results, found = _detected({"a.png": [_unit(1, 0, 0)], "b.png": [_unit(0, 1, 0), _unit(1, 0.1, 0)]})
+    cfg = FaceConfig(reference_embedding=[3.0, 0.0, 0.0])
+    assert cfg.enabled and cfg.has_reference
+    cluster_identities(results, found, cfg)
+    assert measure_reference(results, found, cfg) is None
+    a, b = results
+    assert a.faces[0].reference_distance == 0.0
+    assert b.faces[0].reference_distance == pytest.approx(1.0)
+    assert 0 < b.faces[1].reference_distance < 0.01
+
+
+def test_a_reference_embedding_of_the_wrong_length_is_skipped_with_a_reason() -> None:
+    results, found = _detected({"a.png": [_unit(1, 0, 0)]})
+    reason = measure_reference(results, found, FaceConfig(reference_embedding=[1.0, 0.0]))
+    assert reason is not None and "2 values" in reason and "3" in reason
+    assert results[0].faces[0].reference_distance is None
+
+
+def test_reference_embedding_is_validated() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="not both"):
+        FaceConfig(reference_paths=["a.png"], reference_embedding=[1.0])
+    for bad in ([0.0, 0.0], [float("nan"), 1.0], []):
+        with pytest.raises(ValidationError):
+            FaceConfig(reference_embedding=bad)
+
+
+def test_a_scan_summary_never_holds_the_reference_embedding() -> None:
+    cfg = FaceConfig(reference_embedding=[0.6, 0.8])
+    summary = _summary([], cfg)
+    assert summary.faces_config.reference_embedding is None
+    assert cfg.reference_embedding == [0.6, 0.8]  # the scan's own config is left as it was
+    for dumped in (summary.model_dump_json(), summary.model_dump_json(context=STORE_CONTEXT)):
+        assert "0.6" not in dumped and "0.8" not in dumped
+    stored = json.loads(summary.model_dump_json(context=STORE_CONTEXT))
+    stored["faces_config"]["reference_embedding"] = [0.6, 0.8]  # even a cache someone edited
+    assert ScanSummary.model_validate(stored).faces_config.reference_embedding is None
+
+
+def test_a_rejected_reference_image_is_embedded_from_the_scans_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    leases = _fake_app(monkeypatch, {50: [_RefFace(_unit(1, 0, 0), side=100.0)]})
+    results, found = _detected({"a.png": [_unit(1, 0, 0)], "b.png": [_unit(0, 1, 0)]})
+    portrait = ImageResult(rel_path="portrait.png", abs_path="/portrait.png", passed=False, reject_reason="blurry")
+    results.append(portrait)
+    cfg = FaceConfig(enabled=True, reference_paths=["portrait.png"])
+    cluster_identities(results, found, cfg)
+    items = [("portrait.png", "/portrait.png", _png(50))]
+    assert measure_reference(results, found, cfg) == "no reference image has a face"  # no bytes, no embedding
+    assert measure_reference(results, found, cfg, items) is None
+    assert results[0].faces[0].reference_distance == 0.0
+    assert results[1].faces[0].reference_distance == pytest.approx(1.0)
+    assert not portrait.passed and portrait.faces == []  # embedded only: the row stays rejected
+    assert len(leases) == 1
+
+
+def test_face_source_problem_refuses_a_failed_supplied_reference() -> None:
+    # The summary cannot say a reference_embedding was given; reference_skipped does.
+    summary = _summary([], FaceConfig(mivolo=True, reference_embedding=[1.0, 0.0]))
+    summary.reference_skipped = "reference_embedding has 2 values; this face model's embeddings have 512"
+    req = ExportRequest(dest=".", face_source=FaceSourceFilter())
+    assert "reference" in face_source_problem(req, summary)
+
+
+def test_cli_reads_a_reference_from_outside_the_folder(tmp_path: Path) -> None:
+    import typer
+
+    from argus_curator.cli import _outside_references
+
+    folder = tmp_path / "set"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(_png())
+    outside = tmp_path / "consent.png"
+    outside.write_bytes(_png())
+    assert _outside_references(folder, ["a.png"]) is None
+    assert _outside_references(folder, ["a.png", str(outside)]) == [folder / "a.png", outside]
+    assert _outside_references(folder, [str(folder / "a.png")]) == [folder / "a.png"]  # an absolute path is a file
+    with pytest.raises(typer.Exit):
+        _outside_references(folder, [str(tmp_path / "missing.png")])
