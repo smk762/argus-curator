@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import structlog
-from argus_cortex.consent import consent_valid
+from argus_cortex.consent import consent_valid, subject_ref
 from argus_cortex.provenance import Provenance
 
 from argus_curator.consent import ConsentRefused, read_record
@@ -114,11 +114,13 @@ def voice_consent_gate(
             "the record's reference recordings have no speaker cluster; rescan with speech.speakers on"
         )
     excluded = {c.rel_path: "consent:other-speaker" for c in summary.clips if c.speaker_cluster not in clusters}
+    # It names no one: the subject is cortex's subject ref (consent:<release_sha256>), and the
+    # source leaves out who collected the release. Every row of the export carries it.
     provenance = Provenance(
         kind="consented",
-        source=f"recorded under the subject's voice release, collected by {record.collected_by}",
+        source="recorded under the subject's voice release",
         license="the subject's signed likeness release (release_sha256)",
-        subject=record.subject,
+        subject=subject_ref(record),
         release_sha256=record.release_sha256,
     )
     assert read.record_sha256 is not None  # a parsed record was read from bytes

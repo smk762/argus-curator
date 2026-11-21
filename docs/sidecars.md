@@ -27,6 +27,12 @@ names: with sidecars carried, an image at the destination root with the stem
 `run_stats`, `manifest` or `curation_report` gets a hash suffix, even with
 `preserve_structure`, so its `.json` cannot be overwritten by `run_stats.json`.
 
+On a consented face set (`face_source.consent`) the `<stem>.json` is not
+transferred but written as a copy whose `provenance` names the subject only by
+argus-cortex's subject ref, `consent:<release_sha256>`, in every mode. The
+source sidecar is never changed, and under move it stays where it is. See
+[Consented face sets](face-sources.md#consented-face-sets-of-a-real-person).
+
 ## With XMP
 
 With `write_xmp` as well, sidecars are carried first and curator's data is then
