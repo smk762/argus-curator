@@ -50,6 +50,8 @@ $ argus-curator scan [OPTIONS] {source}
 * `--keep-similar`: Keep non-representative near-duplicates
 * `--no-cluster`: Disable near-duplicate grouping
 * `--cluster-distance <int>`: pHash Hamming distance for near-duplicates  [default: 10]
+* `--semantic-dupes`: Also group near-duplicates by CLIP embedding similarity (needs --embeddings)
+* `--semantic-dupes-cosine <float>`: With --semantic-dupes, the cosine similarity that makes a duplicate  [default: 0.95]
 * `--max-keep <int>`: Cap keepers to a diverse N
 * `--diversity-weight <float>`: 0=pure score, 1=pure spread  [default: 0.4]
 * `--min-short-side <int>`: Minimum short-side pixels (512 at least)  [default: 512]

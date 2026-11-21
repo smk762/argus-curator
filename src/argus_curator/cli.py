@@ -119,6 +119,12 @@ def scan(
     keep_similar: bool = Option(False, "--keep-similar", help="Keep non-representative near-duplicates"),
     no_cluster: bool = Option(False, "--no-cluster", help="Disable near-duplicate grouping"),
     cluster_distance: int = Option(10, "--cluster-distance", help="pHash Hamming distance for near-duplicates"),
+    semantic_dupes: bool = Option(
+        False, "--semantic-dupes", help="Also group near-duplicates by CLIP embedding similarity (needs --embeddings)"
+    ),
+    semantic_dupes_cosine: float = Option(
+        0.95, "--semantic-dupes-cosine", help="With --semantic-dupes, the cosine similarity that makes a duplicate"
+    ),
     max_keep: int | None = Option(None, "--max-keep", help="Cap keepers to a diverse N"),
     diversity_weight: float = Option(0.40, "--diversity-weight", help="0=pure score, 1=pure spread"),
     min_short_side: int = Option(512, "--min-short-side", help="Minimum short-side pixels (512 at least)"),
@@ -535,6 +541,8 @@ def scan(
             max_aspect_ratio=max_aspect_ratio,
             blur_threshold=blur_threshold,
             cluster_distance=-1 if no_cluster else cluster_distance,
+            semantic_duplicates=semantic_dupes,
+            semantic_duplicate_cosine=semantic_dupes_cosine,
             diversity_weight=diversity_weight,
             max_workers=max_workers,
         )
@@ -557,6 +565,9 @@ def scan(
     )
     if diversify_semantic and not embeddings:
         typer.echo("Error: --diversify-semantic needs --embeddings", err=True)
+        raise typer.Exit(2)
+    if semantic_dupes and not embeddings:
+        typer.echo("Error: --semantic-dupes needs --embeddings", err=True)
         raise typer.Exit(2)
     face_source = face_source or face_source_consent
     if face_source_consent and consent is None:
