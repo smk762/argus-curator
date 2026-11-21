@@ -29,6 +29,11 @@ frontend (:3000); allow-list other origins with `--cors-origin <origin>`
 on public demos. A literal `*` in the allow-list is treated as `--cors-any`
 (wildcard without credentials), never as origin reflection.
 
+A scan's consent record (`consent.record`) resolves under the scanned folder
+the same way, a symlink included, and is re-checked at select and export
+since the stored path is data (see
+[Consented face sets](face-sources.md#consented-face-sets-of-a-real-person)).
+
 ## CORS and cross-site writes
 
 CORS is not a write boundary — `POST /upload` sends `multipart/form-data`, which
@@ -50,18 +55,18 @@ no port), or its writes get 403.
 | Route | Description |
 |---|---|
 | `GET  /health` | Liveness. `faces` is true when `POST /faces` can run (InsightFace and MiVOLO). `minor_exposed` is the under-18 rule in use, `frame` or `overlap` (`ARGUS_CURATOR_MINOR_EXPOSED`). |
-| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, bodies, places365, garments, nudenet, erax, watermark, singguard, … }` |
+| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, bodies, places365, garments, nudenet, erax, watermark, singguard, speech, dnsmos, speaker_model, … }` |
 | `POST /faces` | One image in memory (raw bytes or multipart), at most `CURATOR_MAX_UPLOAD_MB` (else 413). `{ source: mivolo, faces: [{ age_estimate_years, bbox }] }`. Writes nothing. |
 | `GET  /guard/policies` | Each SingGuard policy a scan can name: `{ singguard, policies: [{ name, recorded, source, text, error }] }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
-| `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary` |
+| `POST /scan/folder` | Scan + score + dedup + face-cluster → `ScanSummary`. With `target_profile.modality` `speech`, scores the folder's WAV/FLAC clips instead (rows in `clips`; see [Speech scans](speech.md)) |
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
 | `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount, of the cropped frame when that scan cropped it |
 | `GET  /image?path=<rel>&scan_id=<id>` | Original image bytes, same containment as `/thumb` |
-| `POST /scan/{scan_id}/select` | Dry-run of the export filter → `{total, kept, rows: [{rel_path, abs_path, keep_reason}]}`. Writes nothing |
+| `POST /scan/{scan_id}/select` | Dry-run of the export filter, cap, ranking and split → `{total, kept, rank, train, held_out, rows: [{rel_path, abs_path, keep_reason, rank, split}]}`, kept rows first and best first. Writes nothing. See [Ranking, max_keep and splits](#ranking-max_keep-and-splits). A speech scan's rows carry `speaker_id`, and `speech` the hours kept ([Speech scans](speech.md#select-and-export)) |
 | `POST /scan/{scan_id}/delete` | Delete source files in the scan (`rel_path` or `rel_paths`, all or nothing: a path not in the scan is a 404, a running scan a 409) and drop their rows → `{rel_paths, total}`. Any image needs `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1` (else 403 unless under-18 exposed); `/health` reports `delete_any` |
 | `POST /upload` | Multipart image upload (`files` + `folder`) into a folder under the source root. Each file is capped at `CURATOR_MAX_UPLOAD_MB` (default 50); a larger one is a 413 and nothing is saved |
-| `POST /export` | Structure-preserving transfer + manifest → `ExportResult` |
+| `POST /export` | Structure-preserving transfer + manifest → `ExportResult`. A speech scan exports its clips, a `.txt` transcript beside each and `speech_manifest.jsonl` (`modality: speech`; needs `speech.corpus` and `speech.license`, or `speech.consent_record`) |
 | `POST /scan/folder/stream` | Same as `/scan/folder`, streaming live progress over SSE |
 | `POST /export/stream` | Same as `/export`, streaming per-file transfer progress over SSE |
 | `GET  /scans` | Cached scans, newest first, plus `active`: the one running, with its phase, counts, `pending_checks` and `cancelling` |
@@ -112,7 +117,11 @@ has it.
   "target_profile": { "target_style": "photo", "target_category": "identity" },
   "config": { "min_short_side": 512, "max_aspect_ratio": 3.0, "blur_threshold": 100.0,
               "cluster_distance": 10, "max_workers": 4 },
-  "faces":  { "enabled": true, "model": "buffalo_l", "min_det_score": 0.5, "cluster_eps": 0.5 }
+  "faces":  { "enabled": true, "model": "buffalo_l", "min_det_score": 0.5, "cluster_eps": 0.5 },
+  "consent": { "record": null, "max_distance": 0.4 },  // optional: a consent record under the folder
+  "embeddings": { "enabled": false, "device": "auto",  // CLIP image embeddings (memory only)
+                  "reference_paths": [],           // optional likeness reference: images in this scan
+                  "reference_embedding": null }    // or a centroid in curator's CLIP space (not both)
 }
 ```
 
@@ -137,6 +146,11 @@ has it.
   "min_scene_conf": 0.1, "diversify_scenes": false,
   "garments": ["dress"], "exclude_garments": ["bag_wallet"],  // optional: Fashionpedia
   "min_garment_conf": 0.5, "garments_uncropped": false, "diversify_outfits": true,
+  "max_keep": null, "diversity_weight": null,  // optional cap; null weight = the scan's
+  "rank": "score",                  // "score" | "identity" | "likeness": the order kept images come in
+  "max_likeness_distance": null,    // optional: ceiling on each image's likeness_distance
+  "exclude_references": false,      // optional: keep the scan's reference images out
+  "split": null, "split_part": "train",        // optional train/held-out split; export one part
   "write_manifest": true,
   "caption_url": null,              // optional: POST manifest to argus-lens (internal hosts: CURATOR_CAPTION_ALLOWED_HOSTS)
   "carry_sidecars": false,          // optional: transfer .txt / .xmp / .json sidecars with each image
@@ -155,6 +169,112 @@ covered in [Sidecars and run stats](sidecars.md), and every filter field in its
 feature's page ([Face attributes](face-attributes.md), [Scene tags](scene-tags.md),
 [Garments](garments.md), [Nudity detection](nudity.md),
 [Policy check](policy-check.md), [Face sources](face-sources.md)).
+
+## Ranking, max_keep and splits
+
+`POST /scan/{id}/select` and `POST /export` run the same selection
+(`selection.plan_selection`): the filters, then the cap, then the ranking,
+then the split. A select and an export with the same fields keep the same
+images, in the same order, in the same parts.
+
+- **`rank`** orders the kept images, best first. `"score"` (the default): the
+  curation score, then the primary face's identity distance. `"identity"`: the
+  identity distance (the face's `reference_distance` when the scan had
+  a reference, `faces.reference_paths` or `faces.reference_embedding`, else its
+  `cluster_distance`; an image with no face or
+  no distance comes last), then the score. Ties end on `rel_path`. `"identity"`
+  needs a scan that ran face detection (else 400). `"likeness"`: the image's
+  `likeness_distance` (see [Likeness](#likeness-subjects-without-a-face);
+  none last), then the score. The manifest is written in
+  this order, and each select row's `rank` is its 1-based position.
+- **`max_keep`** caps the kept images; the rest get `diversity-trimmed`. The
+  pick blends merit under `rank` with spread (pHash, plus scenes and outfits
+  with `diversify_scenes` / `diversify_outfits`) by `diversity_weight`
+  (0 = the best `max_keep` by rank, 1 = the widest spread; null = the scan's
+  `config.diversity_weight`).
+- **`split`** divides the kept images into `train` and `held_out`:
+
+  ```jsonc
+  "split": {
+    "held_out": 8,              // or "held_out_fraction": 0.2 (exactly one)
+    "group_by": "image",        // "image" | "face_cluster" | "similar_group" | "speaker" (speech): a group never spans both parts
+    "method": "spread",         // "spread": evenly through the ranking | "random": shuffled by seed
+    "seed": 0
+  }
+  ```
+
+  Whole groups go to one part. With `group_by: "face_cluster"` one identity
+  (the primary face's cluster) is never in both parts; an image with no
+  clustered face is a group of its own. With `group_by: "similar_group"` an
+  image's near-duplicates (the scan's `similar_group`: pHash, and CLIP with
+  `config.semantic_duplicates`) are in its part, so a held-out reference is
+  never a near-copy of a training image. A group that would push `held_out`
+  past its target is skipped, so it can fall short of the target, never
+  exceed it. A split that leaves either part empty (too few images, or one
+  group) is refused with 400. The split is deterministic: the same request on
+  the same scan always gives the same parts. Select reports both parts (each
+  kept row's `split`, and the `train` / `held_out` counts). An export
+  transfers only `split_part`, and its manifest rows carry `split`; export
+  each part to its own `dest` (argus-forge trains on everything under one).
+  A split can't be combined with an inline `selection`. A speech scan's split
+  must group by `"speaker"` (and an image scan's can't): it is speaker-disjoint
+  and stratified by accent and gender, see
+  [Speech scans](speech.md#select-and-export).
+
+argus-mint's identity training, for example, selects with
+`{"face_source": {...}, "rank": "identity", "max_keep": train + held_out,
+"diversity_weight": 0, "split": {"held_out": held_out}}`, then exports the
+`train` part to the training export and the `held_out` part to proof's
+references.
+
+## Likeness: subjects without a face
+
+A subject with no usable face (a creature, an object, a masked or stylised
+character) has no identity distance, so likeness gives it one from the scan's
+CLIP embeddings (#191). A scan with `embeddings` on records each passing
+image's `likeness_distance`: the cosine distance (0..2) from its embedding to
+the subject. The subject is, in order:
+
+- `embeddings.reference_paths`: images in the scan, their embeddings averaged.
+  A reference image the scan rejected is still embedded from the bytes it read
+  (its row stays rejected, with no distance);
+- `embeddings.reference_embedding`: a centroid the caller supplies, in
+  curator's embedding space (`embeddings.EMBEDDING_SPACE`; another CLIP's
+  vectors don't compare). Like a face `reference_embedding`, it is
+  request-only: the stored and served summary never carries it;
+- else the set's own centroid, recentred once on the closest 75% of the
+  passing images so a few strays pull it less.
+
+Either reference turns `embeddings` on. `ScanSummary.likeness_source` says
+which subject was used (`"reference"` | `"centroid"`), and `likeness_skipped`
+why no distance was measured (no reference image in the scan, none could be
+embedded, a `reference_embedding` of the wrong length). A reference that gives
+nothing is never swapped for the centroid.
+
+Select and export read the recorded distances, never the vectors, so they
+still work after a restart:
+
+- `rank: "likeness"` orders kept images closest first (none last), then by score.
+- `max_likeness_distance` keeps out an image farther than it, or with no
+  distance (keep reason `likeness-distance`).
+- `exclude_references` keeps the scan's reference images
+  (`embeddings.reference_paths` and `faces.reference_paths`) out, keep reason
+  `reference`: they are the yardstick, so a cap or a split never spends a place
+  on one. Refused on a scan that named none.
+
+Either one on a scan that didn't compute embeddings, or that measured no
+distances, is refused with 400, never ignored. The embedding is of the frame
+as the scan saw it: a background that varies more than the subject does
+dominates the distance, so crop to the subject first (`crops`, or a
+`.crop.json` sidecar) when it is small in the frame.
+
+argus-mint's `likeness` identities, for example, upload the candidates and the
+identity's references together, scan with
+`{"embeddings": {"reference_paths": anchors}}`, and select with
+`{"rank": "likeness", "max_likeness_distance": d, "exclude_references": true,
+"max_keep": train + held_out, "diversity_weight": 0,
+"split": {"held_out": held_out, "group_by": "similar_group"}}`, and export each
+part by the same fields with `split_part`.
 
 ## Scan cache
 

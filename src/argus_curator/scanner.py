@@ -37,8 +37,12 @@ import structlog
 from PIL import Image, ImageFilter
 
 from argus_curator.models import (
+    SEMANTIC_DUPLICATES_NEED_EMBEDDINGS,
     SUPPORTED_EXTS,
+    ZERO_SHOT_NEEDS_EMBEDDINGS,
+    ConsentConfig,
     CropConfig,
+    EmbeddingConfig,
     EraxConfig,
     FaceCluster,
     FaceConfig,
@@ -53,6 +57,7 @@ from argus_curator.models import (
     SceneConfig,
     TargetCategory,
     TargetProfile,
+    zero_shot_asked,
 )
 from argus_curator.runtime import ScanCancelled
 
@@ -226,8 +231,32 @@ def _face_penalty(face_count: int, category: TargetCategory) -> float:
     return 1.0
 
 
-def _target_bonus(result: ImageResult, profile: TargetProfile, faces_known: bool) -> float:
-    """Small additive bonus rewarding framing/composition that fits the target."""
+def _zero_shot_terms(result: ImageResult, cfg: ScanConfig | None) -> dict[str, float]:
+    """The zero-shot parts of the target bonus (#197): ``profile_fit`` up, ``junk`` down.
+
+    Only for a score the scan computed (``result.zero_shot``); an image with
+    none gets neither, so it is neither rewarded nor docked.
+    """
+    terms: dict[str, float] = {}
+    zs = result.zero_shot
+    if cfg is None or zs is None:
+        return terms
+    if cfg.profile_fit and zs.profile_fit is not None:
+        terms["profile_fit"] = cfg.profile_fit_weight * zs.profile_fit
+    if cfg.junk_check and zs.junk is not None:
+        terms["junk"] = -cfg.junk_weight * zs.junk
+    return terms
+
+
+def _target_bonus(
+    result: ImageResult, profile: TargetProfile, faces_known: bool, cfg: ScanConfig | None = None
+) -> float:
+    """Small additive bonus rewarding framing/composition that fits the target.
+
+    The framing heuristics are capped at 0.15; with *cfg*'s zero-shot scores
+    on (see :func:`_zero_shot_terms`), the profile fit is added and the junk
+    probability taken off on top of that, so the bonus can go negative.
+    """
     category = profile.target_category
     orientation = result.width / max(result.height, 1)
     bonus = 0.0
@@ -278,7 +307,7 @@ def _target_bonus(result: ImageResult, profile: TargetProfile, faces_known: bool
         if result.artifact_score >= 0.85:
             bonus += 0.01
 
-    return min(0.15, bonus)
+    return min(0.15, bonus) + sum(_zero_shot_terms(result, cfg).values())
 
 
 def _base_score(result: ImageResult, cfg: ScanConfig) -> tuple[float, dict[str, float]]:
@@ -300,8 +329,10 @@ def finalize_score(result: ImageResult, profile: TargetProfile, cfg: ScanConfig,
     if not result.passed:
         return
     base, breakdown = _base_score(result, cfg)
-    bonus = _target_bonus(result, profile, faces_known)
+    bonus = _target_bonus(result, profile, faces_known, cfg)
     breakdown["target_bonus"] = bonus
+    # The zero-shot parts are already in target_bonus; listed for the reviewer.
+    breakdown.update({f"zero_shot_{k}": v for k, v in _zero_shot_terms(result, cfg).items()})
     score = base + bonus
     if faces_known:
         penalty = _face_penalty(result.face_count, profile.target_category)
@@ -372,20 +403,20 @@ def _score_image(rel: str, abs_path: str, data: bytes, profile: TargetProfile, c
 # ---------------------------------------------------------------------------
 
 
-def collect_images(root: Path) -> list[tuple[str, str, bytes]]:
-    """Load ``(rel_path, abs_path, bytes)`` for every supported image under *root*.
+def contained_files(root: Path, exts: Collection[str]) -> list[tuple[str, Path]]:
+    """``(rel_path, resolved path)`` for every file under *root* with one of *exts*, sorted.
 
     Symlinked directories are not descended into, and a file (or symlink) whose
     resolved path lies outside *root* is skipped: a link named ``x.jpg`` must not
     pull a file from elsewhere on the host into the scan.
     """
-    items: list[tuple[str, str, bytes]] = []
+    found: list[tuple[str, Path]] = []
     root_resolved = root.resolve()
     candidates: list[Path] = []
     for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
         candidates.extend(Path(dirpath) / name for name in filenames)
     for p in sorted(candidates):
-        if p.suffix.lower() not in SUPPORTED_EXTS or not p.is_file():
+        if p.suffix.lower() not in exts or not p.is_file():
             continue
         rel = p.relative_to(root).as_posix()
         try:
@@ -396,10 +427,18 @@ def collect_images(root: Path) -> list[tuple[str, str, bytes]]:
         if not resolved.is_relative_to(root_resolved):
             logger.warning("scan_collect_outside_root", rel_path=rel)
             continue
+        found.append((rel, resolved))
+    return found
+
+
+def collect_images(root: Path) -> list[tuple[str, str, bytes]]:
+    """Load ``(rel_path, abs_path, bytes)`` for every supported image under *root* (see :func:`contained_files`)."""
+    items: list[tuple[str, str, bytes]] = []
+    for rel, resolved in contained_files(root, SUPPORTED_EXTS):
         try:
-            items.append((rel, str(resolved), p.read_bytes()))
+            items.append((rel, str(resolved), resolved.read_bytes()))
         except OSError as exc:
-            logger.warning("scan_collect_read_error", path=str(p), error=str(exc))
+            logger.warning("scan_collect_read_error", path=str(resolved), error=str(exc))
     return items
 
 
@@ -408,27 +447,72 @@ def collect_images(root: Path) -> list[tuple[str, str, bytes]]:
 # ---------------------------------------------------------------------------
 
 
-def _mark_duplicates(results: list[ImageResult], cfg: ScanConfig) -> None:
+def _mark_duplicates(
+    results: list[ImageResult],
+    cfg: ScanConfig,
+    embeddings: dict[str, Any] | None = None,
+    semantic_links: Collection[tuple[str, str]] = (),
+) -> None:
     """Tag near-duplicates in-place; keep the highest-scoring representative.
 
-    A negative ``cluster_distance`` disables grouping entirely (every image is
-    its own cluster).
+    Leader clustering, best score first: each passing image joins the first
+    (highest-scoring) representative it is a near-duplicate of, else becomes a
+    representative itself. An image is a near-duplicate of a representative when
+    either test holds:
+
+    - **pHash**: Hamming distance within ``cfg.cluster_distance`` (a negative
+      distance turns this test off);
+    - **semantic** (#196): with ``cfg.semantic_duplicates`` on, the cosine
+      similarity of their unit *embeddings* is at least ``cfg.semantic_duplicate_cosine``. An image without
+      an embedding has no semantic link, unless the pair is in *semantic_links*
+      (``(image, representative)`` links a previous grouping recorded, for a
+      regroup after the vectors are gone: see :func:`drop_results`).
+
+    One rule over the union of both edge sets, rather than one grouping after
+    the other, so a group has one representative and one keep-best rule
+    whichever test found it. It is not a transitive closure: ``duplicate_of``
+    always names an image the duplicate itself matched, never one reached
+    through a chain (CLIP similarity chains across a whole shoot), and a
+    pHash-only scan groups exactly as before. ``duplicate_kind`` says which test
+    tied the image to ``duplicate_of``: "phash", "semantic" or "both".
     """
-    if cfg.cluster_distance < 0:
+    phash_on = cfg.cluster_distance >= 0
+    threshold = cfg.semantic_duplicate_cosine
+    vectors = embeddings or {}
+    links = set(semantic_links)
+    semantic_on = cfg.semantic_duplicates and bool(vectors or links)
+    if not phash_on and not semantic_on:
         return
     passing = sorted((r for r in results if r.passed), key=lambda r: -r.score)
-    seen: list[tuple[imagehash.ImageHash, str]] = []
+    rep_rels: list[str] = []
+    rep_hashes: list[imagehash.ImageHash | None] = []
+    # Row i is representative i's unit embedding (zeros, masked out, when it has none).
+    rep_vecs: np.ndarray | None = None
+    rep_has_vec: list[bool] = []
     for result in passing:
-        if not result.phash:
-            continue
-        ph = imagehash.hex_to_hash(result.phash)
-        for ref_hash, ref_rel in seen:
-            if (ph - ref_hash) <= cfg.cluster_distance:
+        ph = imagehash.hex_to_hash(result.phash) if phash_on and result.phash else None
+        vec = vectors.get(result.rel_path) if semantic_on else None
+        close: list[bool] = []
+        if vec is not None and rep_vecs is not None and rep_rels:
+            sims = rep_vecs[: len(rep_rels)] @ np.asarray(vec, dtype=np.float32)
+            close = [has and float(sim) >= threshold for has, sim in zip(rep_has_vec, sims, strict=True)]
+        for i, ref_rel in enumerate(rep_rels):
+            ref_hash = rep_hashes[i]
+            by_phash = ph is not None and ref_hash is not None and (ph - ref_hash) <= cfg.cluster_distance
+            by_semantic = semantic_on and ((bool(close) and close[i]) or (result.rel_path, ref_rel) in links)
+            if by_phash or by_semantic:
                 result.is_duplicate = True
                 result.duplicate_of = ref_rel
+                result.duplicate_kind = "both" if by_phash and by_semantic else "phash" if by_phash else "semantic"
                 break
         else:
-            seen.append((ph, result.rel_path))
+            if vec is not None and rep_vecs is None:
+                rep_vecs = np.zeros((len(passing), len(vec)), dtype=np.float32)
+            if vec is not None and rep_vecs is not None:
+                rep_vecs[len(rep_rels)] = vec
+            rep_rels.append(result.rel_path)
+            rep_hashes.append(ph)
+            rep_has_vec.append(vec is not None)
 
 
 def _assign_clusters(results: list[ImageResult]) -> int:
@@ -502,7 +586,12 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     """Remove *gone* rows from a finished scan and bring everything derived from them up to date.
 
     Near-duplicate groups are rebuilt, so a deleted representative does not leave
-    its siblings marked ``similar-to`` a file that no longer exists. Identities
+    its siblings marked ``similar-to`` a file that no longer exists. Semantic
+    links are recomputed from the embeddings *summary* still holds; where they
+    are gone (a restart) the links the rows recorded stand in for them, so a
+    regroup never quietly turns a semantic group into a pHash-only one. A
+    semantic duplicate whose representative was dropped then cannot be matched
+    afresh, and ``semantic_groups_stale`` says so. Identities
     are recounted from the remaining faces (see :func:`recount_identities`),
     their attributes pooled again (:func:`faces.repool_identities`), and the set
     age read again.
@@ -511,10 +600,19 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
 
     gone = set(gone)
     results = [r for r in summary.results if r.rel_path not in gone]
+    vectors = summary.embeddings
+    semantic_links: set[tuple[str, str]] = set()
     for r in results:
+        # A semantic link whose vectors are gone: keep it, as the rows recorded it.
+        semantic = r.is_duplicate and r.duplicate_of and r.duplicate_kind in ("semantic", "both")
+        if semantic and (r.rel_path not in vectors or r.duplicate_of not in vectors):
+            semantic_links.add((r.rel_path, r.duplicate_of))
+            if r.duplicate_of in gone:
+                summary.semantic_groups_stale = True
         r.is_duplicate = False
         r.duplicate_of = None
-    _mark_duplicates(results, summary.config)
+        r.duplicate_kind = None
+    _mark_duplicates(results, summary.config, vectors, semantic_links)
     summary.similar_clusters = _assign_clusters(results)
 
     summary.face_clusters = recount_identities(summary.face_clusters, results)
@@ -544,6 +642,7 @@ def scan_items(
     *,
     scene_cfg: SceneConfig | None = None,
     garment_cfg: GarmentConfig | None = None,
+    embed_cfg: EmbeddingConfig | None = None,
     nsfw_cfg: NsfwConfig | None = None,
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
@@ -560,7 +659,7 @@ def scan_items(
     When *progress* is supplied it is called with ``{phase, done, total,
     pending_checks}`` dicts as the scan advances through its ``scoring`` ->
     ``faces`` + ``nsfw`` -> ``identities`` -> ``scenes`` -> ``garments`` ->
-    ``guard`` -> ``clustering`` phases. Face detection (MiVOLO ages and
+    ``embeddings`` -> ``guard`` -> ``clustering`` phases. Face detection (MiVOLO ages and
     FairFace race) and NudeNet run at the same time and their progress events
     interleave, so a viewer has what it needs to lift a blur as early as it is
     safe to. Identities follow at once, and with ``FaceConfig.set_age`` the
@@ -574,6 +673,9 @@ def scan_items(
     *crop_cfg* (opt-in) crops the boxed images in memory before scoring, so
     every phase sees the cropped frame (see :mod:`argus_curator.crops`); an
     image whose box cannot be applied is rejected as ``crop:<why>``.
+    *embed_cfg* (opt-in) computes each passing image's semantic embedding;
+    the vectors go on the returned summary's in-memory ``embeddings`` only,
+    never on a row or a snapshot.
     *chunk* receives the images finished since the previous call, and *save*
     receives a partial summary so a scan can be reopened while it is still
     running. ``pending_checks`` names the checks (``faces``, ``nsfw``,
@@ -585,6 +687,8 @@ def scan_items(
     from argus_curator import guard as guard_mod
     from argus_curator import nsfw as nsfw_mod
 
+    profile = TargetProfile.model_validate(profile)  # a cortex speech profile is refused before scoring
+
     scan_id = scan_id or uuid.uuid4().hex
 
     def check_cancelled() -> None:
@@ -594,6 +698,7 @@ def scan_items(
     total = len(items)
     scene_cfg = scene_cfg or SceneConfig()
     garment_cfg = garment_cfg or GarmentConfig()
+    embed_cfg = embed_cfg or EmbeddingConfig()
     nsfw_cfg = nsfw_cfg or NsfwConfig()
     guard_cfg = guard_cfg or GuardConfig()
     prefilter_cfg = prefilter_cfg or PrefilterConfig()
@@ -610,6 +715,16 @@ def scan_items(
         if not watermarks_mod.configured():
             raise ValueError(f"watermark detection needs a detector: set {watermarks_mod.URL_ENV}")
         watermarks_mod.client()  # a malformed URL fails here, not after the scan has started
+    if cfg.semantic_duplicates and not embed_cfg.enabled:
+        raise ValueError(SEMANTIC_DUPLICATES_NEED_EMBEDDINGS)
+    # Refused, never run without: a zero-shot score needs the image vectors.
+    if not embed_cfg.enabled and (zero_shot_what := zero_shot_asked(cfg, prefilter_cfg)):
+        raise ValueError(ZERO_SHOT_NEEDS_EMBEDDINGS.format(what=zero_shot_what))
+    from argus_curator import zeroshot as zeroshot_mod
+
+    junk_wanted = cfg.junk_check or prefilter_cfg.drop_junk
+    if cfg.profile_fit or junk_wanted:
+        zeroshot_mod.prompt_vectors()  # a missing or unpinned prompt file fails here, before any work
     requested = requested_checks(faces_cfg, nsfw_cfg, guard_cfg)
     completed: set[str] = set()
 
@@ -646,13 +761,15 @@ def scan_items(
     # The SingGuard mode the scan asks for (its own, else the server's), recorded with its guard_config.
     guard_mode = guard_mod.thinking(guard_cfg) if guard_mod.resolve_enabled(guard_cfg) else None
     # The set age given to the frames with no face, or why none was, and why
-    # FaceConfig.reference_paths gave no reference distances.
+    # the scan's reference gave no reference distances.
     # Until the identities phase a saved snapshot says the age is still to come.
     set_age: dict[str, Any] = {
         "age": None,
         "skipped": "the identities have not been read yet" if faces_cfg.set_age else None,
         "reference_skipped": None,
     }
+    # What the likeness distances were measured from, or why none were (#191).
+    likeness: dict[str, Any] = {"source": None, "skipped": None}
     # Face detection and NudeNet run side by side, so chunks, saves and the
     # completed set are touched under one lock.
     lock = threading.Lock()
@@ -679,6 +796,7 @@ def scan_items(
             faces_config=faces_cfg,
             scenes_config=scene_cfg,
             garments_config=garment_cfg,
+            embeddings_config=embed_cfg,
             nsfw_config=NsfwConfig(enabled=nsfw_ran),
             erax_config=EraxConfig(enabled=erax_ran),
             guard_config=guard_cfg.model_copy(
@@ -700,6 +818,8 @@ def scan_items(
             set_age=set_age["age"],
             set_age_skipped=set_age["skipped"],
             reference_skipped=set_age["reference_skipped"],
+            likeness_source=likeness["source"],
+            likeness_skipped=likeness["skipped"],
             results=[visible(r) for r in rows],
             returned=len(rows),
         )
@@ -992,7 +1112,7 @@ def scan_items(
 
         emit("identities", 0, total)
         face_clusters = faces_mod.cluster_identities(results, detected_faces, faces_cfg)
-        set_age["reference_skipped"] = faces_mod.measure_reference(results, detected_faces, faces_cfg)
+        set_age["reference_skipped"] = faces_mod.measure_reference(results, detected_faces, faces_cfg, items)
         if set_age["reference_skipped"]:
             logger.warning("reference_skipped", reason=set_age["reference_skipped"])
         if faces_cfg.set_age:
@@ -1036,6 +1156,46 @@ def scan_items(
         )
         deliver("garments", total, total, results, force=True)
 
+    # Semantic embeddings (optional): whole-image, for selection only. Nothing
+    # lands on the rows: the vectors go on the final summary's in-memory
+    # ``embeddings`` and are never saved (#188).
+    vectors: dict[str, Any] = {}
+    if embed_cfg.enabled:
+        from argus_curator import embeddings as embeddings_mod
+
+        vectors = embeddings_mod.embed_images(
+            results,
+            items,
+            embed_cfg,
+            progress=(lambda done, phase_total: emit("embeddings", done, phase_total)) if progress else None,
+            also=embed_cfg.reference_paths,
+        )
+        # Each passing image's distance to the subject (#191): plain floats on
+        # the rows. A rejected reference image was embedded for this only, so
+        # its vector goes now; the passing ones stay in memory for selection.
+        likeness["source"], likeness["skipped"] = embeddings_mod.measure_likeness(results, vectors, embed_cfg)
+        if likeness["skipped"]:
+            logger.warning("likeness_skipped", reason=likeness["skipped"])
+        passed_rels = {r.rel_path for r in results if r.passed}
+        vectors = {rel: v for rel, v in vectors.items() if rel in passed_rels}
+
+    # Zero-shot profile fit and junk scores (opt-in, #197) from those vectors:
+    # plain floats on the rows, then the scores are redone with them. The
+    # junk prefilter (opt-in) drops here, so SingGuard passes those by.
+    if zeroshot_mod.score_images(results, vectors, profile, cfg, junk_check=junk_wanted):
+        for row in results:
+            if row.zero_shot is not None:
+                # Face detection ran on a row exactly when its breakdown carries a face penalty.
+                finalize_score(row, profile, cfg, faces_known="face_penalty" in row.score_breakdown)
+        # Only the junk rule: the others ran after identities.
+        junk_dropped = prefilter_mod.apply(results, PrefilterConfig(drop_junk=True)) if prefilter_cfg.drop_junk else []
+        if junk_dropped:
+            logger.info("prefilter", dropped=len(junk_dropped), rule="junk")
+            face_clusters = recount_identities(face_clusters, results)
+            # A reject holds no vector, as above.
+            vectors = {rel: v for rel, v in vectors.items() if rel not in {r.rel_path for r in junk_dropped}}
+        deliver("zero_shot", total, total, results, force=True)
+
     # SingGuard (opt-out), the same way as NudeNet. The slow GPU pass goes last
     # among the checks: its verdict can put a blur back, never lift one.
     guard_batch: list[ImageResult] = []
@@ -1065,12 +1225,13 @@ def scan_items(
 
     check_cancelled()
     emit("clustering", 0, total)
-    _mark_duplicates(results, cfg)
+    _mark_duplicates(results, cfg, vectors)
     multi = _assign_clusters(results)
     emit("clustering", total, total)
 
     summary = snapshot()
     summary.similar_clusters = multi
+    summary.embeddings.update(vectors)
     return summary
 
 
@@ -1082,10 +1243,12 @@ def scan_folder(
     *,
     scene_cfg: SceneConfig | None = None,
     garment_cfg: GarmentConfig | None = None,
+    embed_cfg: EmbeddingConfig | None = None,
     nsfw_cfg: NsfwConfig | None = None,
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
     crop_cfg: CropConfig | None = None,
+    consent_cfg: ConsentConfig | None = None,
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
     chunk: ChunkFn | None = None,
@@ -1098,10 +1261,23 @@ def scan_folder(
     SSE endpoint to stream live scan progress to the browser). Pass *chunk*
     to receive image batches as each phase produces them, and *cancelled* to
     be able to stop the scan (see :func:`scan_items`).
+
+    With *consent_cfg* naming a record (see :mod:`argus_curator.consent`) the
+    record is read and checked first, its reference images become the
+    identity reference, and every image is bound to it once the scan is done:
+    ``ScanSummary.consent`` and each ``ImageResult.consent``. Raises
+    ``ValueError`` when *faces_cfg* names a reference of its own as well.
     """
-    profile = profile or TargetProfile()
+    # A cortex profile from a library caller converts; a speech one is refused here,
+    # before scoring, which has no meaning for it.
+    profile = TargetProfile.model_validate(profile) if profile is not None else TargetProfile()
     cfg = cfg or ScanConfig()
     faces_cfg = faces_cfg or FaceConfig()
+    consent_cfg = consent_cfg or ConsentConfig()
+    if consent_cfg.record is not None:
+        from argus_curator import consent as consent_mod
+
+        faces_cfg = consent_mod.faces_for_consent(faces_cfg)
 
     root = Path(folder)
     if not root.is_dir():
@@ -1114,13 +1290,21 @@ def scan_folder(
         logger.warning("scan_folder_empty", folder=str(root))
     _emit(progress, "collecting", len(items), len(items))
 
-    return scan_items(
+    prepared = None
+    if consent_cfg.record is not None:
+        prepared = consent_mod.prepare(root, consent_cfg, items, faces_cfg)
+        logger.info("consent_checked", eligible=prepared.check.eligible, reason=prepared.check.reason)
+        if prepared.embedding is not None:
+            faces_cfg = faces_cfg.model_copy(update={"reference_embedding": prepared.embedding})
+
+    summary = scan_items(
         items,
         profile,
         cfg,
         faces_cfg,
         scene_cfg=scene_cfg,
         garment_cfg=garment_cfg,
+        embed_cfg=embed_cfg,
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
@@ -1132,3 +1316,6 @@ def scan_folder(
         save=save,
         cancelled=cancelled,
     )
+    if prepared is not None:
+        consent_mod.bind(summary, prepared)
+    return summary

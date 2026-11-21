@@ -9,10 +9,13 @@ Routes (section 4 of the brief):
     GET  /scan/{scan_id}   -> ScanSummary   (paginated via ?offset=&limit=)
     GET  /thumb?path=<rel> -> image/webp    (served from the mount)
     GET  /image?path=<rel> -> original bytes (same containment as /thumb)
-    POST /scan/{id}/select -> SelectResult  (decide_selection, writes nothing)
+    POST /scan/{id}/select -> SelectResult  (plan_selection, writes nothing)
     POST /scan/{id}/delete -> remove scanned files from the source folder
     POST /upload           -> save images into a folder under the source root
     POST /export           -> ExportResult
+
+``POST /scan/folder`` (and its stream) with ``target_profile.modality`` ``speech``
+scans the folder's WAV/FLAC clips instead (#186): rows in ``clips``, no export yet.
 """
 
 from __future__ import annotations
@@ -46,18 +49,25 @@ import structlog
 from PIL import Image, ImageFilter
 from pydantic import BaseModel, Field
 
-from argus_curator import __version__, crops, export, scanner
+from argus_curator import __version__, crops, export, scanner, speech_export, speech_select
+from argus_curator import consent as consent_mod
+from argus_curator import dnsmos as dnsmos_mod
 from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator import prefilter as prefilter_mod
+from argus_curator import speakers as speakers_mod
+from argus_curator import speech as speech_mod
 from argus_curator import watermarks as watermarks_mod
 from argus_curator.attributes import fairface_available, mivolo_available
 from argus_curator.bodies import bodies_available
+from argus_curator.consent import ConsentRefused
+from argus_curator.embeddings import embeddings_available
 from argus_curator.faces import faces_available
 from argus_curator.garments import garments_available
 from argus_curator.models import (
     MANIFEST_VERSION,
+    SPEECH_MANIFEST_VERSION,
     SUPPORTED_EXTS,
     ExportRequest,
     ExportResult,
@@ -72,13 +82,12 @@ from argus_curator.models import (
 from argus_curator.runtime import GPU_UNAVAILABLE, ModelUnavailable, gpu_coordinator
 from argus_curator.scenes import scenes_available
 from argus_curator.selection import (
-    decide_selection,
-    face_source_problem,
-    garment_floor_problem,
-    guard_filter_problem,
+    SplitError,
     minor_exposed,
     minor_exposed_mode,
-    nsfw_filter_problem,
+    plan_selection,
+    scan_references,
+    selection_problem,
 )
 from argus_curator.store import ScanStore
 
@@ -217,6 +226,7 @@ def _detectors() -> dict[str, bool | list[str] | str | None]:
         "bodies": bodies_available(),
         "places365": scenes_available(),
         "garments": garments_available(),
+        "embeddings": embeddings_available(),
         # A NudeNet / EraX server URL is configured; reachability is not probed here.
         "nudenet": nsfw_mod.configured(),
         "erax": erax_mod.configured(),
@@ -228,6 +238,11 @@ def _detectors() -> dict[str, bool | list[str] | str | None]:
         # names none; empty and null without a server or with a misconfigured mode.
         "singguard_thinking_modes": thinking_modes,
         "singguard_thinking_default": thinking_default,
+        # Speech scans (#186): clips can be decoded (argus-curator[speech]), and DNSMOS is in place.
+        "speech": speech_mod.speech_available(),
+        "dnsmos": dnsmos_mod.dnsmos_available(),
+        # SpeechConfig.speakers: the WeSpeaker ECAPA-TDNN model is in place (#187).
+        "speaker_model": speakers_mod.speaker_model_available(),
     }
 
 
@@ -671,6 +686,13 @@ def create_app(
             # POST /faces is up when InsightFace and MiVOLO can run (darkroom probes this).
             # Off the event loop: the first probe imports the whole InsightFace stack.
             "faces": await asyncio.to_thread(lambda: faces_available() and mivolo_available()),
+            # ScanRequest.target_profile.modality "speech" scans WAV/FLAC clips (#186);
+            # False when this install cannot decode them (argus-curator[speech]).
+            "speech_scan": speech_mod.speech_available(),
+            # Select and export take a speech scan (#187): speaker-disjoint split,
+            # speech_manifest.jsonl rows at this version.
+            "speech_export": True,
+            "speech_manifest_version": SPEECH_MANIFEST_VERSION,
             # The host-wide GPU lease curator takes on CUDA: "none" or "lease" (ARGUS_GPU_COORDINATOR).
             "gpu_coordinator": gpu_coordinator().name,
         }
@@ -760,12 +782,33 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"not a directory under the scan root: {requested}")
         return folder
 
+    def _with_consent(req: ScanRequest) -> ScanRequest:
+        """*req* with what its consent record needs turned on (faces, MiVOLO, set age), or 400."""
+        if req.consent.record is None:
+            return req
+        try:
+            faces = consent_mod.faces_for_consent(req.faces)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return req.model_copy(update={"faces": faces})
+
+    def _require_consent_record_within(folder: Path, req: ScanRequest) -> None:
+        """The consent record resolves under the scanned folder, as its images do (a symlink included)."""
+        if req.consent.record is not None:
+            _resolve_within(folder, req.consent.record)
+
     def _require_models(req: ScanRequest) -> None:
         """Refuse up front when an optional model is requested but not configured.
 
         Without this the scan would score every image first and only then fail.
         The detail names the env var, not the server's filesystem layout.
         """
+        if req.is_speech:
+            # The image checks are refused by ScanRequest itself; a speech scan
+            # needs only its decoder and, when asked, DNSMOS.
+            if (why := speech_mod.problem(req.speech)) is not None:
+                raise HTTPException(status_code=400, detail=why)
+            return
         # A prefilter rule needs its check: without it drop_nsfw drops nothing
         # and the face rules drop every image.
         if (why := prefilter_mod.problem(req.prefilter, req.faces, nsfw_mod.resolve_enabled(req.nsfw))) is not None:
@@ -790,6 +833,13 @@ def create_app(
                 "Fashionpedia",
                 "ARGUS_CURATOR_GARMENTS_MODEL",
                 "garments-convert",
+            ),
+            (
+                req.embeddings.enabled,
+                embeddings_available,
+                "CLIP embedding",
+                "ARGUS_CURATOR_EMBEDDINGS_MODEL",
+                "embeddings-convert",
             ),
         )
         for requested, available, name, env, command in wanted:
@@ -862,7 +912,51 @@ def create_app(
             raise HTTPException(status_code=503, detail=f"watermark detection requested but the detector {why}")
 
     def _requested_checks(req: ScanRequest) -> list[str]:
+        if req.is_speech:
+            return speech_mod.requested_checks(req.speech)
         return scanner.requested_checks(req.faces, req.nsfw, req.guard)
+
+    def _run_scan(
+        req: ScanRequest,
+        folder: Path,
+        scan_id: str,
+        *,
+        progress: Any,
+        chunk: Any = None,
+        save: Any = None,
+    ) -> ScanSummary:
+        """The scan *req* asks for: its images, or with a speech profile its clips (never both)."""
+        cancelled = lambda: gate.cancelled(scan_id)  # noqa: E731
+        if req.is_speech:
+            return speech_mod.scan_speech_folder(
+                folder,
+                req.target_profile,
+                req.speech,
+                scan_id=scan_id,
+                progress=progress,
+                chunk=chunk,
+                save=save,
+                cancelled=cancelled,
+            )
+        return scanner.scan_folder(
+            folder,
+            req.target_profile,
+            req.config,
+            req.faces,
+            scene_cfg=req.scenes,
+            garment_cfg=req.garments,
+            embed_cfg=req.embeddings,
+            nsfw_cfg=req.nsfw,
+            guard_cfg=req.guard,
+            prefilter_cfg=req.prefilter,
+            crop_cfg=req.crops,
+            consent_cfg=req.consent,
+            scan_id=scan_id,
+            progress=progress,
+            chunk=chunk,
+            save=save,
+            cancelled=cancelled,
+        )
 
     def _claim_scan(folder: Path, req: ScanRequest) -> str:
         scan_id = uuid.uuid4().hex
@@ -893,27 +987,20 @@ def create_app(
 
     @app.post("/scan/folder", response_model=ScanSummary)
     async def scan_folder(req: ScanRequest) -> ScanSummary:
+        req = _with_consent(req)
         _require_models(req)
         folder = _resolve_scan_folder(req.folder)
+        _require_consent_record_within(folder, req)
         await asyncio.to_thread(_require_detector, req)
         scan_id = _claim_scan(folder, req)
         requested = _requested_checks(req)
         try:
             summary = await asyncio.to_thread(
-                scanner.scan_folder,
+                _run_scan,
+                req,
                 folder,
-                req.target_profile,
-                req.config,
-                req.faces,
-                scene_cfg=req.scenes,
-                garment_cfg=req.garments,
-                nsfw_cfg=req.nsfw,
-                guard_cfg=req.guard,
-                prefilter_cfg=req.prefilter,
-                crop_cfg=req.crops,
-                scan_id=scan_id,
+                scan_id,
                 progress=lambda payload: _note_progress(scan_id, requested, payload),
-                cancelled=lambda: gate.cancelled(scan_id),
             )
             store.save(summary)
             return summary
@@ -931,14 +1018,17 @@ def create_app(
         """Same as POST /scan/folder, but streams progress and image batches over SSE.
 
         Emits ``event: progress`` frames ({phase, done, total}) and ``event: chunk``
-        frames (those counts plus the images finished since the previous chunk),
+        frames (those counts plus the images finished since the previous chunk, or
+        on a speech scan ``clips`` with ``modality: "speech"``),
         then a single ``event: complete`` frame carrying the full ScanSummary, or
         ``event: error``, or ``event: cancelled`` after ``POST /scan/{id}/cancel``
         (either way the partial summary is dropped). A second scan is refused
         while one is still running.
         """
+        req = _with_consent(req)
         _require_models(req)
         folder = _resolve_scan_folder(req.folder)
+        _require_consent_record_within(folder, req)
         await asyncio.to_thread(_require_detector, req)
         scan_id = _claim_scan(folder, req)
         requested = _requested_checks(req)
@@ -968,22 +1058,8 @@ def create_app(
 
         def run_scan() -> None:
             try:
-                summary = scanner.scan_folder(
-                    folder,
-                    req.target_profile,
-                    req.config,
-                    req.faces,
-                    scene_cfg=req.scenes,
-                    garment_cfg=req.garments,
-                    nsfw_cfg=req.nsfw,
-                    guard_cfg=req.guard,
-                    prefilter_cfg=req.prefilter,
-                    crop_cfg=req.crops,
-                    scan_id=scan_id,
-                    progress=on_progress,
-                    chunk=on_chunk,
-                    save=store.save_snapshot,
-                    cancelled=lambda: gate.cancelled(scan_id),
+                summary = _run_scan(
+                    req, folder, scan_id, progress=on_progress, chunk=on_chunk, save=store.save_snapshot
                 )
                 store.save(summary)
                 store.mark_finished(scan_id)
@@ -1081,42 +1157,121 @@ def create_app(
             raise HTTPException(status_code=400, detail="unsupported image type")
         return target
 
+    def _require_consent_record_of(summary: ScanSummary, req: ExportRequest) -> None:
+        """A consented set re-reads the scan's record: it must still resolve under the scan's folder.
+
+        The summary is data, so its record path is checked again, as its folder is.
+        """
+        fs = req.face_source
+        if fs is not None and fs.consent and summary.consent is not None:
+            _resolve_within(_scan_root_or_400(summary), summary.consent.record)
+        # A speech export's voice consent record is a request path: under the scan's folder too (#187).
+        if summary.is_speech and req.speech is not None and req.speech.consent_record is not None:
+            _resolve_within(_scan_root_or_400(summary), req.speech.consent_record)
+
+    async def _select_speech(scan_id: str, summary: ScanSummary, export_req: ExportRequest) -> SelectResult:
+        """``POST /scan/{id}/select`` on a speech scan: the plan a speech export runs (#187)."""
+        try:
+            hold = None
+            if export_req.speech is not None:
+                hold = await asyncio.to_thread(speech_export.voice_consent_gate, summary, export_req.speech)
+            plan = await asyncio.to_thread(
+                speech_select.plan_speech_selection, summary.clips, export_req, hold.excluded if hold else None
+            )
+        except SplitError as exc:
+            raise HTTPException(status_code=400, detail=f"split refused: {exc}") from None
+        except ConsentRefused as exc:
+            raise HTTPException(status_code=400, detail=f"consent refused: {exc}") from None
+        kept = [
+            SelectRow(
+                rel_path=c.rel_path,
+                abs_path=c.abs_path,
+                rank=i,
+                split=plan.split.get(c.rel_path),
+                speaker_id=speech_select.speaker_id(c),
+            )
+            for i, c in enumerate(plan.chosen, 1)
+        ]
+        kept_rel = {c.rel_path for c in plan.chosen}
+        left_out = [
+            SelectRow(
+                rel_path=c.rel_path,
+                abs_path=c.abs_path,
+                keep_reason=plan.keep_reason.get(c.rel_path) or "left-out",
+                speaker_id=speech_select.speaker_id(c),
+            )
+            for c in summary.clips
+            if c.rel_path not in kept_rel
+        ]
+        held = sum(1 for part in plan.split.values() if part == "held_out")
+        return SelectResult(
+            scan_id=scan_id,
+            total=len(summary.clips),
+            kept=len(kept),
+            train=len(kept) - held if export_req.split is not None else None,
+            held_out=held if export_req.split is not None else None,
+            rows=[*kept, *left_out],
+            speech=plan.stats,
+        )
+
     @app.post("/scan/{scan_id}/select", response_model=SelectResult)
     async def select_scan(scan_id: str, req: SelectRequest) -> SelectResult:
-        """Apply the export filter to a cached scan and return keep reasons.
+        """Apply the export filter, cap, ranking and split to a cached scan.
 
         Nothing is copied, symlinked, or moved, and the export root is not
-        created. ``keep_reason`` is empty for images the filter keeps.
+        created. Kept rows come first, best first (``rank`` is the 1-based
+        position), each with its ``split`` part when one was asked for; the
+        rest follow in scan order with their ``keep_reason``. The same
+        ``plan_selection`` export runs, so an export with the same fields keeps
+        exactly these rows.
         """
         summary = store.load(scan_id)
         if summary is None:
             raise HTTPException(status_code=404, detail=f"unknown scan_id: {scan_id}")
         _scan_root_or_400(summary)
         export_req = req.as_export_request()
-        for problem in (
-            garment_floor_problem(export_req, summary.garments_config.min_conf),
-            nsfw_filter_problem(export_req, summary),
-            face_source_problem(export_req, summary),
-            guard_filter_problem(export_req, summary),
-        ):
-            if problem is not None:
-                raise HTTPException(status_code=400, detail=problem)
-        _selected, reasons = await asyncio.to_thread(
-            decide_selection,
-            summary.results,
-            export_req,
-            summary.config.diversity_weight,
-            set_age=summary.set_age,
-        )
-        rows = [
-            SelectRow(rel_path=r.rel_path, abs_path=r.abs_path, keep_reason=reasons.get(r.rel_path, ""))
-            for r in summary.results
+        if (problem := selection_problem(export_req, summary)) is not None:
+            raise HTTPException(status_code=400, detail=problem)
+        _require_consent_record_of(summary, export_req)
+        if summary.is_speech:
+            return await _select_speech(scan_id, summary, export_req)
+        try:
+            gate = await asyncio.to_thread(consent_mod.face_source_gate, export_req, summary)
+            plan = await asyncio.to_thread(
+                plan_selection,
+                summary.results,
+                export_req,
+                summary.config.diversity_weight,
+                set_age=summary.set_age,
+                embeddings=summary.embeddings,
+                gate=gate,
+                references=scan_references(summary),
+            )
+        except SplitError as exc:
+            raise HTTPException(status_code=400, detail=f"split refused: {exc}") from None
+        except ConsentRefused as exc:
+            raise HTTPException(status_code=400, detail=f"consent refused: {exc}") from None
+        kept = [
+            SelectRow(rel_path=r.rel_path, abs_path=r.abs_path, rank=i, split=plan.split.get(r.rel_path))
+            for i, r in enumerate(plan.chosen, 1)
         ]
+        kept_rel = {r.rel_path for r in plan.chosen}
+        left_out = [
+            SelectRow(
+                rel_path=r.rel_path, abs_path=r.abs_path, keep_reason=plan.keep_reason.get(r.rel_path) or "left-out"
+            )
+            for r in summary.results
+            if r.rel_path not in kept_rel
+        ]
+        held = sum(1 for part in plan.split.values() if part == "held_out")
         return SelectResult(
             scan_id=scan_id,
-            total=len(rows),
-            kept=sum(1 for row in rows if row.keep_reason == ""),
-            rows=rows,
+            total=len(summary.results),
+            kept=len(kept),
+            rank=export_req.rank,
+            train=len(kept) - held if export_req.split is not None else None,
+            held_out=held if export_req.split is not None else None,
+            rows=[*kept, *left_out],
         )
 
     @app.post("/scan/{scan_id}/delete")
@@ -1314,14 +1469,10 @@ def create_app(
                 status_code=400,
                 detail="inline selection export requires a scan_id for the manifest target_profile",
             )
-        for problem in (
-            garment_floor_problem(req, summary.garments_config.min_conf),
-            nsfw_filter_problem(req, summary),
-            face_source_problem(req, summary),
-            guard_filter_problem(req, summary),
-        ):
-            if problem is not None:
-                raise HTTPException(status_code=400, detail=problem)
+        if (problem := selection_problem(req, summary)) is not None:
+            raise HTTPException(status_code=400, detail=problem)
+        if summary.is_speech and (problem := speech_export.provenance_problem(req)) is not None:
+            raise HTTPException(status_code=400, detail=problem)
         if req.mode != "copy" and any(r.crop is not None for r in summary.results):
             # Its cropped images must be written cropped; a link or a move would pass on the watermark.
             raise HTTPException(
@@ -1330,6 +1481,7 @@ def create_app(
         # The scan's images are read straight from `abs_path`, so a scan rooted
         # outside the source root would export files the root should fence off.
         _scan_root_or_400(summary)
+        _require_consent_record_of(summary, req)
         if req.mode == "move" and not allow_move:
             raise HTTPException(
                 status_code=403,
@@ -1381,7 +1533,10 @@ def create_app(
                 current = store.load(summary.scan_id)
                 if current is None:  # Deleted meanwhile: saving would bring the scan back.
                     return
-                scanner.drop_results(current, moved)
+                if current.is_speech:
+                    speech_mod.drop_clips(current, moved)
+                else:
+                    scanner.drop_results(current, moved)
                 store.save(current)
         except Exception as exc:
             logger.warning("export_cache_drop_failed", scan_id=summary.scan_id, error=str(exc))
@@ -1406,6 +1561,10 @@ def create_app(
         await _check_caption_url(req)
         try:
             return await asyncio.to_thread(_export_and_drop, summary, req)
+        except SplitError as exc:  # raised before anything is transferred
+            raise HTTPException(status_code=400, detail=f"split refused: {exc}") from None
+        except ConsentRefused as exc:  # so is this
+            raise HTTPException(status_code=400, detail=f"consent refused: {exc}") from None
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"export failed: {exc}") from exc
 

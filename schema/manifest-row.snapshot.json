@@ -1,5 +1,5 @@
 {
-  "manifest_version": "2.3",
+  "manifest_version": "2.6",
   "schema": {
     "$defs": {
       "CropBox": {
@@ -80,6 +80,52 @@
           "landmark_3d_68"
         ],
         "title": "FaceLandmarks",
+        "type": "object"
+      },
+      "Generator": {
+        "additionalProperties": false,
+        "description": "How a generated source was made (argus-mask#26): the model, its sha256, the seed and the prompt.",
+        "properties": {
+          "model": {
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "model_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Sha256"
+          },
+          "prompt": {
+            "default": "",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seed"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "title": "Generator",
         "type": "object"
       },
       "ManifestFace": {
@@ -231,6 +277,80 @@
         "title": "ManifestFace",
         "type": "object"
       },
+      "Provenance": {
+        "additionalProperties": false,
+        "description": "Where a source came from. Required wherever the suite serves or trains on a likeness.\n\n- ``personal``: the user's own use; needs only ``source``; not cleared to show or share.\n- ``stock``: a published asset under its licence. ``synthetic``: generated, with no real person\n  or owned character going in.\n- ``consented``: a real person's likeness (or an owned character) under a signed release, bound\n  by the release's sha256 (never the document) and the subject as the release names them.\n- ``curated``: reserved; not cleared.\n\nUnknown fields are refused, so a misspelt field cannot be dropped in silence (argus-mask#64).\n``licence`` is read as ``license``, and the derived ``cleared`` a dumped record carries is\ndropped and recomputed, never believed.",
+        "properties": {
+          "cleared": {
+            "description": "Whether the source may be shown beyond the user's own screens: a demo, a release, anything public.",
+            "readOnly": true,
+            "title": "Cleared",
+            "type": "boolean"
+          },
+          "generator": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Generator"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "kind": {
+            "enum": [
+              "personal",
+              "stock",
+              "synthetic",
+              "consented",
+              "curated"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "license": {
+            "default": "",
+            "title": "License",
+            "type": "string"
+          },
+          "notes": {
+            "default": "",
+            "title": "Notes",
+            "type": "string"
+          },
+          "release_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Release Sha256"
+          },
+          "source": {
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "subject": {
+            "default": "",
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "source",
+          "cleared"
+        ],
+        "title": "Provenance",
+        "type": "object"
+      },
       "SetAge": {
         "description": "An age for a frame with no face, read off the set the frame belongs to.\n\n``years`` is the median MiVOLO age of the faces in the scan's dominant\nidentity, ``cluster_id`` that identity, ``faces`` how many ages it is read\nfrom, and ``share`` the fraction of the scan's faces in it. It is an\ninference about the set, not a reading of this frame: a viewer shows it as\nsuch, and treats it as it treats a measured age where a wrong age would be\nthe costlier mistake.",
         "properties": {
@@ -261,7 +381,7 @@
         "type": "object"
       },
       "TargetProfile": {
-        "description": "What a dataset was curated for \u2014 shared verbatim across the suite.\n\nInherited unchanged from stage to stage (curator \u2192 lens \u2192 forge \u2192 proof) so\na decision made once at curation time is honoured everywhere downstream; no\nstage remaps the taxonomy.",
+        "description": "What a dataset was curated for, shared verbatim across the suite.\n\nargus-cortex's ``TargetProfile`` for an image dataset: ``modality`` is\nalways ``image`` and ``target_category`` an image category. argus-curator\ncurates images, so a speech profile is refused.",
         "properties": {
           "checkpoint": {
             "anyOf": [
@@ -274,6 +394,12 @@
             ],
             "default": null,
             "title": "Checkpoint"
+          },
+          "modality": {
+            "const": "image",
+            "default": "image",
+            "title": "Modality",
+            "type": "string"
           },
           "target_backend": {
             "anyOf": [
@@ -319,6 +445,30 @@
         "title": "Abs Path",
         "type": "string"
       },
+      "consent_record_sha256": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Consent Record Sha256"
+      },
+      "consent_release_sha256": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Consent Release Sha256"
+      },
       "crop": {
         "anyOf": [
           {
@@ -339,7 +489,7 @@
         "type": "string"
       },
       "manifest_version": {
-        "default": "2.3",
+        "default": "2.6",
         "title": "Manifest Version",
         "type": "string"
       },
@@ -383,6 +533,17 @@
         "default": null,
         "title": "Primary Face Pose"
       },
+      "provenance": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Provenance"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
       "rel_path": {
         "title": "Rel Path",
         "type": "string"
@@ -406,6 +567,22 @@
         "title": "Similar Group",
         "type": "integer"
       },
+      "split": {
+        "anyOf": [
+          {
+            "enum": [
+              "train",
+              "held_out"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Split"
+      },
       "target_profile": {
         "$ref": "#/$defs/TargetProfile"
       }
@@ -423,7 +600,11 @@
       "similar_group",
       "crop",
       "primary_face",
-      "set_age"
+      "set_age",
+      "split",
+      "consent_release_sha256",
+      "consent_record_sha256",
+      "provenance"
     ],
     "title": "ManifestRow",
     "type": "object"

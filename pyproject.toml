@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "argus-curator"
 dynamic = ["version"]
-description = "Image curation and moderation: quality scoring, near-duplicate dedup, face clustering, and apparent-age, scene and garment tagging with auditable filters; standalone or as LoRA data prep"
+description = "Image and speech curation and moderation: quality scoring, near-duplicate dedup, face clustering, and apparent-age, scene and garment tagging with auditable filters; standalone or as LoRA and voice data prep"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -34,10 +34,10 @@ dependencies = [
     "pydantic>=2.7",
     "structlog>=24.0",
     # The NudeNet / SingGuard clients and their result types (argus_cortex.moderation),
-    # shared across the suite. Its base install is pydantic-only. The <0.9 cap is
+    # shared across the suite. Its base install is pydantic-only. The <0.13 cap is
     # deliberate: argus-cortex is pre-1.0, where a minor bump carries no
     # compatibility guarantee.
-    "argus-cortex>=0.8,<0.9",
+    "argus-cortex>=0.13,<0.14",
 ]
 
 [project.optional-dependencies]
@@ -58,13 +58,13 @@ server = [
     "certifi>=2026.10.19",
     # [remote,yaml]: the argus-iris broker client and gpu-tenant.yaml. /health builds the
     # GPU coordinator, so a CPU server with ARGUS_GPU_COORDINATOR=broker needs them too.
-    "argus-cortex[server,remote,yaml]>=0.8,<0.9",
+    "argus-cortex[server,remote,yaml]>=0.13,<0.14",
 ]
 cli = ["typer>=0.12", "rich>=13.0"]
 gpu = [
     # NVML, for the shared GPU lease's free-VRAM wait (argus_cortex.gpu); httpx and
     # PyYAML for the argus-iris broker client and gpu-tenant.yaml (argus_cortex.gpu_broker).
-    "argus-cortex[gpu,remote,yaml]>=0.8,<0.9",
+    "argus-cortex[gpu,remote,yaml]>=0.13,<0.14",
     "insightface>=2.1,<3",
     # insightface's face alignment calls SimilarityTransform.estimate, which
     # scikit-image removes in 2.2.
@@ -102,10 +102,33 @@ garments-convert = [
     "onnx>=1.16",
     "onnxscript>=0.2",
 ]
+# One-time export of the CLIP image tower (`argus-curator embeddings-convert`);
+# --embeddings itself runs on onnxruntime alone, like scenes. Uses the legacy
+# TorchScript exporter, so no onnxscript.
+embeddings-convert = [
+    "torch>=2.6",
+    "transformers>=4.45",
+    "huggingface_hub>=0.23",
+    "onnx>=1.16",
+]
+# Speech scans (#186): WAV/FLAC decoding through argus_cortex.limits.open_audio
+# (soundfile, which bundles libsndfile), and onnxruntime for the optional DNSMOS
+# score (`argus-curator dnsmos-fetch`). Everything else is numpy.
+speech = ["argus-cortex[audio]>=0.13,<0.14", "onnxruntime>=1.16"]
 # Composed from the extras above rather than hand-duplicating them, so a new
 # member of `server`/`cli`/`faces` cannot silently go missing from `all`.
-all = ["argus-curator[server,cli,faces]"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5", "httpx>=0.27", "httpx2>=2.7", "certifi>=2026.10.19"]
+all = ["argus-curator[server,cli,faces,speech]"]
+# argus-cortex[audio] (soundfile) so the speech scan's tests decode real WAVs
+# in CI, which installs only [dev,server,cli]; no model or GPU is needed.
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "httpx>=0.27",
+    "httpx2>=2.7",
+    "certifi>=2026.10.19",
+    "argus-cortex[audio]>=0.13,<0.14",
+]
 
 [project.scripts]
 argus-curator = "argus_curator.cli:app"

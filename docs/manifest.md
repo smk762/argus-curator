@@ -7,8 +7,11 @@ of the suite reads: argus-lens batch-captions it (an upload to its
 builds training sets from it. Curator and lens share one `TargetProfile`, so a
 manifest written here is captioned downstream with no remapping.
 
-This page describes manifest **2.3**, the version current releases write, and
-what changed in each earlier version.
+This page describes manifest **2.6**, the version current releases write, and
+what changed in each earlier version. A speech export writes no `manifest.jsonl`:
+its clips go in `speech_manifest.jsonl`, a row shape of its own
+(`SpeechManifestRow`) with its own version (`SPEECH_MANIFEST_VERSION`, 1.0),
+described in [Speech scans](speech.md#the-speech-manifest).
 
 ## Where it is written
 
@@ -36,12 +39,13 @@ Pretty-printed here; in the file each row is one line.
 
 ```json
 {
-  "manifest_version": "2.3",
+  "manifest_version": "2.6",
   "rel_path": "shoots/2026-07/IMG_0412.jpg",
   "abs_path": "/data/images/shoots/2026-07/IMG_0412.jpg",
   "exported_path": "shoots/2026-07/IMG_0412.jpg",
   "exported_abs_path": "/data/out/training-set-v1/shoots/2026-07/IMG_0412.jpg",
   "target_profile": {
+    "modality": "image",
     "target_style": "photo",
     "target_backend": "sdxl",
     "checkpoint": null,
@@ -65,13 +69,17 @@ Pretty-printed here; in the file each row is one line.
     "age_years": 31.4,
     "landmarks": null
   },
-  "set_age": { "years": 31.0, "cluster_id": "face_2", "faces": 42, "share": 0.95 }
+  "set_age": { "years": 31.0, "cluster_id": "face_2", "faces": 42, "share": 0.95 },
+  "split": null,
+  "consent_release_sha256": null,
+  "consent_record_sha256": null,
+  "provenance": null
 }
 ```
 
-## Row fields (2.3)
+## Row fields (2.6)
 
-Every key is always present in a 2.3 row; a field with no value is written as
+Every key is always present in a 2.6 row; a field with no value is written as
 `null`, not left out.
 
 | Field | Type | Since | Meaning |
@@ -89,17 +97,25 @@ Every key is always present in a 2.3 row; a field with no value is written as
 | `crop` | object or null | 2.2 | The box baked into the exported file, or null when the file is the source as it was. See [`crop`](#crop). |
 | `primary_face` | object or null | 2.3 | The primary face's measurements, or null for an image with no face. See [`primary_face`](#primary_face). |
 | `set_age` | object or null | 2.3 | The scan's set age, when the scan read one. See [`set_age`](#set_age). |
+| `split` | string or null | 2.4 | `train` or `held_out` when the export asked for a train/held-out split (`split`, exporting `split_part`), else null. See the [HTTP API](http-api.md#ranking-max_keep-and-splits). |
+| `consent_release_sha256` | string or null | 2.6 | A consented face set only (`face_source.consent`): the consent record's key, the sha256 of the signed release. Null otherwise. See [Consented face sets](face-sources.md#consented-face-sets-of-a-real-person). |
+| `consent_record_sha256` | string or null | 2.6 | A consented face set only: the sha256 of the consent record file as read at export. Null otherwise. |
+| `provenance` | object or null | 2.6 | A consented face set only: where the image came from, as argus-cortex's `Provenance` (`kind`, `source`, `license`, `subject`, `release_sha256`, `cleared`…). It is the `provenance` in the image's `<stem>.json` sidecar when there is one, else `kind: "consented"` under the record's release. Either way `subject` is cortex's subject ref `consent:<release_sha256>`, never the person's name (cortex's `consent_matches` accepts it). Null otherwise. |
 
 ### `target_profile`
 
 | Field | Type | Values |
 |---|---|---|
+| `modality` | string | always `image` (2.5+; absent before, read as `image`) |
 | `target_style` | string | `photo` or `anime` |
 | `target_backend` | string or null | the diffusion backend family, e.g. `sdxl`, `flux-dev-1` |
 | `checkpoint` | string or null | the target checkpoint, when given |
 | `target_category` | string | `identity`, `wardrobe`, `pose_composition`, `setting` or `concept` |
 
-The style and category values are argus-cortex's shared taxonomy.
+The style and category values are argus-cortex's shared taxonomy. Curator
+curates images, so its profile is cortex's narrowed to the image modality: a
+speech profile (`modality: "speech"`) is refused at the request, and a
+manifest never carries a speech category.
 
 ### `crop`
 
@@ -121,7 +137,7 @@ landmarks are in the cropped image's pixels.
 | `eye_open` | number or null | The eye aspect ratio from the 68 landmarks; the face-source preset counts 0.18 and over as open. |
 | `mouth_open` | number or null | The inner-lip gap over the mouth width; the preset counts 0.1 and under as closed. |
 | `cluster_distance` | number or null | Cosine distance from the face's embedding to its identity's centroid. |
-| `reference_distance` | number or null | Cosine distance to the reference identity (the centroid of the reference images' primary faces), when the scan named references (`--face-reference`). |
+| `reference_distance` | number or null | Cosine distance to the reference identity, when the scan had one: the centroid of the reference images' primary faces (`--face-reference`, `faces.reference_paths`), or a centroid the caller supplied (`faces.reference_embedding`). |
 | `age_years` | number or null | MiVOLO's apparent age in years, when MiVOLO ran. A model's estimate, not a fact. |
 | `landmarks` | object or null | Null unless the export asked (`--landmarks`, `"landmarks": true`). Then `kps`, the detector's 5 keypoints (eyes, nose tip, mouth corners) as `[x, y]`, and `landmark_3d_68`, the 68 iBUG points as `[x, y, z]`; either can be null. |
 
@@ -176,6 +192,9 @@ The export response carries the same mappings as `exported_paths` and
 | 2.1 | 0.2.1 | Adds `exported_abs_path`. Fixes `abs_path` under `move`, which named the deleted source; it is now the destination. |
 | 2.2 | 0.14.0 | Adds `crop`. |
 | 2.3 | 0.15.0 | Adds `primary_face` and `set_age`. |
+| 2.4 | unreleased | Adds `split`. |
+| 2.5 | unreleased | Adds `target_profile.modality`, always `image` (argus-cortex 0.12). |
+| 2.6 | unreleased | Adds `consent_release_sha256`, `consent_record_sha256` and `provenance` (consented face sets, #133); `provenance.subject` is the subject ref `consent:<release_sha256>`, never a name. |
 
 2.0 is a new major because a 1.x consumer that derives destinations from
 `rel_path`, or trusts every row to name a file on disk, misreads a 2.x manifest.
@@ -200,7 +219,7 @@ and requires `exported_path` from 2.0 on.
 ## Schema
 
 The row is published as `ManifestRow` (with `ManifestFace`, `FaceLandmarks`,
-`CropBox`, `SetAge` and `TargetProfile`) in the wire-contract JSON Schema,
+`CropBox`, `SetAge`, `TargetProfile` and `Provenance`) in the wire-contract JSON Schema,
 [`schema/curator-wire.schema.json`](../schema/curator-wire.schema.json).
 `argus-curator schema` regenerates it from the models, and CI fails if the
 committed copy is stale. In Python, `argus_curator.models.ManifestRow` reads a

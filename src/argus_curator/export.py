@@ -22,9 +22,11 @@ from urllib.parse import urlsplit
 
 import structlog
 from argus_cortex.moderation import rule_letter
+from argus_cortex.provenance import Provenance
 from argus_cortex.xmp import XmpData, XmpError, XmpRegion, XmpRegions, sidecar_path, write_xmp
 
 from argus_curator import crops
+from argus_curator.consent import ConsentHold, ConsentRefused, FaceSourceGate, face_source_gate
 from argus_curator.models import (
     ExportMode,
     ExportRequest,
@@ -34,8 +36,15 @@ from argus_curator.models import (
     ManifestFace,
     ManifestRow,
     ScanSummary,
+    SplitPart,
 )
-from argus_curator.selection import decide_selection, hard_exclusion, primary_face
+from argus_curator.selection import (
+    consent_set_problem,
+    hard_exclusion,
+    plan_selection,
+    primary_face,
+    scan_references,
+)
 
 logger = structlog.get_logger()
 
@@ -194,7 +203,43 @@ def _sidecar_users(results: list[ImageResult]) -> Counter[Path]:
     return users
 
 
-def _carry_sidecars(src: Path, dst: Path, mode: ExportMode, rel_path: str, waiting: Counter[Path]) -> tuple[int, int]:
+def _write_pseudonymised_sidecar(side: Path, target: Path, provenance: Provenance | None) -> None:
+    """Write a copy of the ``<stem>.json`` *side* to *target*, its ``provenance`` swapped for *provenance*.
+
+    For a consented face set: the source sidecar's provenance names the subject (cortex's
+    ``consent_matches`` needs it to), and the export must not. *provenance* is the image's
+    pseudonymised provenance from the :class:`~argus_curator.consent.ConsentHold`. A sidecar
+    with no ``provenance`` is copied as it is. The source is only read, under every mode:
+    a move leaves it where it is rather than carry the name along.
+
+    Raises when the sidecar has a provenance and *provenance* is None (the image is not
+    one the hold covers), so the name is never carried; and when *target* is *side*.
+    """
+    data = json.loads(side.read_text(encoding="utf-8"))
+    if isinstance(data, dict) and "provenance" in data:
+        if provenance is None:
+            raise ValueError("its sidecar names a provenance the consent hold does not cover")
+        data["provenance"] = provenance.model_dump(mode="json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not target.is_symlink() and os.path.samefile(target, side):
+        raise shutil.SameFileError(f"{target} is the source sidecar")
+    tmp = target.with_name(f".{target.name}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        # os.replace swaps a link left at *target* for the file, never writing through it.
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _carry_sidecars(
+    src: Path,
+    dst: Path,
+    mode: ExportMode,
+    rel_path: str,
+    waiting: Counter[Path],
+    consent: ConsentHold | None = None,
+) -> tuple[int, int]:
     """Transfer the sidecars beside *src* to the matching names beside *dst*. Returns ``(carried, failed)``.
 
     Same mode and the same overwrite semantics as the image (:func:`_transfer_one`):
@@ -212,6 +257,10 @@ def _carry_sidecars(src: Path, dst: Path, mode: ExportMode, rel_path: str, waiti
     image that is not exported keeps it. A failed
     transfer never counts down: an image that could not leave, or a sidecar that
     did not reach it, keeps the source sidecar where it is.
+
+    With *consent* (a consented face set) the ``<stem>.json`` is written as a
+    pseudonymised copy (:func:`_write_pseudonymised_sidecar`) under every mode,
+    so no carried sidecar names the subject and the source is never changed.
     """
     carried = failed = 0
     seen: set[Path] = set()
@@ -225,8 +274,11 @@ def _carry_sidecars(src: Path, dst: Path, mode: ExportMode, rel_path: str, waiti
             if target.is_dir() and not target.is_symlink():
                 # copy2 / move would put the sidecar *inside* it, under a name no consumer looks for.
                 raise IsADirectoryError(f"destination is a directory: {target}")
-            # A symlinked image is read-only by nature; a symlinked sidecar would be a write path into the source.
-            _transfer_one(side, target, "copy" if mode == "symlink" or waiting[side] > 1 else mode)
+            if consent is not None and side.suffix.lower() == ".json":
+                _write_pseudonymised_sidecar(side, target, consent.provenance.get(rel_path))
+            else:
+                # A symlinked image is read-only by nature; a symlinked sidecar would be a write path into the source.
+                _transfer_one(side, target, "copy" if mode == "symlink" or waiting[side] > 1 else mode)
             waiting[side] -= 1
             carried += 1
         except Exception as exc:
@@ -244,6 +296,8 @@ def write_manifest(
     mode: ExportMode = "copy",
     *,
     landmarks: bool = False,
+    split: dict[str, SplitPart] | None = None,
+    consent: ConsentHold | None = None,
 ) -> None:
     """Write the JSONL handoff manifest (one :class:`ManifestRow` per line).
 
@@ -262,9 +316,12 @@ def write_manifest(
     moved export produced a manifest it could not use at all.
 
     Each row carries the primary face's measurements (``primary_face``), with
-    its landmarks only when *landmarks* asks, and the scan's set age.
+    its landmarks only when *landmarks* asks, and the scan's set age; with
+    *split* (rel_path -> part), its part of the train/held-out split. With
+    *consent* (a consented face set), the record's hashes and the image's provenance.
     """
     abs_paths = exported_abs_paths or {}
+    parts = split or {}
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for r in exported:
@@ -282,6 +339,10 @@ def write_manifest(
                 crop=r.crop,
                 primary_face=_manifest_face(r, landmarks),
                 set_age=summary.set_age,
+                split=parts.get(r.rel_path),
+                consent_release_sha256=consent.release_sha256 if consent else None,
+                consent_record_sha256=consent.record_sha256 if consent else None,
+                provenance=consent.provenance[r.rel_path] if consent else None,
             )
             f.write(row.model_dump_json() + "\n")
 
@@ -359,6 +420,10 @@ def write_report(
         "reject_reason",
         "is_duplicate",
         "duplicate_of",
+        "duplicate_kind",
+        "profile_fit",
+        "junk",
+        "junk_kind",
         "sharpness",
         "artifact_score",
         "face_count",
@@ -432,6 +497,12 @@ def write_report(
                     "reject_reason": r.reject_reason or "",
                     "is_duplicate": r.is_duplicate,
                     "duplicate_of": r.duplicate_of or "",
+                    "duplicate_kind": r.duplicate_kind or "",
+                    "profile_fit": ""
+                    if r.zero_shot is None or r.zero_shot.profile_fit is None
+                    else r.zero_shot.profile_fit,
+                    "junk": "" if r.zero_shot is None or r.zero_shot.junk is None else r.zero_shot.junk,
+                    "junk_kind": (r.zero_shot.junk_kind if r.zero_shot else None) or "",
                     "sharpness": round(r.sharpness, 2),
                     "artifact_score": round(r.artifact_score, 4),
                     "face_count": r.face_count,
@@ -684,7 +755,14 @@ def export_selection(
     when a later step raises (a full disk while writing the report) and no
     :class:`ExportResult` comes back.
     """
+    if summary.is_speech:
+        # A speech scan's clips get their own rows (SpeechManifestRow) in their own file (#187).
+        from argus_curator.speech_export import export_speech
+
+        return export_speech(summary, req, progress=progress, moved=moved)
     results = summary.results
+    split: dict[str, SplitPart] = {}
+    gate: FaceSourceGate | None = None
 
     if req.selection is not None:
         wanted = set(req.selection)
@@ -695,7 +773,31 @@ def export_selection(
         }
         selected = [r for r in results if keep_reason[r.rel_path] == ""]
     else:
-        selected, keep_reason = decide_selection(results, req, summary.config.diversity_weight, set_age=summary.set_age)
+        # The same plan /scan/{id}/select reports: filter, cap, ranking, split.
+        # A consented set is checked from the scan, then against the record as it reads now.
+        fs = req.face_source
+        if fs is not None and fs.consent and (problem := consent_set_problem(summary)) is not None:
+            raise ConsentRefused(problem)
+        gate = face_source_gate(req, summary)
+        plan = plan_selection(
+            results,
+            req,
+            summary.config.diversity_weight,
+            set_age=summary.set_age,
+            embeddings=summary.embeddings,
+            gate=gate,
+            references=scan_references(summary),
+        )
+        selected, keep_reason = plan.chosen, plan.keep_reason
+        if req.split is not None:
+            split = plan.split
+            # Only split_part is transferred; the other part is accounted for, not lost.
+            for r in selected:
+                if split[r.rel_path] != req.split_part:
+                    keep_reason[r.rel_path] = f"split-{split[r.rel_path].replace('_', '-')}"
+            selected = [r for r in selected if split[r.rel_path] == req.split_part]
+        if gate is not None and gate.consent is not None and not selected:
+            raise ConsentRefused("no image qualifies for the consented face set; nothing was exported")
 
     selected_rel = {r.rel_path for r in selected}
     # A cropped image is written cropped; a link or a move would hand on the
@@ -746,7 +848,8 @@ def export_selection(
                 # sidecar, so under move nothing is left behind and the result
                 # is the source's sidecar plus curator's data.
                 if req.carry_sidecars:
-                    carried, failed = _carry_sidecars(src, dst, req.mode, r.rel_path, waiting)
+                    hold = gate.consent if gate is not None else None
+                    carried, failed = _carry_sidecars(src, dst, req.mode, r.rel_path, waiting, hold)
                     sidecars_carried += carried
                     sidecars_failed += failed
                 if req.write_xmp and (data := xmp_data(r, req.face_names)) is not None:
@@ -771,7 +874,17 @@ def export_selection(
     manifest_path: Path | None = None
     if req.write_manifest:
         manifest_path = dest_root / MANIFEST_NAME
-        write_manifest(transferred, summary, manifest_path, exported, exported_abs, req.mode, landmarks=req.landmarks)
+        write_manifest(
+            transferred,
+            summary,
+            manifest_path,
+            exported,
+            exported_abs,
+            req.mode,
+            landmarks=req.landmarks,
+            split=split or None,
+            consent=gate.consent if gate is not None else None,
+        )
         write_report(results, keep_reason, selected_rel, exported, dest_root / REPORT_NAME)
 
     run_stats_path: Path | None = None

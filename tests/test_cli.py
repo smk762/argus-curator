@@ -235,3 +235,9 @@ def test_singguard_summary_does_not_break_the_export_report(
     result = runner.invoke(app, ["scan", str(dataset), "--singguard-url", "http://g:1", "--copy-to", str(out)])
     assert result.exit_code == 0, result.output
     assert "SingGuard:" in result.output and "Copied " in result.output
+
+
+def test_semantic_dupes_without_embeddings_fails_before_scanning(dataset: Path) -> None:
+    result = runner.invoke(app, ["scan", str(dataset), "--semantic-dupes"])
+    assert result.exit_code == 2, result.output
+    assert "--embeddings" in result.output and "Scanning" not in result.output

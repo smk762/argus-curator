@@ -6,7 +6,7 @@ import contextlib
 from pathlib import Path
 
 import pytest
-from argus_cortex.gpu import GpuLeaseTimeout, LeaseCoordinator, NullCoordinator
+from argus_cortex.gpu import GpuLease, GpuLeaseTimeout, LeaseCoordinator, NullCoordinator
 from argus_cortex.gpu_broker import BrokerCoordinator
 from argus_cortex.gpu_wire import load_tenant_manifest
 from test_attributes import _App, _Face, _png
@@ -102,7 +102,7 @@ def test_gpu_tenant_manifest_declares_every_leased_model() -> None:
     """gpu-tenant.yaml validates as cortex's TenantManifest and covers every kind gpu_lease names."""
     manifest = load_tenant_manifest(Path(__file__).parent.parent / "gpu-tenant.yaml")
     assert manifest.tenant == "argus-curator"
-    leased = {"faces", "scenes", "garments"}  # bodies run inside the faces lease
+    leased = {"faces", "scenes", "garments", "embeddings", "mos", "speakers"}  # bodies run inside the faces lease
     assert {k.kind for k in manifest.kinds} == leased
     for model in leased:
         kind = manifest.kind_for(model)
@@ -268,3 +268,188 @@ def test_cuda_libraries_are_preloaded_once_and_only_for_cuda(monkeypatch: pytest
     assert calls == [1]
     fake.get_available_providers = lambda: ["CPUExecutionProvider"]  # type: ignore[attr-defined]
     assert runtime.providers("auto") == runtime.providers("cuda") == ["CPUExecutionProvider"]
+
+
+# --- The CUDA arena cap and the peak reported on release (#189) ----------------------------
+
+_CAPPED = {"arena_extend_strategy": "kSameAsRequested", "gpu_mem_limit": str(1024 * 1024 * 1024)}
+
+
+def test_cuda_sessions_get_a_capped_arena_that_grows_only_as_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ORT's default arena doubles with no ceiling and keeps it: one scan held ~20 GB on 512 MB leases."""
+    monkeypatch.delenv(runtime.GPU_MEM_LIMIT_ENV, raising=False)
+    assert runtime.session_providers(_CUDA) == [("CUDAExecutionProvider", _CAPPED), "CPUExecutionProvider"]
+    assert runtime.session_providers(["CPUExecutionProvider"]) == ["CPUExecutionProvider"]
+    extra = runtime.session_providers(_CUDA, use_tf32="0")[0]
+    assert extra == ("CUDAExecutionProvider", {**_CAPPED, "use_tf32": "0"})
+
+
+@pytest.mark.parametrize(("raw", "mb"), [("2048", 2048), ("", 1024), ("0", 1024), ("-5", 1024), ("lots", 1024)])
+def test_the_arena_cap_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch, raw: str, mb: int) -> None:
+    monkeypatch.setenv(runtime.GPU_MEM_LIMIT_ENV, raw)
+    assert runtime.cuda_provider_options()["gpu_mem_limit"] == str(mb * 1024 * 1024)
+
+
+def test_curators_own_sessions_are_built_with_the_cap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import sys
+    import types
+
+    seen: dict[str, object] = {}
+    fake = types.ModuleType("onnxruntime")
+    fake.InferenceSession = lambda path, providers: seen.update(providers=providers)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    monkeypatch.delenv(runtime.GPU_MEM_LIMIT_ENV, raising=False)
+    model = tmp_path / "m.onnx"
+    model.write_bytes(b"")
+    runtime._build_session(model, _CUDA, missing_hint="", extra="faces")
+    assert seen["providers"] == [("CUDAExecutionProvider", _CAPPED), "CPUExecutionProvider"]
+
+
+def test_insightface_sessions_are_built_with_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FaceAnalysis and the body detector build their own sessions, so they are handed the options too."""
+    import sys
+    import types
+
+    from argus_curator import bodies
+
+    seen: dict[str, object] = {}
+
+    class _FaceAnalysis:
+        def __init__(self, **kwargs: object) -> None:
+            seen["faces"] = kwargs["providers"]
+
+        def prepare(self, **kwargs: object) -> None:
+            pass
+
+    app_mod = types.ModuleType("insightface.app")
+    app_mod.FaceAnalysis = _FaceAnalysis  # type: ignore[attr-defined]
+    utils_mod = types.ModuleType("insightface.utils")
+    utils_mod.ensure_available = lambda *a, **k: None  # type: ignore[attr-defined]
+    det_mod = types.ModuleType("insightface.model_zoo.person_detection")
+    det_mod.PersonDetection = lambda descriptor, providers: seen.update(bodies=providers)  # type: ignore[attr-defined]
+    pkg_mod = types.ModuleType("insightface.model_zoo.person_package")
+    pkg_mod.ensure_person_package = lambda name: {"tasks": {"person_detection": {}}}  # type: ignore[attr-defined]
+    for name, mod in {
+        "insightface": types.ModuleType("insightface"),
+        "insightface.app": app_mod,
+        "insightface.utils": utils_mod,
+        "insightface.model_zoo": types.ModuleType("insightface.model_zoo"),
+        "insightface.model_zoo.person_detection": det_mod,
+        "insightface.model_zoo.person_package": pkg_mod,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.setattr(faces, "providers", lambda device: _CUDA)
+    monkeypatch.setattr(bodies, "providers", lambda device: _CUDA)
+    monkeypatch.setattr(faces, "gpu_lease", lambda *a, **k: contextlib.nullcontext())
+    monkeypatch.delenv(runtime.GPU_MEM_LIMIT_ENV, raising=False)
+    cfg = FaceConfig(enabled=True, device="cuda")
+    faces._build_app(cfg)
+    bodies._build_detector(cfg)
+    assert seen["faces"] == [("CUDAExecutionProvider", _CAPPED), "CPUExecutionProvider"]
+    # insightface drops its own TF32-off for a provider given as a tuple, so it rides along.
+    assert seen["bodies"] == [("CUDAExecutionProvider", {**_CAPPED, "use_tf32": "0"}), "CPUExecutionProvider"]
+
+
+class _Granting:
+    """A coordinator that grants a real GpuLease and keeps it for the test to read."""
+
+    name = "granting"
+
+    def __init__(self) -> None:
+        self.handles: list[GpuLease] = []
+
+    @contextlib.contextmanager
+    def lease(self, **_: object):  # noqa: ANN201
+        handle = GpuLease()
+        self.handles.append(handle)
+        yield handle
+
+
+def test_the_lease_reports_the_vram_the_process_holds_on_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    granting = _Granting()
+    monkeypatch.setattr(runtime, "providers", lambda device: _CUDA)
+    monkeypatch.setattr(runtime, "_coordinator", granting)
+    monkeypatch.setattr(runtime, "process_vram_mb", lambda: 1234)
+    with runtime.gpu_lease("cuda", "faces") as handle:
+        assert handle.peak_vram_mb is None
+    assert granting.handles[0].peak_vram_mb == 1234
+    # Unknown (a container's PID namespace hides the process from NVML): nothing is reported.
+    monkeypatch.setattr(runtime, "process_vram_mb", lambda: None)
+    with runtime.gpu_lease("cuda", "faces"):
+        pass
+    assert granting.handles[1].peak_vram_mb is None
+
+
+def test_a_lease_that_yields_no_handle_still_works(on_cuda: _Recorder, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runtime, "process_vram_mb", lambda: pytest.fail("measured with nowhere to report"))
+    with runtime.gpu_lease("cuda", "faces") as handle:
+        assert handle is None
+
+
+def test_process_vram_counts_only_this_process_on_every_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import sys
+    import types
+
+    mb = 1024 * 1024
+    proc = types.SimpleNamespace
+    by_gpu = {
+        0: [proc(pid=os.getpid(), usedGpuMemory=700 * mb), proc(pid=os.getpid() + 1, usedGpuMemory=9000 * mb)],
+        1: [proc(pid=os.getpid(), usedGpuMemory=300 * mb)],
+    }
+    fake = types.ModuleType("pynvml")
+    fake.nvmlInit = lambda: None  # type: ignore[attr-defined]
+    fake.nvmlDeviceGetCount = lambda: 2  # type: ignore[attr-defined]
+    fake.nvmlDeviceGetHandleByIndex = lambda i: i  # type: ignore[attr-defined]
+    fake.nvmlDeviceGetComputeRunningProcesses = lambda h: by_gpu[h]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pynvml", fake)
+    monkeypatch.setattr(runtime, "free_vram_mb", lambda device: 5000)
+    assert runtime.process_vram_mb() == 1000
+    # Not listed (the host PID differs inside a container): unknown, not zero.
+    by_gpu[0], by_gpu[1] = [proc(pid=os.getpid() + 1, usedGpuMemory=9000 * mb)], []
+    assert runtime.process_vram_mb() is None
+    # No NVML at all.
+    monkeypatch.setattr(runtime, "free_vram_mb", lambda device: None)
+    assert runtime.process_vram_mb() is None
+
+
+def test_attribute_models_run_a_crowd_in_fixed_size_chunks() -> None:
+    """One pass per crowd shot grew the arena with every new face count, and under the cap it could lose ages."""
+    import numpy as np
+
+    from argus_curator import fairface, mivolo
+
+    class _Session:
+        def __init__(self, width: int) -> None:
+            self.width, self.sizes = width, []
+
+        def get_inputs(self):  # noqa: ANN202
+            return [type("I", (), {"name": "x"})()]
+
+        def run(self, _outputs: object, feeds: dict[str, np.ndarray]) -> list[np.ndarray]:
+            x = feeds["x"]
+            self.sizes.append(len(x))
+            # Each row's output carries a per-row value so the order can be checked.
+            return [np.repeat(x.reshape(len(x), -1)[:, :1], self.width, axis=1)]
+
+    batch = np.arange(19, dtype=np.float32)[:, None, None, None] * np.ones((19, 6, 2, 2), np.float32)
+    session = _Session(3)
+    out = runtime.run_batched(session, batch, size=8)
+    assert session.sizes == [8, 8, 3]
+    assert out[:, 0].tolist() == list(range(19))
+
+    from PIL import Image
+
+    image = Image.new("RGB", (800, 800))
+    mv = _Session(3)
+    # The models themselves run ATTRIBUTE_BATCH (one) face per pass.
+    assert runtime.ATTRIBUTE_BATCH == 1
+    assert len(mivolo.predict(mv, image, [[10.0 * i, 10.0, 40.0, 40.0] for i in range(19)])) == 19
+    assert mv.sizes == [1] * 19
+    mv.sizes.clear()
+    assert len(mivolo.predict_bodies(mv, [Image.new("RGB", (60, 120))] * 10)) == 10
+    assert mv.sizes == [1] * 10
+    ff = _Session(18)
+    kps = np.array([[30, 40], [70, 40], [50, 60], [35, 80], [65, 80]], np.float64)
+    assert fairface.predict(ff, image, [kps] * 9).shape == (9, 18)
+    assert ff.sizes == [1] * 9

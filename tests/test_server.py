@@ -131,6 +131,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "bodies",
         "places365",
         "garments",
+        "embeddings",
         "nudenet",
         "erax",
         "watermark",
@@ -138,6 +139,9 @@ def test_detectors_keys(client: TestClient) -> None:
         "singguard_policies",
         "singguard_thinking_modes",
         "singguard_thinking_default",
+        "speech",
+        "dnsmos",
+        "speaker_model",
     }
     assert resp.json()["singguard_policies"] == []  # no SingGuard server configured
     assert resp.json()["singguard_thinking_modes"] == [] and resp.json()["singguard_thinking_default"] is None
@@ -246,7 +250,12 @@ def test_scan_records_the_prefilter(contained: tuple[TestClient, Path], monkeypa
     resp = client.post("/scan/folder", json={"folder": "", "prefilter": {"drop_nsfw": True}})
     assert resp.status_code == 200
     summary = resp.json()
-    assert summary["prefilter_config"] == {"drop_nsfw": True, "drop_no_face": False, "drop_no_age": False}
+    assert summary["prefilter_config"] == {
+        "drop_nsfw": True,
+        "drop_no_face": False,
+        "drop_no_age": False,
+        "drop_junk": False,
+    }
     assert summary["passed"] == 3
     again = client.get(f"/scan/{summary['scan_id']}").json()
     assert again["prefilter_config"] == summary["prefilter_config"]
@@ -282,6 +291,26 @@ def test_prefiltered_images_are_never_kept_or_exported(contained: tuple[TestClie
     ).json()
     assert list(named["exported_paths"]) == []
     assert not (exports / "named" / "personA").exists()
+
+
+def test_a_speech_target_profile_is_never_scored_as_an_image(
+    contained: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A speech profile scans clips (#186): the image scanner never sees it, and image checks are refused."""
+    from argus_curator import scanner
+
+    client, _ = contained
+    monkeypatch.setattr(scanner, "scan_folder", lambda *a, **k: pytest.fail("a speech profile reached the image scan"))
+    resp = client.post("/scan/folder", json={"folder": "", "target_profile": {"modality": "speech"}})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["target_profile"]["modality"] == "speech" and body["results"] == []  # the dataset holds no clips
+    resp = client.post(
+        "/scan/folder",
+        json={"folder": "", "target_profile": {"modality": "speech"}, "faces": {"enabled": True}},
+    )
+    assert resp.status_code == 422
+    assert "runs no image checks" in resp.text
 
 
 def test_scan_then_paginate_then_export(contained: tuple[TestClient, Path]) -> None:
@@ -1343,7 +1372,7 @@ def test_select_validates_like_export(contained: tuple[TestClient, Path]) -> Non
         assert client.post(f"/scan/{scan['scan_id']}/select", json=body).status_code == 422, body
 
 
-def test_select_request_has_every_export_filter() -> None:
+def test_select_request_has_every_export_filter_cap_rank_and_split() -> None:
     """A new ExportRequest filter must be added to SelectRequest too."""
     from argus_curator.models import ExportRequest, SelectRequest
 
@@ -1360,9 +1389,10 @@ def test_select_request_has_every_export_filter() -> None:
         "face_names",
         "carry_sidecars",
         "run_stats",
+        "split_part",  # select reports both parts
     }
-    trims = {"max_keep", "diversify_scenes", "diversify_outfits"}
-    assert set(SelectRequest.model_fields) == set(ExportRequest.model_fields) - not_filters - trims
+    # The cap, ranking and split are here too: select runs export's plan_selection (#183).
+    assert set(SelectRequest.model_fields) == set(ExportRequest.model_fields) - not_filters
 
 
 def test_image_serves_original_bytes(contained: tuple[TestClient, Path]) -> None:

@@ -1,18 +1,26 @@
-"""Selection — score threshold + optional diversity cap.
+"""Selection — filters, an optional diversity cap, a ranking and an optional split.
 
 Ported from imogen PR #14's ``_select_diverse`` / ``_decide_keep``. Nothing is
 ever silently dropped: every excluded image carries a ``keep_reason`` so the
 HITL surfaces can explain *why* it was left out.
+
+:func:`plan_selection` is the one code path ``POST /scan/{id}/select`` and
+every export run, so a dry run and an export with the same fields cannot
+disagree on what is kept, in what order, or in which part of a split.
 """
 
 from __future__ import annotations
 
 import os
+import random
 import re
 from collections import Counter
-from typing import Literal, get_args
+from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import imagehash
+import numpy as np
 from argus_cortex.moderation import DEFAULT_EXPOSED_LABELS, rule_matches
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
@@ -24,10 +32,16 @@ from argus_curator.models import (
     FaceSourceFilter,
     GuardResult,
     ImageResult,
+    RankBy,
     ScanSummary,
     SetAge,
+    SplitConfig,
+    SplitPart,
 )
 from argus_curator.nsfw import exposed_score, is_exposed
+
+if TYPE_CHECKING:
+    from argus_curator.consent import FaceSourceGate
 
 # A MiVOLO age under this, together with any reported exposed detection, is never kept.
 MINOR_AGE_YEARS = 18.0
@@ -80,6 +94,46 @@ def _scene_overlap(a: ImageResult, b: ImageResult) -> float:
     return sum(min(c.conf, pb.get(c.label, 0.0)) for c in a.scene.categories)
 
 
+# An identity distance is a cosine distance, 0..2; a missing one ranks after any real one.
+_NO_DISTANCE = 2.0
+
+
+def _distance(r: ImageResult) -> float:
+    face = primary_face(r)
+    d = identity_distance(face) if face is not None else None
+    return d if d is not None else _NO_DISTANCE
+
+
+def _likeness(r: ImageResult) -> float:
+    return r.likeness_distance if r.likeness_distance is not None else _NO_DISTANCE
+
+
+def rank_key(rank: RankBy) -> Callable[[ImageResult], tuple[float, float, str]]:
+    """Sort key putting the best image first under *rank* (see ``models.RankBy``).
+
+    ``"score"``: the curation score, then the identity distance. ``"identity"``:
+    the identity distance (a face's ``reference_distance``, else its
+    ``cluster_distance``; no face or no distance last), then the score.
+    ``"likeness"``: the image's ``likeness_distance`` (none last), then the
+    score. All end on ``rel_path``, so the order never depends on scan order.
+    """
+    if rank == "identity":
+        return lambda r: (_distance(r), -r.score, r.rel_path)
+    if rank == "likeness":
+        return lambda r: (_likeness(r), -r.score, r.rel_path)
+    return lambda r: (-r.score, _distance(r), r.rel_path)
+
+
+def _quality(candidates: list[ImageResult], rank: RankBy) -> list[float]:
+    """Each candidate's 0..1 merit under *rank*, the term diversity is blended against."""
+    if rank == "identity":
+        return [1.0 - _distance(r) / _NO_DISTANCE for r in candidates]
+    if rank == "likeness":
+        return [1.0 - _likeness(r) / _NO_DISTANCE for r in candidates]
+    max_score = max((r.score for r in candidates), default=1.0) or 1.0
+    return [r.score / max_score for r in candidates]
+
+
 def select_diverse(
     candidates: list[ImageResult],
     n: int,
@@ -88,13 +142,19 @@ def select_diverse(
     scenes: bool = False,
     outfits: bool = False,
     outfit_conf: float = 0.5,
+    semantic: bool = False,
+    embeddings: Mapping[str, Any] | None = None,
+    rank: RankBy = "score",
 ) -> list[ImageResult]:
     """Greedy diversity-aware selection.
 
     Each iteration picks the candidate maximising
-    ``score_norm * (1 - dw) + diversity_norm * dw`` where ``diversity_norm`` is
-    the minimum pHash Hamming distance to any already-selected image. ``dw=0``
-    reduces to pure score ranking; ``dw=1`` maximises visual spread.
+    ``quality * (1 - dw) + diversity_norm * dw`` where ``diversity_norm`` is
+    the minimum pHash Hamming distance to any already-selected image, and
+    ``quality`` is the score over the best score (``rank="score"``) or one
+    minus half the identity (``rank="identity"``) or likeness
+    (``rank="likeness"``) distance. ``dw=0`` reduces
+    to the best *n* by :func:`rank_key`; ``dw=1`` maximises visual spread.
 
     ``scenes`` and ``outfits`` each add a novelty term — one minus the largest
     scene overlap / outfit similarity (garment types and colours, detections
@@ -102,16 +162,23 @@ def select_diverse(
     the mean of pHash spread and the enabled novelties, so near-identical
     backdrops or outfits are spread out even when the pixels differ.
 
-    A term, once in play, scores every candidate: an untagged image or one
-    with nothing detected is itself a "scene" / "outfit" that repeats, rather
+    ``semantic`` adds a fourth: one minus the largest cosine similarity between
+    the candidate's semantic embedding (*embeddings*, unit vectors by
+    ``rel_path``) and any selected image's, so burst shots, re-encodes and
+    small crops of one frame are spread out even when their pHashes are far
+    apart. A selected image with no embedding is similar to nothing.
+
+    A term, once in play, scores every candidate: an untagged image, one with
+    nothing detected, or one with no embedding is itself a "scene" / "outfit" /
+    embedding that repeats, rather
     than skipping the term and being judged on pHash alone (which would
     systematically favour exactly the images the term knows least about). A
     term is in play only if some candidate carries the data at all.
     """
     if n >= len(candidates) or diversity_weight <= 0.0:
-        return sorted(candidates, key=lambda r: -r.score)[:n]
+        return sorted(candidates, key=rank_key(rank))[:n]
 
-    max_score = max((r.score for r in candidates), default=1.0) or 1.0
+    quality = _quality(candidates, rank)
     hashes: list[imagehash.ImageHash | None] = []
     for r in candidates:
         try:
@@ -124,6 +191,16 @@ def select_diverse(
     sigs = [outfit(r.garments, outfit_conf) for r in candidates] if outfits else []
     use_scenes = scenes and any(r.scene is not None for r in candidates)
     use_outfits = outfits and any(sigs)
+    vectors = [embeddings.get(r.rel_path) for r in candidates] if semantic and embeddings else []
+    use_semantic = any(v is not None for v in vectors)
+    if use_semantic:
+        dim = next(len(v) for v in vectors if v is not None)
+        has_vec = np.array([v is not None for v in vectors])
+        matrix = np.stack(
+            [np.asarray(v, dtype=np.float32) if v is not None else np.zeros(dim, np.float32) for v in vectors]
+        )
+        # Each candidate's largest cosine to anything selected so far, updated per pick.
+        nearest = np.full(len(candidates), -1.0, dtype=np.float32)
     remaining = list(range(len(candidates)))
 
     for _ in range(n):
@@ -131,7 +208,7 @@ def select_diverse(
             break
         best_idx, best_val = None, -1.0
         for i in remaining:
-            score_norm = candidates[i].score / max_score
+            score_norm = quality[i]
             if not selected_idx:
                 div_norm = 1.0
             elif hashes[i] is None:
@@ -147,6 +224,9 @@ def select_diverse(
                 terms.append(1.0 - max(_scene_overlap(candidates[i], candidates[j]) for j in selected_idx))
             if use_outfits and selected_idx:
                 terms.append(1.0 - max(outfit_similarity(sigs[i], sigs[j]) for j in selected_idx))
+            if use_semantic and selected_idx:
+                # No embedding: a repeat. Nothing embedded selected yet: as far as it gets.
+                terms.append(min(1.0, max(0.0, 1.0 - float(nearest[i]))) if has_vec[i] else 0.0)
             div_norm = sum(terms) / len(terms)
             val = score_norm * (1.0 - diversity_weight) + div_norm * diversity_weight
             if val > best_val:
@@ -156,6 +236,8 @@ def select_diverse(
         selected_idx.append(best_idx)
         if hashes[best_idx] is not None:
             selected_hashes.append(hashes[best_idx])
+        if use_semantic and has_vec[best_idx]:
+            np.maximum(nearest, matrix @ matrix[best_idx], out=nearest)
         remaining.remove(best_idx)
 
     return [candidates[i] for i in selected_idx]
@@ -418,7 +500,9 @@ def face_source_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
         )
     if fs.cluster is not None and fs.cluster not in {c.cluster_id for c in summary.face_clusters}:
         return f"face_source.cluster {fs.cluster!r} is not an identity in this scan"
-    if fs.max_identity_distance is not None and summary.faces_config.reference_paths and summary.reference_skipped:
+    # reference_skipped is set only when the scan asked for a reference (its
+    # reference_embedding, never stored, cannot be read back here).
+    if fs.max_identity_distance is not None and summary.reference_skipped:
         # The identity check would fall back to the cluster distance: another
         # person's identity could pass as the reference's.
         return (
@@ -426,6 +510,36 @@ def face_source_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
             f"({summary.reference_skipped}); rescan with a usable reference, "
             "or set face_source.max_identity_distance to null"
         )
+    if fs.consent:
+        return consent_set_problem(summary)
+    return None
+
+
+def consent_set_problem(summary: ScanSummary) -> str | None:
+    """Why *summary* cannot give a consented face set, from the scan alone, else ``None``.
+
+    The record must have made the set eligible, the scan must have read an
+    adult set age, and no face bound to the record may read under 18: one
+    young estimate on the consenting person refuses the whole set. The record
+    itself is read again at export (:func:`argus_curator.consent.face_source_gate`).
+    """
+    check = summary.consent
+    if check is None:
+        return "face_source.consent needs a scan that read a consent record; rescan with consent.record"
+    if not check.eligible:
+        return f"the consent record makes this set ineligible ({check.reason}): {check.detail}"
+    if summary.set_age is None:
+        why = summary.set_age_skipped or "the scan did not read one"
+        return f"a consented face set needs an adult set age, and the scan read none ({why})"
+    if summary.set_age.years < MINOR_AGE_YEARS:
+        return "a consented face set needs an adult set age; the scan's reads under 18, so the set is refused"
+    for r in summary.results:
+        if r.consent is None or not r.consent.bound:
+            continue
+        face = primary_face(r)
+        years = _mivolo_years(face.attributes) if face is not None else None
+        if years is not None and years < MINOR_AGE_YEARS:
+            return f"a face bound to the consent record reads under 18 ({r.rel_path}), so the set is refused"
     return None
 
 
@@ -455,6 +569,104 @@ def garment_floor_problem(req: ExportRequest, recorded_from: float) -> str | Non
     return None
 
 
+def rank_split_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """Why *req*'s ranking or split cannot be applied to *summary*, else ``None``."""
+    faces = summary.faces_config.enabled
+    if req.rank == "identity" and not faces:
+        return 'rank "identity" needs a scan that ran face detection; rescan with faces on'
+    if req.split is not None and req.split.group_by == "face_cluster" and not faces:
+        return 'split.group_by "face_cluster" needs a scan that ran face detection; rescan with faces on'
+    if req.split is not None and req.split.group_by == "speaker":
+        return 'split.group_by "speaker" is for a speech scan'
+    return likeness_problem(req, summary)
+
+
+def likeness_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """Why ``rank="likeness"`` or ``max_likeness_distance`` cannot be applied to *summary*, else ``None``.
+
+    Both read the distances the scan recorded (#191), never the vectors, so a
+    restart loses nothing; a scan without them is refused rather than ranked
+    by nothing or filtered to nothing.
+    """
+    asked = [
+        name
+        for name, on in (
+            ('rank "likeness"', req.rank == "likeness"),
+            ("max_likeness_distance", req.max_likeness_distance is not None),
+        )
+        if on
+    ]
+    if not asked:
+        return None
+    what = " and ".join(asked)
+    if not summary.embeddings_config.enabled:
+        return f"{what} needs a scan that computed embeddings; rescan with embeddings on"
+    if summary.likeness_skipped:
+        return f"{what} needs the scan's likeness distances, and it measured none ({summary.likeness_skipped})"
+    if not any(r.likeness_distance is not None for r in summary.results):
+        return f"{what} needs the scan's likeness distances, and it has none; rescan with embeddings on"
+    return None
+
+
+def semantic_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """Why ``req.diversify_semantic`` cannot be applied to *summary*, else ``None``.
+
+    Embeddings live in memory only, so a scan that ran them loses them when
+    the server restarts; the term would then silently do nothing.
+    """
+    if not req.diversify_semantic:
+        return None
+    if not summary.embeddings_config.enabled:
+        return "diversify_semantic needs a scan that computed embeddings; rescan with embeddings on"
+    if not summary.embeddings:
+        return (
+            "diversify_semantic needs this scan's embeddings, which are held in memory only and are gone "
+            "(the server restarted since the scan, or no image could be embedded); rescan with embeddings on"
+        )
+    return None
+
+
+def selection_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """The first reason *req*'s selection cannot be applied to *summary*, else ``None``.
+
+    Every check select and export share, so the two routes refuse the same requests.
+    """
+    if summary.is_speech:
+        # A speech scan's clips go through speech_select (#187), never the image filters.
+        from argus_curator.speech_select import speech_problem
+
+        return speech_problem(req, summary)
+    if req.speech is not None:
+        return "speech selects a speech scan's clips; this is an image scan"
+    for problem in (
+        garment_floor_problem(req, summary.garments_config.min_conf),
+        nsfw_filter_problem(req, summary),
+        face_source_problem(req, summary),
+        guard_filter_problem(req, summary),
+        rank_split_problem(req, summary),
+        semantic_problem(req, summary),
+        references_problem(req, summary),
+    ):
+        if problem is not None:
+            return problem
+    return None
+
+
+def scan_references(summary: ScanSummary) -> set[str]:
+    """The images *summary* measured distances to: its face and likeness ``reference_paths``."""
+    return {*summary.faces_config.reference_paths, *summary.embeddings_config.reference_paths}
+
+
+def references_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """Why ``req.exclude_references`` cannot be applied to *summary*, else ``None``."""
+    if req.exclude_references and not scan_references(summary):
+        return (
+            "exclude_references: this scan named no reference images "
+            "(faces.reference_paths or embeddings.reference_paths)"
+        )
+    return None
+
+
 def primary_face(result: ImageResult) -> FaceDetection | None:
     return next((f for f in result.faces if f.primary), None)
 
@@ -479,13 +691,30 @@ def _under(value: float | None, floor: float | None) -> bool:
 
 
 def _face_source_exclusion(
-    r: ImageResult, fs: FaceSourceFilter, cluster: str | None, set_age: SetAge | None
+    r: ImageResult,
+    fs: FaceSourceFilter,
+    cluster: str | None,
+    set_age: SetAge | None,
+    gate: FaceSourceGate | None = None,
 ) -> str | None:
     """Why the face-source preset keeps *r* out (``face-source:<check>``), or None.
 
     A measurement the scan does not have fails its check: a face source is
-    better missed than taken on trust.
+    better missed than taken on trust. *gate* holds what was read from disk
+    for this selection (argus-quarry's likeness mark, the re-checked consent).
     """
+    if gate is not None and (reason := gate.excluded.get(r.rel_path)) is not None:
+        return reason
+    if fs.consent:
+        if r.consent is None:
+            return "face-source:consent-unbound"
+        if not r.consent.bound:
+            # One reason for argus-quarry's mark, whether the scan or the gate read it.
+            if r.consent.reason == "not-consented":
+                return "face-source:not-consented"
+            return f"face-source:consent-{r.consent.reason}"
+        if gate is None or gate.consent is None or r.rel_path not in gate.consent.provenance:
+            return "face-source:consent-provenance"
     face = primary_face(r)
     if face is None:
         return "face-source:no-face"
@@ -518,13 +747,6 @@ def _face_source_exclusion(
     return None
 
 
-def _face_source_rank(r: ImageResult) -> tuple[float, float]:
-    """Best first: the curation score, then the closest identity match."""
-    face = primary_face(r)
-    distance = identity_distance(face) if face is not None else None
-    return (-r.score, distance if distance is not None else 2.0)
-
-
 def hard_exclusion(result: ImageResult) -> str | None:
     """Why no request can keep *result* (a named selection included), or ``None``.
 
@@ -541,26 +763,194 @@ def hard_exclusion(result: ImageResult) -> str | None:
     return None
 
 
+class SplitError(ValueError):
+    """A requested split cannot be made from the kept images (too few, or one group)."""
+
+
+# Group keys a split can keep together (models.SplitGroup). A key of None makes
+# the item a group of its own. Another kind of item reuses split_held_out with
+# its own key (#187: a speaker), so this table is the only image-specific part.
+SPLIT_GROUP_KEYS: dict[str, Callable[[ImageResult], str | None]] = {
+    "image": lambda r: r.rel_path,
+    "face_cluster": lambda r: r.primary_face_cluster,
+    # Every row is in a group (a lone image in its own), numbered per scan.
+    "similar_group": lambda r: f"similar:{r.similar_group}" if r.similar_group else None,
+}
+
+
+def _allot(k: int, sizes: list[int]) -> list[int]:
+    """*k* held-out groups shared across strata of *sizes* groups, in proportion (largest remainder).
+
+    A stratum never gives all its groups: one with a single group gives none,
+    so each stratum keeps a group to train on.
+    """
+    total = sum(sizes)
+    caps = [max(0, s - 1) for s in sizes]
+    k = min(k, sum(caps))
+    exact = [k * s / total for s in sizes]
+    share = [min(int(e), c) for e, c in zip(exact, caps, strict=True)]
+    by_remainder = sorted(range(len(sizes)), key=lambda i: (-(exact[i] - int(exact[i])), i))
+    while sum(share) < k:
+        for i in by_remainder:
+            if sum(share) < k and share[i] < caps[i]:
+                share[i] += 1
+    return share
+
+
+def _interleave(lists: list[list[int]]) -> list[int]:
+    """The items of *lists* merged so each list's items are spread evenly through the result."""
+    keyed = [((j + 0.5) / len(items), s, g) for s, items in enumerate(lists) for j, g in enumerate(items)]
+    return [g for _, _, g in sorted(keyed)]
+
+
+def split_held_out(
+    keys: Sequence[Hashable | None], cfg: SplitConfig, strata: Sequence[Hashable] | None = None
+) -> list[SplitPart]:
+    """Each ranked item's part of a train/held-out split, from its group key.
+
+    *keys* holds one group key per item, best item first; items sharing a key
+    always land in the same part, and a ``None`` key is a group of its own.
+    Groups are ordered by their best item. ``cfg.method`` "spread" takes
+    held-out groups evenly through that order (with one item per group,
+    exactly argus-mint's ``int((j + 0.5) * n / k)`` picks); "random" shuffles
+    the groups with ``random.Random(cfg.seed)``. Groups are then taken in that
+    order, skipping any that would push the held-out part past its target.
+
+    With *strata* (one per item; a group takes its best item's) the held-out
+    groups are shared across strata in proportion to how many groups each
+    has, a share never taking a stratum's last group, and picked within each
+    stratum as above (speech stratifies by accent and sex, #187). Only when
+    the shares fall short of the target (groups too big to fit) are the
+    remaining groups taken, from any stratum.
+
+    Pure and deterministic. Raises :class:`SplitError` when either part would
+    be empty.
+    """
+    n = len(keys)
+    target = cfg.held_out if cfg.held_out is not None else max(1, round((cfg.held_out_fraction or 0.0) * n))
+    if target >= n:
+        raise SplitError(f"{n} kept item(s): holding out {target} leaves none to train")
+    members: dict[Hashable, list[int]] = {}
+    for i, key in enumerate(keys):
+        members.setdefault(key if key is not None else ("ungrouped", i), []).append(i)
+    groups = list(members.values())
+    m = len(groups)
+    if m < 2:
+        raise SplitError(f"all {n} kept item(s) share one {cfg.group_by}; a split needs at least two groups")
+    by_stratum: dict[Hashable, list[int]] = {}
+    for g, items in enumerate(groups):
+        by_stratum.setdefault(strata[items[0]] if strata is not None else None, []).append(g)
+    layers = list(by_stratum.values())
+    k = min(m - 1, max(1, round(target * m / n)))
+    shares = _allot(k, [len(layer) for layer in layers]) if len(layers) > 1 else [k]
+    rng = random.Random(cfg.seed)
+    picks: list[list[int]] = []
+    rests: list[list[int]] = []
+    for layer, share in zip(layers, shares, strict=True):
+        size = len(layer)
+        if cfg.method == "random":
+            local = list(range(size))
+            rng.shuffle(local)
+            chosen = local[:share] if len(layers) > 1 else local
+        else:
+            chosen = list(dict.fromkeys(int((j + 0.5) * size / share) for j in range(share))) if share else []
+        taken = set(chosen)
+        picks.append([layer[j] for j in chosen])
+        rests.append([layer[j] for j in range(size) if j not in taken])
+    order = _interleave([p for p in picks if p]) + _interleave([r for r in rests if r])
+    held: set[int] = set()
+    count = 0
+    for g in order:
+        if count >= target:
+            break
+        if count + len(groups[g]) <= target:
+            held.update(groups[g])
+            count += len(groups[g])
+    if not held:
+        smallest = min(len(g) for g in groups)
+        raise SplitError(f"no {cfg.group_by} group fits in {target} held-out item(s); the smallest holds {smallest}")
+    return ["held_out" if i in held else "train" for i in range(n)]
+
+
+@dataclass(frozen=True)
+class SelectionPlan:
+    """What a selection keeps: ``chosen`` best first, why the rest are out, and the split.
+
+    ``split`` maps each chosen ``rel_path`` to its part; it is empty without a split.
+    """
+
+    chosen: list[ImageResult]
+    keep_reason: dict[str, str]
+    split: dict[str, SplitPart] = field(default_factory=dict)
+
+
+def plan_selection(
+    results: list[ImageResult],
+    req: ExportRequest,
+    diversity_weight: float,
+    *,
+    set_age: SetAge | None = None,
+    embeddings: Mapping[str, Any] | None = None,
+    gate: FaceSourceGate | None = None,
+    references: Collection[str] | None = None,
+) -> SelectionPlan:
+    """The filter, cap, ranking and split for *req*: the one path select and export share.
+
+    *diversity_weight* is the scan's; ``req.diversity_weight`` overrides it.
+    *embeddings* are the scan's in-memory ones (``ScanSummary.embeddings``),
+    read by ``req.diversify_semantic``. *gate* is
+    :func:`argus_curator.consent.face_source_gate` for the face-source preset
+    (required with ``face_source.consent``). *references* are the scan's
+    reference images (:func:`scan_references`, required with
+    ``req.exclude_references``). Raises :class:`SplitError` when
+    ``req.split`` cannot be made.
+    """
+    chosen, keep_reason = decide_selection(
+        results, req, diversity_weight, set_age=set_age, embeddings=embeddings, gate=gate, references=references
+    )
+    split: dict[str, SplitPart] = {}
+    if req.split is not None:
+        key = SPLIT_GROUP_KEYS[req.split.group_by]
+        parts = split_held_out([key(r) for r in chosen], req.split)
+        split = {r.rel_path: part for r, part in zip(chosen, parts, strict=True)}
+    return SelectionPlan(chosen=chosen, keep_reason=keep_reason, split=split)
+
+
 def decide_selection(
     results: list[ImageResult],
     req: ExportRequest,
     diversity_weight: float,
     *,
     set_age: SetAge | None = None,
+    embeddings: Mapping[str, Any] | None = None,
+    gate: FaceSourceGate | None = None,
+    references: Collection[str] | None = None,
 ) -> tuple[list[ImageResult], dict[str, str]]:
     """Return ``(selected_results, keep_reason_by_rel)`` for an export request.
 
     Mirrors PR #14's ``_decide_keep``: applies score threshold, rejected/duplicate
     gates, optional face-cluster / pose / attribute / scene / garment / NSFW /
-    SingGuard filters, then an optional diversity cap.
+    SingGuard filters, then an optional diversity cap (``req.max_keep``, blended
+    by ``req.diversity_weight`` or else *diversity_weight*).
 
     An under-18 face with a reported exposed score is rejected first, whatever
     the request asked to keep. Any rejected image comes next: it is never kept,
     and its keep reason is its own ``reject_reason`` (``prefilter:nsfw`` and so on).
 
-    With ``req.face_source`` the preset runs last (*set_age* is the scan's, for
-    its adult check) and the selection comes back ranked best first.
+    With ``req.face_source`` the preset runs next (*set_age* is the scan's, for
+    its adult check), then ``req.max_likeness_distance`` (#191). The selection
+    always comes back ranked best first by :func:`rank_key` under
+    ``req.rank``. Use :func:`plan_selection` for the split too.
+    A consented set (``face_source.consent``) needs *gate*, the record as
+    re-checked now; without it this raises ``ValueError`` rather than trust the scan.
+    ``req.exclude_references`` likewise needs *references* (:func:`scan_references`),
+    so a caller that forgets them is an error, not a filter that does nothing.
     """
+    if req.face_source is not None and req.face_source.consent and (gate is None or gate.consent is None):
+        raise ValueError("face_source.consent needs the consent gate (consent.face_source_gate)")
+    if req.exclude_references and references is None:
+        raise ValueError("exclude_references needs the scan's reference images (selection.scan_references)")
+    reference_set = set(references or ()) if req.exclude_references else set()
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
     pose_filter = set(req.face_poses) if req.face_poses else None
@@ -579,6 +969,8 @@ def decide_selection(
     for r in results:
         if (hard := hard_exclusion(r)) is not None:
             keep_reason[r.rel_path] = hard
+        elif r.rel_path in reference_set:
+            keep_reason[r.rel_path] = "reference"
         elif r.score < req.min_score:
             keep_reason[r.rel_path] = "below-score"
         elif r.is_duplicate and not req.keep_similar:
@@ -599,8 +991,10 @@ def decide_selection(
             keep_reason[r.rel_path] = rating_reason
         elif (guard_reason := _guard_exclusion(r, req)) is not None:
             keep_reason[r.rel_path] = guard_reason
-        elif fs is not None and (fs_reason := _face_source_exclusion(r, fs, fs_cluster, set_age)) is not None:
+        elif fs is not None and (fs_reason := _face_source_exclusion(r, fs, fs_cluster, set_age, gate)) is not None:
             keep_reason[r.rel_path] = fs_reason
+        elif _over(r.likeness_distance, req.max_likeness_distance):
+            keep_reason[r.rel_path] = "likeness-distance"
         else:
             eligible.append(r)
 
@@ -609,18 +1003,20 @@ def decide_selection(
         chosen = select_diverse(
             eligible,
             req.max_keep,
-            diversity_weight,
+            req.diversity_weight if req.diversity_weight is not None else diversity_weight,
             scenes=req.diversify_scenes,
             outfits=req.diversify_outfits,
             outfit_conf=req.min_garment_conf,
+            semantic=req.diversify_semantic,
+            embeddings=embeddings,
+            rank=req.rank,
         )
         chosen_set = {r.rel_path for r in chosen}
         for r in eligible:
             if r.rel_path not in chosen_set:
                 keep_reason[r.rel_path] = "diversity-trimmed"
 
-    if fs is not None:
-        chosen = sorted(chosen, key=_face_source_rank)
+    chosen = sorted(chosen, key=rank_key(req.rank))
     for r in chosen:
         keep_reason[r.rel_path] = ""
     return chosen, keep_reason

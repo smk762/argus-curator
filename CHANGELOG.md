@@ -7,6 +7,258 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-21
+
+**For downstream consumers (argus-lens, argus-forge, argus-proof, argus-mint).**
+Every manifest change below is additive, so a 2.x reader keeps working, but:
+
+- **`MANIFEST_VERSION` 2.3 → 2.6.** 2.4 adds `split` on every row (`train` /
+  `held_out`, or null when no split was asked for). 2.5 adds
+  `target_profile.modality`, always `image`. 2.6 adds `consent_release_sha256`,
+  `consent_record_sha256` and `provenance` (argus-cortex's `Provenance`) on rows
+  of a consented face set.
+- **Provenance names no one.** `provenance.subject` is argus-cortex 0.13's subject
+  ref, `consent:<release_sha256>`, never the consenting person's name, and the
+  default `source` no longer names who collected the release. The same holds
+  for speech rows and for carried `<stem>.json` sidecars.
+- **Every manifest is in rank order**, best first, each kept row with its
+  1-based `rank`. Exports without `face_source` used to be in scan order.
+  Consumers that ranked or split the set themselves (argus-mint) can take the
+  order and `split` as given.
+- **A new speech manifest.** A speech export writes `speech_manifest.jsonl`
+  (`SpeechManifestRow`, `SPEECH_MANIFEST_VERSION` 1.0, snapshot
+  `schema/speech-manifest-row.snapshot.json`) beside each clip's `<stem>.txt`
+  transcript. It is a separate file with its own version; image exports and
+  `manifest.jsonl` are unaffected. argus-forge reads it (argus-forge#58).
+- **argus-cortex `>=0.13,<0.14`** (was `>=0.8,<0.9`); install the same cortex
+  minor alongside.
+
+### Added
+
+- **`/scan/{id}/select` ranks, caps and splits (#183).** Select and export now
+  run one `selection.plan_selection`, so they can't disagree. Kept rows come
+  first, best first, each with its 1-based `rank`; `rank` picks the order
+  (`"score"`, or `"identity"`: closest face first, by reference or cluster
+  distance). `max_keep`, `diversity_weight`, `diversify_scenes` and
+  `diversify_outfits` now apply to select too. An optional `split`
+  (`held_out` or `held_out_fraction`, `group_by` `image` | `face_cluster`,
+  `method` `spread` | `random`, `seed`) gives a deterministic train/held-out
+  split in which no group spans both parts; select reports both parts, and an
+  export transfers `split_part`. The group key is a table
+  (`selection.SPLIT_GROUP_KEYS`) over a generic `split_held_out`, so other
+  kinds of item can reuse it. This replaces argus-mint's own ranking and split.
+- **Manifest 2.4: rows carry `split`** (`train` / `held_out`, or null). Additive.
+- **Manifest 2.5: `target_profile` carries `modality`**, always `image`. Additive.
+- **A caller-supplied identity reference (#130).** `faces.reference_embedding`
+  takes a centroid instead of `faces.reference_paths`, and
+  `faces.reference_embedding()` builds one from images outside the set (a
+  consenting person's reference photos, #133); `faces.reference_distance()`
+  compares any embedding with it. `--face-reference` accepts a file outside the
+  scanned folder. The centroid is never stored: `ScanSummary` drops it from
+  `faces_config`.
+- **Consented face sets of a real person (#133).** A scan can read a consent
+  record (`ScanRequest.consent`: `ConsentConfig` with `record`, a path under
+  the scanned folder, and `max_distance`; CLI `--consent`,
+  `--consent-max-distance`). It checks the record with argus-cortex's
+  `consent_valid(use="avatar", likeness="face")`, and `ScanSummary.consent`
+  (`ConsentCheck`) says whether the set is eligible and, if not, why. The
+  record's reference images, found in the scan by sha256, become the identity
+  reference, and each image gets `ImageResult.consent` (`ConsentBinding`:
+  `bound`, `distance`, `reason`): an image whose primary face doesn't match,
+  or that shows anyone else, is not bound. `face_source.consent` (CLI
+  `--face-source-consent`) exports only bound images, re-reads and re-checks
+  the record at select and export (so one revoked since the scan blocks the
+  export), needs an adult set age, refuses the set when any bound face reads
+  under 18, and refuses when nothing qualifies. Nothing about the consent
+  outlives the scan: a purge removes it with the scan.
+- **Face-source selections refuse argus-quarry's not-consented images.** Every
+  `face_source` selection re-reads each image's `<stem>.json` and keeps out one
+  marked `likeness_consent: false` (`face-source:not-consented`).
+- **Manifest 2.6: consented face sets carry `consent_release_sha256`,
+  `consent_record_sha256` and `provenance`** (argus-cortex's `Provenance`).
+  Additive. The export never names the consenting person: `provenance.subject`
+  is argus-cortex 0.13's subject ref, `consent:<release_sha256>`, applied with
+  `pseudonymise` to both the default and a sidecar's provenance. The default
+  `source` no longer names who collected the release. With `carry_sidecars`, a
+  carried `<stem>.json` is a copy with its provenance pseudonymised, under every
+  mode, and the source sidecar is never changed (under `move` it stays put).
+- **Semantic novelty in selection (#188, item 1).** An opt-in scan phase,
+  `ScanRequest.embeddings` (`EmbeddingConfig`: `enabled`, `device`; CLI
+  `--embeddings`), runs the image tower of DataComp-1B's CLIP ViT-L/14 (MIT)
+  under onnxruntime and the GPU lease (kind `embeddings`, batches of 8, its own
+  capped 2 GB arena). `diversify_semantic` on Select/ExportRequest (CLI
+  `--diversify-semantic`) adds a fourth novelty term to the `max_keep` cap: one
+  minus the largest cosine to anything selected, with an image that has no
+  embedding counted as a repeat. The vectors are never written: they live in
+  memory for the scan, are dropped with it (or its rows), and are gone on a
+  restart, after which `diversify_semantic` is refused (400). Convert the model
+  once with `argus-curator embeddings-convert` (`[embeddings-convert]`).
+  `ManifestRow` is unchanged.
+- **Semantic near-duplicates (#196).** With embeddings on, `ScanConfig.semantic_duplicates`
+  (CLI `--semantic-dupes`) also groups images whose CLIP embeddings reach
+  `semantic_duplicate_cosine` (default 0.95, `--semantic-dupes-cosine`): mirrors,
+  small crops and rescans that pHash misses. One leader grouping over both
+  tests, so the keep-best rule and the `similar-to:` keep reason are unchanged,
+  and a scan without it groups exactly as before. `ImageResult.duplicate_kind`
+  (`phash`, `semantic` or `both`; also a CSV report column) says which test
+  linked the image to `duplicate_of`. Asking without embeddings is refused.
+  The vectors stay memory-only; a regroup after a restart keeps the recorded
+  semantic links, and `ScanSummary.semantic_groups_stale` says when a dropped
+  representative left one that could not be regrouped. `ManifestRow` is
+  unchanged.
+- **Likeness: a consistency measure for subjects without a face (#191).** A
+  scan with `embeddings` on records each passing image's `likeness_distance`
+  (`ImageResult`): the cosine distance from its CLIP embedding to the subject,
+  which is the mean of `embeddings.reference_paths` (images in the scan; a
+  rejected one is embedded from the scan's bytes), a caller-supplied
+  `embeddings.reference_embedding` (request-only: the stored and served summary
+  drops it, as it does a face `reference_embedding`), or else the set's own
+  trimmed centroid. `ScanSummary.likeness_source` / `likeness_skipped` say
+  which, or why none was measured. Only the distances persist, so select and
+  export need no held vectors and survive a restart.
+  - `rank: "likeness"` (closest first) and `max_likeness_distance` (keep
+    reason `likeness-distance`) on `/scan/{id}/select` and `/export`, both 400
+    on a scan that measured no distances.
+  - `exclude_references` keeps the scan's reference images (face and likeness)
+    out of the selection (keep reason `reference`), so argus-mint's anchors
+    take no place in a cap or a split; 400 on a scan that named none.
+  - `split.group_by: "similar_group"` keeps an image's near-duplicates in its
+    part.
+  - `ManifestRow` and `MANIFEST_VERSION` are unchanged.
+- **Zero-shot profile fit and junk checks (#197).** With embeddings on,
+  `ScanConfig.profile_fit` (CLI `--profile-fit`) scores how well each image
+  reads as the kind the `TargetProfile` asks for, and `ScanConfig.junk_check`
+  (`--junk-check`) the probability that it is a screenshot, collage, page of
+  text or meme, against text prompts in the same CLIP space. The scores land on
+  `ImageResult.zero_shot` (`profile_fit`, `junk`, and `junk_kind` once `junk`
+  reaches `junk_threshold`, default 0.8; also CSV report columns) and feed the
+  target bonus (`profile_fit_weight` 0.10 up, `junk_weight` 0.15 down; listed as
+  `zero_shot_*` in `score_breakdown`). Neither rejects an image: the opt-in
+  `PrefilterConfig.drop_junk` (`--drop-junk`) drops flagged junk as
+  `prefilter:junk` before SingGuard. Each is off by default, and asking for any
+  without embeddings is refused. The prompt vectors are computed offline by the
+  pinned checkpoint's text tower (`embeddings-convert --prompts`) and shipped as
+  `data/clip_prompts.json`, pinned by sha256, so no text model or tokenizer runs
+  at scan time. Only the scores are stored, never the vectors. `ManifestRow` is
+  unchanged.
+- **Speech scans (#186).** `POST /scan/folder` (and its stream) and
+  `argus-curator scan --modality speech` score a folder of WAV/FLAC clips when
+  `target_profile.modality` is `speech`. `SpeechTargetProfile` (cortex's
+  `TargetProfile` narrowed to speech) is taken only on that path: the image
+  scanner, `ManifestRow` and an image scan still refuse a speech profile, and a
+  speech request that turns on an image check is a 422. Transcripts come from a
+  `.txt` sidecar, LJSpeech's `metadata.csv` or Common Voice TSVs (speaker,
+  accent, locale and age carried verbatim). Each clip is read through
+  `argus_cortex.limits.open_audio` and gets duration, sample rate, channels,
+  clipping, leading/trailing silence, an SNR estimate, an energy-VAD speech
+  ratio, its speaking rate, a 64-bit spectrogram fingerprint for
+  near-duplicates and, with `speech.mos`, DNSMOS P.835 (pinned by commit and
+  sha256; `argus-curator dnsmos-fetch`; GPU kind `mos` in `gpu-tenant.yaml`).
+  Every threshold lives in `SpeechConfig` and every rejected clip names its
+  check (`reject_reason`, `failed_checks`, `reject_detail`). A clip the
+  corpus marks as under 18 is rejected undecoded. A `Transcriber` hook takes
+  an STT engine for CER (argus-echo#4, #203); without one `max_cer` is
+  refused. Rows are `ScanSummary.clips`; select and export take them through
+  the speech export below (#187). New extra `[speech]`.
+- **Speech export (#187).** `POST /scan/{id}/select` and `POST /export` take a
+  speech scan, through `ExportRequest.speech` / `SelectRequest.speech`
+  (`SpeechSelection`).
+  - **Speakers:** `SpeechConfig.speakers` (CLI `--speakers`;
+    `argus-curator speaker-fetch`) embeds each passing clip with WeSpeaker's
+    ECAPA-TDNN (VoxCeleb2, CC BY 4.0; pinned by Hugging Face revision and
+    sha256), ONNX under the GPU lease (kind `speakers` in `gpu-tenant.yaml`)
+    with the capped arena, one fixed-shape batch of 4 windows of 3 s per clip.
+    The clips are clustered into speakers (`ClipResult.speaker_cluster`,
+    `ScanSummary.speaker_clusters`), and where the corpus names speakers the
+    clips its labels and the clusters disagree on are flagged
+    (`speaker_mismatch`). The embeddings stay in memory and go with the scan.
+  - **Selection:** speaker, accent and language filters, hours per speaker
+    (floor and cap) and per accent, accent balance, and a `max_keep` that takes
+    speakers in turn. `SelectResult.speech` reports the hours by speaker,
+    accent and split part.
+  - **A speaker-disjoint split:** `split.group_by: "speaker"` (required on a
+    speech scan). A corpus speaker label and a speaker cluster that share a
+    clip are one group, so neither spans both parts; stratified by accent and
+    gender. `selection.split_held_out` gains an optional `strata`.
+  - **Export:** each clip with a `<stem>.txt` transcript beside it, and
+    `speech_manifest.jsonl`: `SpeechManifestRow`, its own row shape and version
+    (`SPEECH_MANIFEST_VERSION` 1.0, snapshot
+    `schema/speech-manifest-row.snapshot.json`, checked by
+    `make manifest-snapshot`). The image `ManifestRow` and `MANIFEST_VERSION`
+    are unchanged.
+  - **Provenance:** an export names the licensed corpus (`speech.corpus`,
+    `speech.license`) or a cortex `ConsentRecord` for a real person's voice
+    (`speech.consent_record`, checked for `training` of the `voice` at
+    `speech.consent_delivery`, bound to its reference recordings' speaker
+    clusters). A consented row's provenance names no one: `subject` is
+    cortex's subject ref `consent:<release_sha256>` and `source` leaves out
+    who collected the release. The corpus's `gender` label is carried with
+    `speaker`, `accent`, `language` and `age`; age is never estimated.
+
+### Changed
+
+- **Requires argus-cortex 0.13 (`>=0.13,<0.14`, all pins; was `>=0.8,<0.9`)**
+  for its consent subject ref (`subject_ref`, `pseudonymise`). Cortex's
+  `TargetProfile` gained `modality` and speech categories; curator's
+  `TargetProfile` is now a subclass narrowed to `modality="image"` and the
+  image `TargetCategory`, so a speech profile is refused on the image path (a
+  422 over HTTP, a `ValidationError` from `scan_folder`) instead of reaching
+  the face-count rules, and the manifest's `target_category` enum stays
+  image-only. A cortex image profile passed to `scan_folder` converts. EraX
+  and the watermark client use cortex's `moderation._http.is_number` /
+  `multipart_image` (moved from `nudenet._is_number` / `_multipart` in cortex
+  0.11).
+- **Kept images are always ranked.** Exports without `face_source` used to
+  write the manifest in scan order (or the diversity pick's order with
+  `max_keep`); every manifest is now in `rank` order.
+- **`guard_eval.py` runs are repeatable and its reports weigh noise (#113).**
+  Expectations moved out of the script into `eval/guard_cases.toml`: per
+  bucket and policy, a correct verdict is `flag`, `pass` or `either`, an
+  `[[override]]` carves out one case or a pattern (with a reason), and a
+  stable held-out share keeps wording from being tuned on its own test set
+  (`--split tune|heldout|all`, `tune` by default). Each `--repeat` is a whole
+  pass in a shuffled order, interleaving cases and policies. `--cache FILE`
+  keys every verdict by the bytes sent, policy text, context, mode, model
+  digest and pass number, so a dead run resumes; the digest comes from
+  `--model-digest`, Ollama's `/api/tags` or the guard server's `/health`, and
+  a run stops if it changes between passes. Connection failures are retried,
+  and a server that stays down stops the run. Text probes go through
+  `check_text`, never beside a grey image; the `folder` context kind is
+  refused; frames sent with no context are counted apart. A run with
+  `--scan-json` first lists frames to review (anything `minor_exposed`
+  catches, exposed readings in `safe`) and waits for `--preflight-ok`. A
+  candidate whose rule letters skip one is refused. The report scores frames
+  (a split counts as flagged), gives per-frame noise and per-subfolder tables,
+  lists frames that keep splitting, marks each change between a candidate and
+  its parent as within or beyond noise, and exits 1 when a candidate passes a
+  `hard` frame its parent flagged. `--report ROWS` reprints it from a saved
+  run. `--prompt-cache-check` measures Ollama's prompt cache straight against
+  Ollama.
+
+### Fixed
+
+- **GPU memory stays near what curator's leases ask for (#189).** ONNX Runtime's
+  default CUDA arena grows in power-of-two steps with no ceiling and keeps what
+  it takes, and MiVOLO and FairFace ran every face in an image as one batch, so
+  each new face count was a new, larger shape. One scan held ~20 GB while each
+  lease asked for 512 MB, and its own next lease then waited on that memory.
+  Every CUDA session (curator's own and InsightFace's) is now built with
+  `arena_extend_strategy=kSameAsRequested` and a per-session `gpu_mem_limit`
+  (`ARGUS_CURATOR_GPU_MEM_LIMIT_MB`, default 1024), and the attribute models
+  run one face per pass (`runtime.ATTRIBUTE_BATCH`), so a crowd shot neither
+  grows the arena nor fails against the cap. Measured on a 3090 over 600
+  images, the faces check now peaks at ~1.5 GB (it was ~2.2 GB on those images)
+  and runs about as fast. `runtime.VRAM_MB` and `gpu-tenant.yaml` carry the
+  measured footprints (`faces` 1600 MB, `garments` 1268, `scenes` 656).
+- **A lease reports `peak_vram_mb` on release.** It is the VRAM the process
+  holds then (NVML), which is its high-water mark because the arena keeps what
+  it reserves. NVML lists host PIDs, so in a container the figure is only
+  found with `pid: host`. Otherwise nothing is reported, as before.
+- **A rejected reference image is still a reference.** A `reference_paths`
+  image the scan's filters rejected (often a studio portrait failing the blur
+  check) used to give no distances; it is now embedded from the bytes the scan
+  read, and its row stays rejected.
+
 ## [0.18.0] - 2026-11-19
 
 ### Added
@@ -1161,7 +1413,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/smk762/argus-curator/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/smk762/argus-curator/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/smk762/argus-curator/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/smk762/argus-curator/compare/v0.15.1...v0.16.0

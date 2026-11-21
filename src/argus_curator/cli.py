@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from argus_cortex.taxonomy import TARGET_CATEGORIES
+from argus_cortex.taxonomy import SPEECH_CATEGORIES, TARGET_CATEGORIES
 
 if TYPE_CHECKING:
     from pydantic import ValidationError
@@ -88,6 +88,27 @@ def _invalid(exc: ValidationError) -> typer.Exit:
     return typer.Exit(2)
 
 
+def _outside_references(source: Path, refs: list[str]) -> list[Path] | None:
+    """The reference files when any of *refs* is not an image in *source*, else None.
+
+    References in the scanned folder stay rel paths (``FaceConfig.reference_paths``).
+    One outside it (a portrait or consent photo kept apart from the set) makes all of
+    them files, read here and averaged into ``FaceConfig.reference_embedding``.
+    """
+
+    def in_scan(ref: str) -> bool:
+        return not Path(ref).is_absolute() and (source / ref).is_file()
+
+    if all(in_scan(ref) for ref in refs):
+        return None
+    files = [source / ref if in_scan(ref) else Path(ref) for ref in refs]
+    for f in files:
+        if not f.is_file():
+            typer.echo(f"Error: --face-reference {f}: no such file", err=True)
+            raise typer.Exit(2)
+    return files
+
+
 @app.command()
 def scan(
     source: Path = Argument(..., help="Root folder to scan (recurses into sub-folders)"),
@@ -98,6 +119,23 @@ def scan(
     keep_similar: bool = Option(False, "--keep-similar", help="Keep non-representative near-duplicates"),
     no_cluster: bool = Option(False, "--no-cluster", help="Disable near-duplicate grouping"),
     cluster_distance: int = Option(10, "--cluster-distance", help="pHash Hamming distance for near-duplicates"),
+    semantic_dupes: bool = Option(
+        False, "--semantic-dupes", help="Also group near-duplicates by CLIP embedding similarity (needs --embeddings)"
+    ),
+    semantic_dupes_cosine: float = Option(
+        0.95, "--semantic-dupes-cosine", help="With --semantic-dupes, the cosine similarity that makes a duplicate"
+    ),
+    profile_fit: bool = Option(
+        False, "--profile-fit", help="Score each image's zero-shot CLIP fit to the target profile (needs --embeddings)"
+    ),
+    junk_check: bool = Option(
+        False,
+        "--junk-check",
+        help="Score each image's zero-shot CLIP junk probability: screenshot, collage, text, meme (needs --embeddings)",
+    ),
+    junk_threshold: float = Option(
+        0.8, "--junk-threshold", help="The junk probability that names a junk kind (and that --drop-junk drops at)"
+    ),
     max_keep: int | None = Option(None, "--max-keep", help="Cap keepers to a diverse N"),
     diversity_weight: float = Option(0.40, "--diversity-weight", help="0=pure score, 1=pure spread"),
     min_short_side: int = Option(512, "--min-short-side", help="Minimum short-side pixels (512 at least)"),
@@ -105,9 +143,34 @@ def scan(
     blur_threshold: float = Option(100.0, "--blur-threshold", help="Minimum Laplacian variance"),
     max_workers: int = Option(4, "--max-workers", help="Parallel worker threads"),
     style: str = Option("photo", "--target-style", help="photo or anime"),
-    target_backend: str = Option("sdxl", "--target-backend", help="Diffusion backend family"),
+    target_backend: str | None = Option(
+        None, "--target-backend", help="Diffusion backend family (default sdxl), or a TTS family for speech"
+    ),
     checkpoint: str | None = Option(None, "--checkpoint", help="Target checkpoint"),
-    category: str = Option("identity", "--target-category", help="|".join(TARGET_CATEGORIES)),
+    category: str | None = Option(
+        None,
+        "--target-category",
+        help=f"{'|'.join(TARGET_CATEGORIES)} (default identity); for speech {'|'.join(SPEECH_CATEGORIES)} (default voice)",
+    ),
+    modality: str = Option(
+        "image", "--modality", help="image, or speech to scan the folder's WAV/FLAC clips and transcripts instead"
+    ),
+    transcripts: str | None = Option(
+        None, "--transcripts", help="Speech: auto (default), sidecar, ljspeech or common_voice"
+    ),
+    mos: bool = Option(False, "--mos", help="Speech: score each passing clip with DNSMOS (see dnsmos-fetch)"),
+    dnsmos_model: Path | None = Option(
+        None, "--dnsmos-model", help="Speech: DNSMOS ONNX model (ARGUS_CURATOR_DNSMOS_MODEL)"
+    ),
+    speech_speakers: bool = Option(
+        False, "--speakers", help="Speech: embed and cluster each passing clip's speaker (see speaker-fetch)"
+    ),
+    speaker_model: Path | None = Option(
+        None, "--speaker-model", help="Speech: speaker-embedding ONNX model (ARGUS_CURATOR_SPEAKER_MODEL)"
+    ),
+    speech_config: Path | None = Option(
+        None, "--speech-config", help="Speech: a JSON SpeechConfig with the thresholds (the flags above override it)"
+    ),
     faces: bool = Option(False, "--faces", help="Run InsightFace detection + identity clustering"),
     faces_model: str = Option("buffalo_l", "--faces-model", help="InsightFace model name"),
     min_det_score: float = Option(0.5, "--min-det-score", help="Minimum face detection score"),
@@ -144,11 +207,18 @@ def scan(
     garments_model: Path | None = Option(
         None, "--garments-model", help="Converted garment-detector ONNX model (ARGUS_CURATOR_GARMENTS_MODEL)"
     ),
+    embeddings: bool = Option(
+        False, "--embeddings", help="Compute CLIP image embeddings (memory only) for --diversify-semantic"
+    ),
+    embeddings_model: Path | None = Option(
+        None, "--embeddings-model", help="Converted CLIP image-tower ONNX model (ARGUS_CURATOR_EMBEDDINGS_MODEL)"
+    ),
     face_clusters: str | None = Option(None, "--face-clusters", help="Comma-separated cluster ids to export"),
     face_reference: list[str] = Option(
         [],
         "--face-reference",
-        help="An image in the scan (relative path) whose face is the identity reference; repeatable. "
+        help="An image whose face is the identity reference: a path relative to the scanned folder, "
+        "or any image file outside it; repeatable (several are averaged). "
         "Each face then gets a reference_distance (implies --faces)",
     ),
     face_source: bool = Option(
@@ -156,6 +226,21 @@ def scan(
         "--face-source",
         help="Export only face-source images (one identity, frontal and level, large, sharp, eyes open, "
         "mouth closed, adult; needs --mivolo), ranked best first",
+    ),
+    consent: str | None = Option(
+        None,
+        "--consent",
+        help="A real person's consent record (argus-cortex ConsentRecord JSON), relative to the scanned folder "
+        "or absolute: bind the set to its reference images (implies --mivolo --set-age)",
+    ),
+    consent_max_distance: float = Option(
+        0.4, "--consent-max-distance", help="Ceiling on a face's distance from the record's reference to be bound"
+    ),
+    face_source_consent: bool = Option(
+        False,
+        "--face-source-consent",
+        help="Export a consented face set: --face-source over the images bound to --consent's record, re-checked "
+        "at export, adult only; refused when none qualifies (implies --face-source)",
     ),
     landmarks: bool = Option(False, "--landmarks", help="Write the primary face's landmarks into the manifest"),
     face_poses: str | None = Option(
@@ -206,6 +291,11 @@ def scan(
     ),
     diversify_outfits: bool = Option(
         False, "--diversify-outfits", help="With --max-keep, also spread the selection across outfits"
+    ),
+    diversify_semantic: bool = Option(
+        False,
+        "--diversify-semantic",
+        help="With --max-keep, also spread the selection semantically (CLIP embeddings; needs --embeddings)",
     ),
     nsfw: bool | None = Option(
         None,
@@ -286,6 +376,12 @@ def scan(
         "--drop-no-age",
         help="Reject images with no MiVOLO, body-only or set age before scenes, garments and SingGuard (needs --mivolo)",
     ),
+    drop_junk: bool = Option(
+        False,
+        "--drop-junk",
+        help="Reject images whose zero-shot junk probability reaches --junk-threshold, before SingGuard "
+        "(needs --embeddings)",
+    ),
     minor_exposed: str | None = Option(None, "--minor-exposed", help=_MINOR_EXPOSED_HELP),
     crops: bool = Option(
         False,
@@ -340,7 +436,9 @@ def scan(
     from argus_curator.export import export_selection
     from argus_curator.models import (
         DEFAULT_NSFW_THRESHOLD,
+        ConsentConfig,
         CropConfig,
+        EmbeddingConfig,
         ExportRequest,
         FaceConfig,
         FaceSourceFilter,
@@ -360,8 +458,62 @@ def scan(
     if not source.is_dir():
         typer.echo(f"Error: not a directory: {source}", err=True)
         raise typer.Exit(1)
+    if modality not in ("image", "speech"):
+        typer.echo("Error: --modality must be image or speech", err=True)
+        raise typer.Exit(2)
+    if modality == "speech":
+        image_only = {
+            "--copy-to": copy_to,
+            "--move-to": move_to,
+            "--symlink-to": symlink_to,
+            "--csv": csv_out,
+            "--faces": faces or fairface or mivolo or set_age or mivolo_body or bool(face_reference),
+            "--scenes": scenes,
+            "--garments": garments,
+            "--embeddings": embeddings,
+            "--crops": crops or detect_watermarks,
+            "--guard": guard,
+            "--drop-*": drop_nsfw or drop_no_face or drop_no_age or drop_junk,
+            "--profile-fit/--junk-check": profile_fit or junk_check,
+            "--xmp": xmp or xmp_sources,
+            "--consent": consent or face_source_consent or face_source,
+        }
+        if asked := [flag for flag, value in image_only.items() if value]:
+            typer.echo(
+                f"Error: a speech scan runs no image checks, and exports over HTTP (POST /export with speech); "
+                f"drop {', '.join(asked)}",
+                err=True,
+            )
+            raise typer.Exit(2)
+        _scan_speech(
+            source,
+            style=style,
+            target_backend=target_backend,
+            checkpoint=checkpoint,
+            category=category or "voice",
+            transcripts=transcripts,
+            mos=mos,
+            dnsmos_model=dnsmos_model,
+            speakers=speech_speakers,
+            speaker_model=speaker_model,
+            speech_config=speech_config,
+            device=device,
+            max_workers=max_workers,
+            no_cluster=no_cluster,
+            json_out=json_out,
+            verbose=verbose,
+        )
+        return
+    if transcripts or mos or dnsmos_model or speech_config or speech_speakers or speaker_model:
+        typer.echo(
+            "Error: --transcripts, --mos, --dnsmos-model, --speakers, --speaker-model and --speech-config "
+            "need --modality speech",
+            err=True,
+        )
+        raise typer.Exit(2)
     import os
 
+    from argus_curator import embeddings as embeddings_mod
     from argus_curator import erax as erax_mod
     from argus_curator import fairface as fairface_mod
     from argus_curator import garments as garments_mod
@@ -376,6 +528,7 @@ def scan(
         (mivolo_model, mivolo_mod.MODEL_ENV),
         (places365_model, scenes_mod.MODEL_ENV),
         (garments_model, garments_mod.MODEL_ENV),
+        (embeddings_model, embeddings_mod.MODEL_ENV),
         (nudenet_url, nsfw_mod.URL_ENV),
         (erax_url, erax_mod.URL_ENV),
         (watermark_url, watermarks_mod.URL_ENV),
@@ -405,25 +558,36 @@ def scan(
             typer.echo(f"Error: --detect-watermarks: the detector {why}", err=True)
             raise typer.Exit(2)
 
-    profile = TargetProfile(
-        target_style=style,
-        target_backend=target_backend,
-        checkpoint=checkpoint,
-        target_category=category,
-    )
+    try:
+        profile = TargetProfile(
+            target_style=style,
+            target_backend=target_backend or "sdxl",
+            checkpoint=checkpoint,
+            target_category=category or "identity",
+        )
+    except ValidationError as exc:
+        raise _invalid(exc) from exc
     try:
         cfg = ScanConfig(
             min_short_side=min_short_side,
             max_aspect_ratio=max_aspect_ratio,
             blur_threshold=blur_threshold,
             cluster_distance=-1 if no_cluster else cluster_distance,
+            semantic_duplicates=semantic_dupes,
+            semantic_duplicate_cosine=semantic_dupes_cosine,
+            profile_fit=profile_fit,
+            junk_check=junk_check,
+            junk_threshold=junk_threshold,
             diversity_weight=diversity_weight,
             max_workers=max_workers,
         )
     except ValidationError as exc:
         raise _invalid(exc) from exc
+    outside_refs = _outside_references(source, face_reference) if face_reference else None
     faces_cfg = FaceConfig(
-        enabled=faces,
+        # An outside reference is embedded just before the scan, once every
+        # other check has passed; it needs face detection all the same.
+        enabled=faces or outside_refs is not None,
         model=faces_model,
         min_det_score=min_det_score,
         cluster_eps=cluster_eps,
@@ -432,13 +596,48 @@ def scan(
         mivolo=mivolo,
         set_age=set_age,
         mivolo_body=mivolo_body,
-        reference_paths=face_reference,
+        reference_paths=face_reference if outside_refs is None else [],
     )
+    if diversify_semantic and not embeddings:
+        typer.echo("Error: --diversify-semantic needs --embeddings", err=True)
+        raise typer.Exit(2)
+    if semantic_dupes and not embeddings:
+        typer.echo("Error: --semantic-dupes needs --embeddings", err=True)
+        raise typer.Exit(2)
+    zero_shot = [
+        flag
+        for flag, on in (("--profile-fit", profile_fit), ("--junk-check", junk_check), ("--drop-junk", drop_junk))
+        if on
+    ]
+    if zero_shot and not embeddings:
+        typer.echo(f"Error: {zero_shot[0]} needs --embeddings", err=True)
+        raise typer.Exit(2)
+    face_source = face_source or face_source_consent
+    if face_source_consent and consent is None:
+        typer.echo("Error: --face-source-consent needs a consent record (--consent)", err=True)
+        raise typer.Exit(2)
+    try:
+        consent_cfg = ConsentConfig(record=consent, max_distance=consent_max_distance)
+    except ValidationError as exc:
+        raise _invalid(exc) from exc
+    if consent is not None:
+        from argus_curator.consent import faces_for_consent
+
+        if outside_refs is not None:
+            typer.echo("Error: --consent takes its reference from the record; drop --face-reference", err=True)
+            raise typer.Exit(2)
+        try:
+            faces_cfg = faces_for_consent(faces_cfg)
+        except ValueError as exc:
+            typer.echo(f"Error: --consent: {exc}", err=True)
+            raise typer.Exit(2) from exc
     if face_source and not faces_cfg.mivolo:
         typer.echo("Error: --face-source checks for an adult age, which needs --mivolo", err=True)
         raise typer.Exit(2)
 
-    prefilter_cfg = PrefilterConfig(drop_nsfw=drop_nsfw, drop_no_face=drop_no_face, drop_no_age=drop_no_age)
+    prefilter_cfg = PrefilterConfig(
+        drop_nsfw=drop_nsfw, drop_no_face=drop_no_face, drop_no_age=drop_no_age, drop_junk=drop_junk
+    )
     nsfw_cfg = NsfwConfig(enabled=nsfw)
     nsfw_on = nsfw_mod.resolve_enabled(nsfw_cfg)
     if (gap := prefilter_missing(prefilter_cfg, faces_cfg, nsfw_on)) is not None:
@@ -522,6 +721,7 @@ def scan(
             min_garment_conf=min_garment_conf,
             garments_uncropped=garments_uncropped,
             diversify_outfits=diversify_outfits,
+            diversify_semantic=diversify_semantic,
             nsfw_threshold=nsfw_threshold,
             nsfw_label_thresholds=label_thresholds,
             content_ratings=_csv_list(content_ratings),
@@ -529,7 +729,7 @@ def scan(
             guard_rules=_csv_list(guard_rules),
             guard_policies=_csv_list(guard_policies),
             **({"nsfw_exposed_labels": _csv_list(nsfw_exposed_labels)} if nsfw_exposed_labels else {}),
-            face_source=FaceSourceFilter() if face_source else None,
+            face_source=FaceSourceFilter(consent=face_source_consent) if face_source else None,
             write_manifest=dest is not None,
             landmarks=landmarks,
             write_xmp=xmp,
@@ -544,9 +744,16 @@ def scan(
 
     needed = (
         (fairface, fairface_available, "FairFace", fairface_mod.MODEL_ENV, "fairface-convert <weights.pt>"),
-        (mivolo, mivolo_available, "MiVOLO", mivolo_mod.MODEL_ENV, "mivolo-convert"),
+        (faces_cfg.mivolo, mivolo_available, "MiVOLO", mivolo_mod.MODEL_ENV, "mivolo-convert"),
         (scenes, scenes_mod.scenes_available, "Places365", scenes_mod.MODEL_ENV, "places365-convert"),
         (garments, garments_mod.garments_available, "garment-detector", garments_mod.MODEL_ENV, "garments-convert"),
+        (
+            embeddings,
+            embeddings_mod.embeddings_available,
+            "CLIP embedding",
+            embeddings_mod.MODEL_ENV,
+            "embeddings-convert",
+        ),
     )
     for wanted, available, name, env, command in needed:
         if wanted and not available():
@@ -601,6 +808,16 @@ def scan(
         typer.echo(f"Error: SingGuard filters need the SingGuard check, but {why}", err=True)
         raise typer.Exit(1)
 
+    if outside_refs is not None:
+        from argus_curator.faces import FacesUnavailable, reference_embedding
+
+        try:
+            centroid = reference_embedding([f.read_bytes() for f in outside_refs], faces_cfg)
+        except (FacesUnavailable, ValueError, OSError) as exc:
+            typer.echo(f"Error: --face-reference: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        faces_cfg = faces_cfg.model_copy(update={"reference_embedding": centroid})
+
     typer.echo(f"Scanning {source} (recursive) ...")
     summary = _scan(
         source,
@@ -609,10 +826,12 @@ def scan(
         faces_cfg,
         scene_cfg=scene_cfg,
         garment_cfg=garment_cfg,
+        embed_cfg=EmbeddingConfig(enabled=embeddings, device=device),
         nsfw_cfg=nsfw_cfg,
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
         crop_cfg=CropConfig(enabled=crops, detect=detect_watermarks, max_cut=max_cut, reject_overlay=not keep_overlays),
+        consent_cfg=consent_cfg,
     )
 
     typer.echo("=" * 56)
@@ -680,6 +899,14 @@ def scan(
         thinking = f", {gc.thinking}" + (" (refused, ran fast)" if gc.fell_back else "") if gc.thinking else ""
         typer.echo(f"  SingGuard:             {len(judged)} checked, {unsafe} unsafe{rules}{thinking}{tail}")
     typer.echo("=" * 56)
+    if summary.consent is not None:
+        check = summary.consent
+        if check.eligible:
+            bound = sum(1 for r in summary.results if r.consent is not None and r.consent.bound)
+            refs = len(check.references)
+            typer.echo(f"  Consent:               eligible; {bound} image(s) bound ({refs} reference image(s))")
+        else:
+            typer.echo(f"  Consent:               INELIGIBLE ({check.reason}): {check.detail}")
     if summary.reject_reasons:
         typer.echo("\nRejection reasons:")
         for reason, count in sorted(summary.reject_reasons.items(), key=lambda x: -x[1]):
@@ -736,13 +963,26 @@ def scan(
         # With no --copy-to/--move-to/--symlink-to there is nowhere to transfer
         # to: exporting would copy every file onto itself (SameFileError per
         # image) for a report-only run, so skip it and report no exported paths.
-        result = export_selection(summary, req) if dest is not None else None
+        from argus_curator.consent import ConsentRefused, face_source_gate
+
+        try:
+            result = export_selection(summary, req) if dest is not None else None
+            gate = face_source_gate(req, summary) if csv_out else None
+        except ConsentRefused as exc:
+            typer.echo(f"Error: consent refused: {exc}", err=True)
+            raise typer.Exit(2) from exc
         if csv_out:
             from argus_curator.export import write_report
-            from argus_curator.selection import decide_selection
+            from argus_curator.selection import decide_selection, scan_references
 
             selected, keep_reason = decide_selection(
-                summary.results, req, summary.config.diversity_weight, set_age=summary.set_age
+                summary.results,
+                req,
+                summary.config.diversity_weight,
+                set_age=summary.set_age,
+                embeddings=summary.embeddings,
+                gate=gate,
+                references=scan_references(summary),
             )
             exported_paths = result.exported_paths if result is not None else {}
             write_report(summary.results, keep_reason, {r.rel_path for r in selected}, exported_paths, csv_out)
@@ -761,6 +1001,114 @@ def scan(
                 typer.echo(f"Run stats -> {result.run_stats_path}")
 
     typer.echo(f"\nDone. scan_id={summary.scan_id}")
+
+
+def _scan_speech(
+    source: Path,
+    *,
+    style: str,
+    target_backend: str | None,
+    checkpoint: str | None,
+    category: str,
+    transcripts: str | None,
+    mos: bool,
+    dnsmos_model: Path | None,
+    speakers: bool,
+    speaker_model: Path | None,
+    speech_config: Path | None,
+    device: str,
+    max_workers: int,
+    no_cluster: bool,
+    json_out: Path | None,
+    verbose: bool,
+) -> None:
+    """``scan --modality speech``: score the folder's clips (#186). Saves the scan to the store, exports nothing."""
+    import json
+    import os
+
+    from pydantic import ValidationError
+
+    from argus_curator import dnsmos as dnsmos_mod
+    from argus_curator.models import SpeechConfig, SpeechTargetProfile
+    from argus_curator.runtime import ModelUnavailable
+    from argus_curator.speech import scan_speech_folder
+    from argus_curator.store import ScanStore
+
+    if dnsmos_model is not None:
+        os.environ[dnsmos_mod.MODEL_ENV] = str(dnsmos_model)
+    if speaker_model is not None:
+        from argus_curator import speakers as speakers_mod
+
+        os.environ[speakers_mod.MODEL_ENV] = str(speaker_model)
+    try:
+        base = json.loads(speech_config.read_text(encoding="utf-8")) if speech_config is not None else {}
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Error: --speech-config: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if not isinstance(base, dict):
+        typer.echo("Error: --speech-config must hold a JSON object", err=True)
+        raise typer.Exit(2)
+    overrides: dict[str, object] = {"max_workers": max_workers}
+    if transcripts is not None:
+        overrides["transcripts"] = transcripts
+    if mos:
+        overrides.update(mos=True, mos_device=device)
+    if speakers:
+        overrides.update(speakers=True, speaker_device=device)
+    if no_cluster:
+        overrides["duplicate_distance"] = -1
+    try:
+        cfg = SpeechConfig.model_validate({**base, **overrides})
+        profile = SpeechTargetProfile(
+            target_style=style, target_backend=target_backend, checkpoint=checkpoint, target_category=category
+        )
+    except ValidationError as exc:
+        raise _invalid(exc) from exc
+
+    typer.echo(f"Scanning speech clips in {source} (recursive) ...")
+    try:
+        summary = scan_speech_folder(source, profile, cfg)
+    except ModelUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    typer.echo("=" * 56)
+    typer.echo(f"  Clips scanned:         {summary.total}")
+    typer.echo(f"  Passed:                {summary.passed}")
+    typer.echo(f"  Similar clusters (>1): {summary.similar_clusters}  ({summary.duplicates} non-representative)")
+    kept = [c for c in summary.clips if c.passed and not c.is_duplicate]
+    hours = sum(c.duration_s or 0.0 for c in kept) / 3600
+    typer.echo(f"  Usable audio:          {hours:.2f} h in {len(kept)} clips")
+    if summary.speaker_clusters:
+        typer.echo(
+            f"  Speakers (clustered):  {len(summary.speaker_clusters)}  "
+            f"({summary.speaker_mismatches} clips' corpus labels disagree)"
+        )
+    scored = sorted(c.mos.ovrl for c in summary.clips if c.mos is not None)
+    if scored:
+        typer.echo(f"  DNSMOS OVRL (median):  {scored[len(scored) // 2]:.2f} over {len(scored)} clips")
+    typer.echo("=" * 56)
+    if summary.reject_reasons:
+        typer.echo("")
+        typer.echo("Rejection reasons:")
+        for reason, count in sorted(summary.reject_reasons.items(), key=lambda x: -x[1]):
+            typer.echo(f"  {count:4d}  {reason}")
+    if verbose:
+        typer.echo("")
+        typer.echo("Per-clip (grouped by cluster, then score):")
+        for c in sorted(summary.clips, key=lambda x: (x.similar_group, -x.score)):
+            tag = f"g{c.similar_group}" + ("*" if c.is_representative and c.group_size > 1 else "")
+            why = f"  [{c.reject_reason}: {c.reject_detail}]" if c.reject_reason else ""
+            snr = f" snr={c.snr_db:.1f}" if c.snr_db is not None else ""
+            mos_text = f" mos={c.mos.ovrl:.2f}" if c.mos is not None else ""
+            typer.echo(f"  {c.score:.3f} {tag:>5}  {c.rel_path}{snr}{mos_text}{why}")
+
+    ScanStore().save(summary)
+    if json_out:
+        json_out.write_text(summary.model_dump_json(indent=2), encoding="utf-8")
+        typer.echo("")
+        typer.echo(f"JSON summary written -> {json_out}")
+    typer.echo(f"Scan saved as {summary.scan_id}")
 
 
 @app.command()
@@ -934,7 +1282,93 @@ def garments_convert(
     typer.echo(f"Wrote garment-detector ONNX model -> {written}")
 
 
+@app.command("embeddings-convert")
+def embeddings_convert(
+    checkpoint: Path | None = Option(
+        None, "--checkpoint", help="Local dir with config.json + pytorch_model.bin (default: download the pinned one)"
+    ),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+    prompts: bool = Option(
+        False,
+        "--prompts",
+        help="Instead, embed the zero-shot prompts with the text tower and write the pinned prompt file "
+        "(default: the package's data/clip_prompts.json; a maintainer step)",
+    ),
+) -> None:
+    """Fetch, verify and convert the CLIP image tower for --embeddings.
+
+    Weights: huggingface.co/laion/CLIP-ViT-L-14-DataComp.XL-s13B-b90K (MIT;
+    DataComp-1B CLIP ViT-L/14), pinned by commit and sha256. Only the image
+    tower and its projection are exported (~1.2 GB fp32). With --prompts, the
+    text tower embeds the zero-shot prompts into the pinned prompt file the
+    package ships (a maintainer step; scans never run the text tower).
+    Needs: pip install argus-curator[embeddings-convert]
+    """
+    from argus_curator.embeddings import export_onnx, fetch_weights, model_path
+    from argus_curator.runtime import ModelUnavailable
+
+    if prompts:
+        from argus_curator import zeroshot
+
+        try:
+            source = checkpoint or fetch_weights(zeroshot.PROMPT_HF_FILES)
+            written, digest = zeroshot.export_prompts(source, output or zeroshot.default_prompts_path())
+        except ModelUnavailable as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        typer.echo(f"Wrote CLIP prompt vectors -> {written}\nsha256 {digest} (set zeroshot.PROMPTS_SHA256 to it)")
+        return
+    try:
+        source = checkpoint or fetch_weights()
+        written = export_onnx(source, output or model_path())
+    except ModelUnavailable as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote CLIP image-tower ONNX model -> {written}")
+
+
 DEFAULT_SCHEMA_PATH = Path("schema/curator-wire.schema.json")
+
+
+@app.command("dnsmos-fetch")
+def dnsmos_fetch(
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the model (default: model cache)"),
+) -> None:
+    """Fetch the DNSMOS P.835 model a speech scan's --mos runs.
+
+    microsoft/DNS-Challenge (code MIT, other content CC BY 4.0), pinned by
+    commit and sha256; 1.2 MB, runs on onnxruntime (argus-curator[speech]).
+    """
+    from argus_curator.dnsmos import fetch_model
+    from argus_curator.runtime import ModelUnavailable
+
+    try:
+        written = fetch_model(output)
+    except (ModelUnavailable, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"DNSMOS model in place -> {written}")
+
+
+@app.command("speaker-fetch")
+def speaker_fetch(
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the model (default: model cache)"),
+) -> None:
+    """Fetch the speaker-embedding model a speech scan's --speakers runs.
+
+    WeSpeaker's ECAPA-TDNN (VoxCeleb2, large-margin fine-tuned; code
+    Apache-2.0, model CC BY 4.0), pinned by Hugging Face revision and
+    sha256; 25 MB, runs on onnxruntime (argus-curator[speech]).
+    """
+    from argus_curator.runtime import ModelUnavailable
+    from argus_curator.speakers import fetch_model
+
+    try:
+        written = fetch_model(output)
+    except (ModelUnavailable, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Speaker model in place -> {written}")
 
 
 @app.command()

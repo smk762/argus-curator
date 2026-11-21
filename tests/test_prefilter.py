@@ -459,7 +459,12 @@ def test_prefilter_config_round_trips_on_the_summary() -> None:
         similar_clusters=0,
     )
     dumped = summary.model_dump(mode="json")
-    assert dumped["prefilter_config"] == {"drop_nsfw": True, "drop_no_face": False, "drop_no_age": True}
+    assert dumped["prefilter_config"] == {
+        "drop_nsfw": True,
+        "drop_no_face": False,
+        "drop_no_age": True,
+        "drop_junk": False,
+    }
     assert ScanSummary.model_validate_json(summary.model_dump_json()).prefilter_config == summary.prefilter_config
     # A summary stored before the prefilter existed still loads, with every rule off.
     del dumped["prefilter_config"]

@@ -1,5 +1,646 @@
 {
   "$defs": {
+    "ClipResult": {
+      "description": "Per-clip record of a speech scan, keyed by ``rel_path`` like :class:`ImageResult`.\n\nA measurement is ``None`` when the scan never got to it (the clip could not\nbe decoded, or the check was not asked for). The corpus labels\n(``speaker``, ``accent``, ``language``, ``age``) are copied verbatim from\nthe corpus metadata, never estimated.",
+      "properties": {
+        "abs_path": {
+          "title": "Abs Path",
+          "type": "string"
+        },
+        "accent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accent"
+        },
+        "age": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age"
+        },
+        "cer": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cer"
+        },
+        "channels": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channels"
+        },
+        "chars_per_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chars Per S"
+        },
+        "clipping_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clipping Ratio"
+        },
+        "duplicate_of": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Of"
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration S"
+        },
+        "failed_checks": {
+          "items": {
+            "enum": [
+              "unreadable",
+              "corpus_under_18",
+              "duration",
+              "sample_rate",
+              "channels",
+              "silent",
+              "clipping",
+              "leading_silence",
+              "trailing_silence",
+              "transcript",
+              "speaking_rate",
+              "snr",
+              "speech_ratio",
+              "mos",
+              "cer"
+            ],
+            "type": "string"
+          },
+          "title": "Failed Checks",
+          "type": "array"
+        },
+        "fingerprint": {
+          "default": "",
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "gender": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gender"
+        },
+        "group_size": {
+          "default": 1,
+          "title": "Group Size",
+          "type": "integer"
+        },
+        "is_duplicate": {
+          "default": false,
+          "title": "Is Duplicate",
+          "type": "boolean"
+        },
+        "is_representative": {
+          "default": true,
+          "title": "Is Representative",
+          "type": "boolean"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "leading_silence_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Leading Silence S"
+        },
+        "mos": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechMos"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mos_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mos Error"
+        },
+        "passed": {
+          "default": false,
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "reject_detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reject Detail"
+        },
+        "reject_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "unreadable",
+                "corpus_under_18",
+                "duration",
+                "sample_rate",
+                "channels",
+                "silent",
+                "clipping",
+                "leading_silence",
+                "trailing_silence",
+                "transcript",
+                "speaking_rate",
+                "snr",
+                "speech_ratio",
+                "mos",
+                "cer"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reject Reason"
+        },
+        "rel_path": {
+          "title": "Rel Path",
+          "type": "string"
+        },
+        "sample_rate": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Rate"
+        },
+        "score": {
+          "default": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "score_breakdown": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Score Breakdown",
+          "type": "object"
+        },
+        "similar_group": {
+          "default": 0,
+          "title": "Similar Group",
+          "type": "integer"
+        },
+        "snr_db": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snr Db"
+        },
+        "speaker": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker"
+        },
+        "speaker_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Cluster"
+        },
+        "speaker_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Distance"
+        },
+        "speaker_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Error"
+        },
+        "speaker_mismatch": {
+          "default": false,
+          "title": "Speaker Mismatch",
+          "type": "boolean"
+        },
+        "speech_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speech Ratio"
+        },
+        "stt_transcript": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stt Transcript"
+        },
+        "trailing_silence_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trailing Silence S"
+        },
+        "transcript": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transcript"
+        },
+        "transcript_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "sidecar",
+                "ljspeech",
+                "common_voice"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transcript Source"
+        }
+      },
+      "required": [
+        "rel_path",
+        "abs_path",
+        "score",
+        "passed",
+        "reject_reason",
+        "failed_checks",
+        "reject_detail",
+        "similar_group",
+        "group_size",
+        "is_representative",
+        "is_duplicate",
+        "duplicate_of",
+        "duration_s",
+        "sample_rate",
+        "channels",
+        "clipping_ratio",
+        "leading_silence_s",
+        "trailing_silence_s",
+        "snr_db",
+        "speech_ratio",
+        "transcript",
+        "transcript_source",
+        "chars_per_s",
+        "mos",
+        "mos_error",
+        "stt_transcript",
+        "cer",
+        "speaker",
+        "accent",
+        "language",
+        "age",
+        "gender",
+        "speaker_cluster",
+        "speaker_distance",
+        "speaker_mismatch",
+        "speaker_error",
+        "fingerprint",
+        "score_breakdown"
+      ],
+      "title": "ClipResult",
+      "type": "object"
+    },
+    "ConsentBinding": {
+      "description": "Whether one image is bound to the scan's consent record (ImageResult.consent).",
+      "properties": {
+        "bound": {
+          "title": "Bound",
+          "type": "boolean"
+        },
+        "distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distance"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "not-consented",
+                "provenance",
+                "unchecked",
+                "no-face",
+                "bystander",
+                "mismatch"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "bound",
+        "distance",
+        "reason"
+      ],
+      "title": "ConsentBinding",
+      "type": "object"
+    },
+    "ConsentCheck": {
+      "description": "What the scan made of its consent record (ScanSummary.consent).\n\nNever the record: a record names a person, so the scan keeps only the\nverdict, the record's hashes and which images are the references. It is\npart of the scan, so deleting or purging the scan removes it.",
+      "properties": {
+        "checked_at": {
+          "format": "date-time",
+          "title": "Checked At",
+          "type": "string"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "eligible": {
+          "title": "Eligible",
+          "type": "boolean"
+        },
+        "max_distance": {
+          "title": "Max Distance",
+          "type": "number"
+        },
+        "missing_references": {
+          "default": 0,
+          "title": "Missing References",
+          "type": "integer"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "missing",
+                "invalid",
+                "no-reference-image",
+                "no-reference-face"
+              ],
+              "type": "string"
+            },
+            {
+              "enum": [
+                "revoked",
+                "not-yet-signed",
+                "expired",
+                "likeness-not-covered",
+                "use-not-covered",
+                "delivery-not-covered"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "record": {
+          "title": "Record",
+          "type": "string"
+        },
+        "record_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Record Sha256"
+        },
+        "references": {
+          "items": {
+            "type": "string"
+          },
+          "title": "References",
+          "type": "array"
+        },
+        "release_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Release Sha256"
+        }
+      },
+      "required": [
+        "record",
+        "eligible",
+        "reason",
+        "detail",
+        "release_sha256",
+        "record_sha256",
+        "checked_at",
+        "max_distance",
+        "references",
+        "missing_references"
+      ],
+      "title": "ConsentCheck",
+      "type": "object"
+    },
+    "ConsentConfig": {
+      "description": "Bind a real person's face set to their consent record (#133; see consent.py).\n\n``record`` is the :class:`argus_cortex.consent.ConsentRecord` file, a path\nrelative to the scanned folder (the server refuses one that resolves\noutside it). None = no consent check. With a record the scan reads it,\nchecks it for the ``avatar`` use of the subject's face, builds the identity\nreference from the record's reference images (found in the scan by their\nsha256), and binds each image: its primary face within ``max_distance`` of\nthat reference, and no one else in the frame. Turning it on turns on face\ndetection, MiVOLO and the set age, which the export gate needs.",
+      "properties": {
+        "max_distance": {
+          "default": 0.4,
+          "maximum": 2.0,
+          "minimum": 0.0,
+          "title": "Max Distance",
+          "type": "number"
+        },
+        "record": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Record"
+        }
+      },
+      "title": "ConsentConfig",
+      "type": "object"
+    },
     "CropBox": {
       "description": "A crop in pixels of the image as displayed: after its EXIF orientation, ``right``/``bottom`` exclusive.\n\nRecorded beside a source as ``<image>.crop.json`` (``{\"left\": .., \"top\": ..,\n\"right\": .., \"bottom\": ..}``) or passed inline in :class:`CropConfig`. A box\nmust lie inside the frame and be non-empty; one that does not makes the\nimage a ``crop:`` reject rather than letting it through uncropped.",
       "properties": {
@@ -85,6 +726,46 @@
         }
       },
       "title": "CropConfig",
+      "type": "object"
+    },
+    "EmbeddingConfig": {
+      "description": "Semantic image embeddings of whole images, a CLIP image tower (see embeddings.py).\n\nThe vectors are held in memory for the scan only, never written, and are\ngone once the scan is deleted or the server restarts. The model (and so the\nembedding space) is process configuration (ARGUS_CURATOR_EMBEDDINGS_MODEL,\n``embeddings.EMBEDDING_SPACE``), deliberately not a field here.",
+      "properties": {
+        "device": {
+          "default": "auto",
+          "title": "Device",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "reference_embedding": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Embedding"
+        },
+        "reference_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reference Paths",
+          "type": "array"
+        }
+      },
+      "title": "EmbeddingConfig",
       "type": "object"
     },
     "EraxConfig": {
@@ -234,6 +915,25 @@
           "title": "Diversify Scenes",
           "type": "boolean"
         },
+        "diversify_semantic": {
+          "default": false,
+          "title": "Diversify Semantic",
+          "type": "boolean"
+        },
+        "diversity_weight": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diversity Weight"
+        },
         "exclude_garments": {
           "anyOf": [
             {
@@ -277,6 +977,11 @@
           ],
           "default": null,
           "title": "Exclude Garments"
+        },
+        "exclude_references": {
+          "default": false,
+          "title": "Exclude References",
+          "type": "boolean"
         },
         "face_ages": {
           "anyOf": [
@@ -532,6 +1237,7 @@
         "max_keep": {
           "anyOf": [
             {
+              "minimum": 0,
               "type": "integer"
             },
             {
@@ -540,6 +1246,20 @@
           ],
           "default": null,
           "title": "Max Keep"
+        },
+        "max_likeness_distance": {
+          "anyOf": [
+            {
+              "maximum": 2.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Likeness Distance"
         },
         "min_age_years": {
           "anyOf": [
@@ -674,6 +1394,16 @@
           "title": "Preserve Structure",
           "type": "boolean"
         },
+        "rank": {
+          "default": "score",
+          "enum": [
+            "score",
+            "identity",
+            "likeness"
+          ],
+          "title": "Rank",
+          "type": "string"
+        },
         "run_stats": {
           "anyOf": [
             {
@@ -748,6 +1478,37 @@
           "default": null,
           "title": "Selection"
         },
+        "speech": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "split": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SplitConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "split_part": {
+          "default": "train",
+          "enum": [
+            "train",
+            "held_out"
+          ],
+          "title": "Split Part",
+          "type": "string"
+        },
         "write_manifest": {
           "default": true,
           "title": "Write Manifest",
@@ -812,8 +1573,17 @@
           "title": "Manifest Path"
         },
         "manifest_version": {
-          "default": "2.3",
+          "default": "2.6",
           "title": "Manifest Version",
+          "type": "string"
+        },
+        "modality": {
+          "default": "image",
+          "enum": [
+            "image",
+            "speech"
+          ],
+          "title": "Modality",
           "type": "string"
         },
         "mode": {
@@ -858,6 +1628,16 @@
           "title": "Skipped",
           "type": "integer"
         },
+        "speech_manifest_version": {
+          "default": "1.0",
+          "title": "Speech Manifest Version",
+          "type": "string"
+        },
+        "transcripts_written": {
+          "default": 0,
+          "title": "Transcripts Written",
+          "type": "integer"
+        },
         "xmp_written": {
           "default": 0,
           "title": "Xmp Written",
@@ -879,7 +1659,10 @@
         "sidecars_carried",
         "sidecars_failed",
         "cropped",
-        "run_stats_path"
+        "run_stats_path",
+        "modality",
+        "speech_manifest_version",
+        "transcripts_written"
       ],
       "title": "ExportResult",
       "type": "object"
@@ -1194,6 +1977,22 @@
           "default": 45.0,
           "title": "Profile Min Yaw",
           "type": "number"
+        },
+        "reference_embedding": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Embedding"
         },
         "reference_paths": {
           "items": {
@@ -1513,6 +2312,11 @@
           "default": null,
           "title": "Cluster"
         },
+        "consent": {
+          "default": false,
+          "title": "Consent",
+          "type": "boolean"
+        },
         "max_identity_distance": {
           "anyOf": [
             {
@@ -1726,6 +2530,52 @@
       "title": "GarmentDetection",
       "type": "object"
     },
+    "Generator": {
+      "additionalProperties": false,
+      "description": "How a generated source was made (argus-mask#26): the model, its sha256, the seed and the prompt.",
+      "properties": {
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Sha256"
+        },
+        "prompt": {
+          "default": "",
+          "title": "Prompt",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "Generator",
+      "type": "object"
+    },
     "GuardConfig": {
       "description": "SingGuard policy check via a remote SingGuard server (see guard.py).\n\nLike NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) is process\nconfiguration. A request picks a policy by name, never by text.\n\n``thinking``: a request may pick the SingGuard mode (``fast``,\n``fast-slow``, ``slow`` or ``cascade``); null runs the server's default\n(ARGUS_CURATOR_SINGGUARD_THINKING). The server refuses a mode outside\nARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED with 422. A finished scan records\nthe mode it ran in, whichever set it. ``fell_back`` is recorded by the scan\nonly (a value a request sends is replaced): whether the server refused the\nmode so checks dropped to ``fast``.",
       "properties": {
@@ -1875,6 +2725,17 @@
           "title": "Artifact Score",
           "type": "number"
         },
+        "consent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsentBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "content_rating": {
           "anyOf": [
             {
@@ -1919,6 +2780,23 @@
           ],
           "default": null,
           "title": "Crop Source"
+        },
+        "duplicate_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "phash",
+                "semantic",
+                "both"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Kind"
         },
         "duplicate_of": {
           "anyOf": [
@@ -2046,6 +2924,18 @@
           "default": "",
           "title": "Keep Reason",
           "type": "string"
+        },
+        "likeness_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Likeness Distance"
         },
         "nsfw": {
           "anyOf": [
@@ -2264,6 +3154,17 @@
           "default": 0,
           "title": "Width",
           "type": "integer"
+        },
+        "zero_shot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ZeroShotResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -2277,7 +3178,9 @@
         "is_representative",
         "is_duplicate",
         "duplicate_of",
+        "duplicate_kind",
         "keep_reason",
+        "zero_shot",
         "sharpness",
         "artifact_score",
         "width",
@@ -2295,6 +3198,8 @@
         "primary_face_roll",
         "primary_face_attributes",
         "set_age",
+        "consent",
+        "likeness_distance",
         "scene",
         "garments",
         "nsfw",
@@ -2469,6 +3374,30 @@
           "title": "Abs Path",
           "type": "string"
         },
+        "consent_record_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Record Sha256"
+        },
+        "consent_release_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Release Sha256"
+        },
         "crop": {
           "anyOf": [
             {
@@ -2489,7 +3418,7 @@
           "type": "string"
         },
         "manifest_version": {
-          "default": "2.3",
+          "default": "2.6",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -2533,6 +3462,17 @@
           "default": null,
           "title": "Primary Face Pose"
         },
+        "provenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Provenance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "rel_path": {
           "title": "Rel Path",
           "type": "string"
@@ -2556,6 +3496,22 @@
           "title": "Similar Group",
           "type": "integer"
         },
+        "split": {
+          "anyOf": [
+            {
+              "enum": [
+                "train",
+                "held_out"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Split"
+        },
         "target_profile": {
           "$ref": "#/$defs/TargetProfile"
         }
@@ -2573,7 +3529,11 @@
         "similar_group",
         "crop",
         "primary_face",
-        "set_age"
+        "set_age",
+        "split",
+        "consent_release_sha256",
+        "consent_record_sha256",
+        "provenance"
       ],
       "title": "ManifestRow",
       "type": "object"
@@ -2815,6 +3775,11 @@
     "PrefilterConfig": {
       "description": "Opt-in drops applied before the late scan phases (see prefilter.py).\n\nRight after the identities phase, a passing image that matches a rule is\nturned into a reject (``passed`` False, ``reject_reason``\n``prefilter:nsfw`` / ``prefilter:no-face`` / ``prefilter:no-age``, the\nfirst that applies in that order). It stays in the results, but scenes,\ngarments and SingGuard never run on it. Hard rejects keep their own reason.\n\n``drop_nsfw``: an exposed NudeNet reading of at least 0.2 (an image NudeNet\nand EraX could not score is kept; needs the NudeNet check). ``drop_no_face``:\nno face detected (needs face detection; an image whose detection failed,\n``face_error``, is kept). ``drop_no_age``: no MiVOLO age on any face, no\nbody-only age, and no set age (needs MiVOLO; a failed detection has no age,\nso it is dropped).",
       "properties": {
+        "drop_junk": {
+          "default": false,
+          "title": "Drop Junk",
+          "type": "boolean"
+        },
         "drop_no_age": {
           "default": false,
           "title": "Drop No Age",
@@ -2832,6 +3797,80 @@
         }
       },
       "title": "PrefilterConfig",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "Where a source came from. Required wherever the suite serves or trains on a likeness.\n\n- ``personal``: the user's own use; needs only ``source``; not cleared to show or share.\n- ``stock``: a published asset under its licence. ``synthetic``: generated, with no real person\n  or owned character going in.\n- ``consented``: a real person's likeness (or an owned character) under a signed release, bound\n  by the release's sha256 (never the document) and its subject: the name as the release gives\n  it, or the opaque ref ``consent:<release_sha256>``, which names no one.\n- ``curated``: reserved; not cleared.\n\nUnknown fields are refused, so a misspelt field cannot be dropped in silence (argus-mask#64).\n``licence`` is read as ``license``, and the derived ``cleared`` a dumped record carries is\ndropped and recomputed, never believed.",
+      "properties": {
+        "cleared": {
+          "description": "Whether the source may be shown beyond the user's own screens: a demo, a release, anything public.",
+          "readOnly": true,
+          "title": "Cleared",
+          "type": "boolean"
+        },
+        "generator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Generator"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "enum": [
+            "personal",
+            "stock",
+            "synthetic",
+            "consented",
+            "curated"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "license": {
+          "default": "",
+          "title": "License",
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        },
+        "release_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Release Sha256"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "subject": {
+          "default": "",
+          "title": "Subject",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "cleared"
+      ],
+      "title": "Provenance",
       "type": "object"
     },
     "ScanConfig": {
@@ -2852,6 +3891,25 @@
           "title": "Diversity Weight",
           "type": "number"
         },
+        "junk_check": {
+          "default": false,
+          "title": "Junk Check",
+          "type": "boolean"
+        },
+        "junk_threshold": {
+          "default": 0.8,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Junk Threshold",
+          "type": "number"
+        },
+        "junk_weight": {
+          "default": 0.15,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Junk Weight",
+          "type": "number"
+        },
         "max_aspect_ratio": {
           "default": 3.0,
           "title": "Max Aspect Ratio",
@@ -2868,11 +3926,35 @@
           "title": "Min Short Side",
           "type": "integer"
         },
+        "profile_fit": {
+          "default": false,
+          "title": "Profile Fit",
+          "type": "boolean"
+        },
+        "profile_fit_weight": {
+          "default": 0.1,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Profile Fit Weight",
+          "type": "number"
+        },
         "resolution_ref": {
           "default": 1024,
           "minimum": 0,
           "title": "Resolution Ref",
           "type": "integer"
+        },
+        "semantic_duplicate_cosine": {
+          "default": 0.95,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Semantic Duplicate Cosine",
+          "type": "number"
+        },
+        "semantic_duplicates": {
+          "default": false,
+          "title": "Semantic Duplicates",
+          "type": "boolean"
         },
         "sharpness_ref": {
           "default": 800.0,
@@ -2909,8 +3991,14 @@
         "config": {
           "$ref": "#/$defs/ScanConfig"
         },
+        "consent": {
+          "$ref": "#/$defs/ConsentConfig"
+        },
         "crops": {
           "$ref": "#/$defs/CropConfig"
+        },
+        "embeddings": {
+          "$ref": "#/$defs/EmbeddingConfig"
         },
         "faces": {
           "$ref": "#/$defs/FaceConfig"
@@ -2934,8 +4022,19 @@
         "scenes": {
           "$ref": "#/$defs/SceneConfig"
         },
+        "speech": {
+          "$ref": "#/$defs/SpeechConfig"
+        },
         "target_profile": {
-          "$ref": "#/$defs/TargetProfile"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TargetProfile"
+            },
+            {
+              "$ref": "#/$defs/SpeechTargetProfile"
+            }
+          ],
+          "title": "Target Profile"
         }
       },
       "required": [
@@ -2947,8 +4046,26 @@
     "ScanSummary": {
       "description": "Full result of a scan \u2014 persisted on disk and paginated by the server.",
       "properties": {
+        "clips": {
+          "items": {
+            "$ref": "#/$defs/ClipResult"
+          },
+          "title": "Clips",
+          "type": "array"
+        },
         "config": {
           "$ref": "#/$defs/ScanConfig"
+        },
+        "consent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsentCheck"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "crop_config": {
           "$ref": "#/$defs/CropConfig"
@@ -2956,6 +4073,9 @@
         "duplicates": {
           "title": "Duplicates",
           "type": "integer"
+        },
+        "embeddings_config": {
+          "$ref": "#/$defs/EmbeddingConfig"
         },
         "erax_config": {
           "$ref": "#/$defs/EraxConfig"
@@ -2991,6 +4111,34 @@
           ],
           "default": null,
           "title": "Legacy Min Short Side"
+        },
+        "likeness_skipped": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Likeness Skipped"
+        },
+        "likeness_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "reference",
+                "centroid"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Likeness Source"
         },
         "limit": {
           "anyOf": [
@@ -3061,6 +4209,11 @@
         "scenes_config": {
           "$ref": "#/$defs/SceneConfig"
         },
+        "semantic_groups_stale": {
+          "default": false,
+          "title": "Semantic Groups Stale",
+          "type": "boolean"
+        },
         "set_age": {
           "anyOf": [
             {
@@ -3088,8 +4241,39 @@
           "title": "Similar Clusters",
           "type": "integer"
         },
+        "speaker_clusters": {
+          "items": {
+            "$ref": "#/$defs/SpeakerCluster"
+          },
+          "title": "Speaker Clusters",
+          "type": "array"
+        },
+        "speaker_mismatches": {
+          "default": 0,
+          "title": "Speaker Mismatches",
+          "type": "integer"
+        },
+        "speech_config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "target_profile": {
-          "$ref": "#/$defs/TargetProfile"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TargetProfile"
+            },
+            {
+              "$ref": "#/$defs/SpeechTargetProfile"
+            }
+          ],
+          "title": "Target Profile"
         },
         "total": {
           "title": "Total",
@@ -3104,6 +4288,7 @@
         "faces_config",
         "scenes_config",
         "garments_config",
+        "embeddings_config",
         "nsfw_config",
         "erax_config",
         "guard_config",
@@ -3114,12 +4299,20 @@
         "rejected",
         "duplicates",
         "similar_clusters",
+        "semantic_groups_stale",
         "reject_reasons",
         "face_clusters",
         "set_age",
         "set_age_skipped",
         "reference_skipped",
+        "likeness_source",
+        "likeness_skipped",
+        "consent",
         "results",
+        "speech_config",
+        "clips",
+        "speaker_clusters",
+        "speaker_mismatches",
         "legacy_min_short_side",
         "offset",
         "limit",
@@ -3202,7 +4395,7 @@
       "type": "object"
     },
     "SelectRequest": {
-      "description": "Filter body for ``POST /scan/{id}/select``.\n\nThe filter fields of :class:`ExportRequest`, and none of the transfer\nfields (``dest``, ``mode``, ``selection``). ``max_keep`` and the diversify\nflags are absent on purpose: this route never diversity-trims.",
+      "description": "Filter body for ``POST /scan/{id}/select``.\n\nThe filter, ranking, cap and split fields of :class:`ExportRequest`, and\nnone of the transfer fields (``dest``, ``mode``, ``selection``). Select and\nexport run the same ``selection.plan_selection``, so an export with the\nsame fields keeps exactly the rows this route marks kept, in this order.",
       "properties": {
         "content_ratings": {
           "anyOf": [
@@ -3224,6 +4417,35 @@
           ],
           "default": null,
           "title": "Content Ratings"
+        },
+        "diversify_outfits": {
+          "default": false,
+          "title": "Diversify Outfits",
+          "type": "boolean"
+        },
+        "diversify_scenes": {
+          "default": false,
+          "title": "Diversify Scenes",
+          "type": "boolean"
+        },
+        "diversify_semantic": {
+          "default": false,
+          "title": "Diversify Semantic",
+          "type": "boolean"
+        },
+        "diversity_weight": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diversity Weight"
         },
         "exclude_garments": {
           "anyOf": [
@@ -3268,6 +4490,11 @@
           ],
           "default": null,
           "title": "Exclude Garments"
+        },
+        "exclude_references": {
+          "default": false,
+          "title": "Exclude References",
+          "type": "boolean"
         },
         "face_ages": {
           "anyOf": [
@@ -3500,6 +4727,33 @@
           "default": null,
           "title": "Max Age Years"
         },
+        "max_keep": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Keep"
+        },
+        "max_likeness_distance": {
+          "anyOf": [
+            {
+              "maximum": 2.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Likeness Distance"
+        },
         "min_age_years": {
           "anyOf": [
             {
@@ -3618,6 +4872,16 @@
           "default": null,
           "title": "Nsfw Threshold"
         },
+        "rank": {
+          "default": "score",
+          "enum": [
+            "score",
+            "identity",
+            "likeness"
+          ],
+          "title": "Rank",
+          "type": "string"
+        },
         "scene_environments": {
           "anyOf": [
             {
@@ -3651,17 +4915,61 @@
           ],
           "default": null,
           "title": "Scenes"
+        },
+        "speech": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "split": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SplitConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "title": "SelectRequest",
       "type": "object"
     },
     "SelectResult": {
-      "description": "What the current filter would keep, without writing the export root.",
+      "description": "What the current filter would keep, without writing the export root.\n\n``rows`` lists the kept images first, best first by ``rank`` (each row's\n``rank`` is its position), then the images left out, in scan order.",
       "properties": {
+        "held_out": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Held Out"
+        },
         "kept": {
           "title": "Kept",
           "type": "integer"
+        },
+        "rank": {
+          "default": "score",
+          "enum": [
+            "score",
+            "identity",
+            "likeness"
+          ],
+          "title": "Rank",
+          "type": "string"
         },
         "rows": {
           "items": {
@@ -3674,16 +4982,43 @@
           "title": "Scan Id",
           "type": "string"
         },
+        "speech": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpeechSelectStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "total": {
           "title": "Total",
           "type": "integer"
+        },
+        "train": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Train"
         }
       },
       "required": [
         "scan_id",
         "total",
         "kept",
-        "rows"
+        "rank",
+        "train",
+        "held_out",
+        "rows",
+        "speech"
       ],
       "title": "SelectResult",
       "type": "object"
@@ -3700,15 +5035,58 @@
           "title": "Keep Reason",
           "type": "string"
         },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rank"
+        },
         "rel_path": {
           "title": "Rel Path",
           "type": "string"
+        },
+        "speaker_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Id"
+        },
+        "split": {
+          "anyOf": [
+            {
+              "enum": [
+                "train",
+                "held_out"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Split"
         }
       },
       "required": [
         "rel_path",
         "abs_path",
-        "keep_reason"
+        "keep_reason",
+        "rank",
+        "split",
+        "speaker_id"
       ],
       "title": "SelectRow",
       "type": "object"
@@ -3742,8 +5120,760 @@
       "title": "SetAge",
       "type": "object"
     },
-    "TargetProfile": {
-      "description": "What a dataset was curated for \u2014 shared verbatim across the suite.\n\nInherited unchanged from stage to stage (curator \u2192 lens \u2192 forge \u2192 proof) so\na decision made once at curation time is honoured everywhere downstream; no\nstage remaps the taxonomy.",
+    "SpeakerCluster": {
+      "description": "A speaker found by clustering a speech scan's embeddings (#187).\n\n``corpus_speakers`` counts the corpus speaker labels among its clips (empty\nwhen the corpus names none). ``mismatch`` is True when the clustering and\nthe corpus disagree about it: it holds more than one label, or a label it\nholds also has clips in another cluster. A centroid is a voiceprint, so\nnone is stored.",
+      "properties": {
+        "clips": {
+          "title": "Clips",
+          "type": "integer"
+        },
+        "cluster_id": {
+          "title": "Cluster Id",
+          "type": "string"
+        },
+        "corpus_speakers": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Corpus Speakers",
+          "type": "object"
+        },
+        "mismatch": {
+          "default": false,
+          "title": "Mismatch",
+          "type": "boolean"
+        },
+        "seconds": {
+          "title": "Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "cluster_id",
+        "clips",
+        "seconds",
+        "corpus_speakers",
+        "mismatch"
+      ],
+      "title": "SpeakerCluster",
+      "type": "object"
+    },
+    "SpeechConfig": {
+      "description": "Thresholds and options for a speech scan (``target_profile.modality == \"speech\"``).\n\nEvery threshold is a prefilter: a clip past it is rejected with the check\nnamed (:data:`SpeechCheck`). ``None`` turns a threshold off. Silence is\nmeasured against the clip's loudest 30 ms frame: a frame ``silence_db``\nor more below it is silent. ``chars_per_s`` counts a transcript's letters\nand digits over the clip less its leading and trailing silence.",
+      "properties": {
+        "duplicate_distance": {
+          "default": 6,
+          "maximum": 64,
+          "minimum": -1,
+          "title": "Duplicate Distance",
+          "type": "integer"
+        },
+        "max_cer": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cer"
+        },
+        "max_channels": {
+          "default": 1,
+          "maximum": 2,
+          "minimum": 1,
+          "title": "Max Channels",
+          "type": "integer"
+        },
+        "max_chars_per_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 30.0,
+          "title": "Max Chars Per S"
+        },
+        "max_clipping_ratio": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.001,
+          "title": "Max Clipping Ratio"
+        },
+        "max_duration_s": {
+          "default": 20.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Max Duration S",
+          "type": "number"
+        },
+        "max_leading_silence_s": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 1.0,
+          "title": "Max Leading Silence S"
+        },
+        "max_trailing_silence_s": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 1.0,
+          "title": "Max Trailing Silence S"
+        },
+        "max_workers": {
+          "default": 4,
+          "minimum": 1,
+          "title": "Max Workers",
+          "type": "integer"
+        },
+        "min_chars_per_s": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4.0,
+          "title": "Min Chars Per S"
+        },
+        "min_duration_s": {
+          "default": 1.0,
+          "minimum": 0.0,
+          "title": "Min Duration S",
+          "type": "number"
+        },
+        "min_mos": {
+          "anyOf": [
+            {
+              "maximum": 5.0,
+              "minimum": 1.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Mos"
+        },
+        "min_sample_rate": {
+          "default": 16000,
+          "minimum": 8000,
+          "title": "Min Sample Rate",
+          "type": "integer"
+        },
+        "min_snr_db": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Snr Db"
+        },
+        "min_speech_ratio": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Speech Ratio"
+        },
+        "mos": {
+          "default": false,
+          "title": "Mos",
+          "type": "boolean"
+        },
+        "mos_device": {
+          "default": "auto",
+          "title": "Mos Device",
+          "type": "string"
+        },
+        "require_transcript": {
+          "default": true,
+          "title": "Require Transcript",
+          "type": "boolean"
+        },
+        "silence_db": {
+          "default": -40.0,
+          "exclusiveMaximum": 0.0,
+          "title": "Silence Db",
+          "type": "number"
+        },
+        "snr_ref_db": {
+          "default": 40.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Snr Ref Db",
+          "type": "number"
+        },
+        "speaker_device": {
+          "default": "auto",
+          "title": "Speaker Device",
+          "type": "string"
+        },
+        "speaker_threshold": {
+          "default": 0.5,
+          "exclusiveMaximum": 2.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Speaker Threshold",
+          "type": "number"
+        },
+        "speakers": {
+          "default": false,
+          "title": "Speakers",
+          "type": "boolean"
+        },
+        "transcripts": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "sidecar",
+            "ljspeech",
+            "common_voice"
+          ],
+          "title": "Transcripts",
+          "type": "string"
+        },
+        "weight_mos": {
+          "default": 0.5,
+          "minimum": 0.0,
+          "title": "Weight Mos",
+          "type": "number"
+        },
+        "weight_snr": {
+          "default": 0.3,
+          "minimum": 0.0,
+          "title": "Weight Snr",
+          "type": "number"
+        },
+        "weight_speech_ratio": {
+          "default": 0.2,
+          "minimum": 0.0,
+          "title": "Weight Speech Ratio",
+          "type": "number"
+        }
+      },
+      "title": "SpeechConfig",
+      "type": "object"
+    },
+    "SpeechManifestRow": {
+      "description": "One line of a speech export's ``speech_manifest.jsonl`` (#187; ``speech_export.write_manifest``).\n\nIts own shape and version (:data:`SPEECH_MANIFEST_VERSION`), never mixed\nwith image rows: a consumer reads ``speech_manifest_version`` and refuses a\nmajor it does not know. Rows exist only for clips whose transfer and\ntranscript sidecar both succeeded.\n\nPaths follow :class:`ManifestRow`: ``exported_path`` and\n``exported_abs_path`` are the de-collided files on disk, ``abs_path`` is\nwhere the clip can be read (the destination under ``mode=\"move\"``), and\n``transcript_path`` / ``transcript_abs_path`` name the ``<stem>.txt``\nbeside the exported clip holding ``transcript``.\n\n``speaker_id`` is the corpus's speaker label when it has one, else the\nspeaker cluster; ``speaker_label`` and ``speaker_cluster`` are each on its\nown. A split keeps every speaker (label and cluster alike) in one\npart. ``accent``, ``language``, ``gender`` and ``age`` are the corpus's\nlabels verbatim; ``age`` is null when the corpus gives none, and is never\nestimated. ``corpus``, ``license`` and ``provenance`` say where every clip\ncame from; a clip used under a consent record also names its hashes.",
+      "properties": {
+        "abs_path": {
+          "title": "Abs Path",
+          "type": "string"
+        },
+        "accent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accent"
+        },
+        "age": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age"
+        },
+        "channels": {
+          "title": "Channels",
+          "type": "integer"
+        },
+        "consent_record_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Record Sha256"
+        },
+        "consent_release_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Release Sha256"
+        },
+        "corpus": {
+          "title": "Corpus",
+          "type": "string"
+        },
+        "duration_s": {
+          "title": "Duration S",
+          "type": "number"
+        },
+        "exported_abs_path": {
+          "title": "Exported Abs Path",
+          "type": "string"
+        },
+        "exported_path": {
+          "title": "Exported Path",
+          "type": "string"
+        },
+        "gender": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gender"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "license": {
+          "title": "License",
+          "type": "string"
+        },
+        "modality": {
+          "const": "speech",
+          "default": "speech",
+          "title": "Modality",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "rel_path": {
+          "title": "Rel Path",
+          "type": "string"
+        },
+        "sample_rate": {
+          "title": "Sample Rate",
+          "type": "integer"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "similar_group": {
+          "title": "Similar Group",
+          "type": "integer"
+        },
+        "speaker_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Cluster"
+        },
+        "speaker_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Id"
+        },
+        "speaker_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Label"
+        },
+        "speaker_mismatch": {
+          "default": false,
+          "title": "Speaker Mismatch",
+          "type": "boolean"
+        },
+        "speech_manifest_version": {
+          "default": "1.0",
+          "title": "Speech Manifest Version",
+          "type": "string"
+        },
+        "split": {
+          "anyOf": [
+            {
+              "enum": [
+                "train",
+                "held_out"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Split"
+        },
+        "target_profile": {
+          "$ref": "#/$defs/SpeechTargetProfile"
+        },
+        "transcript": {
+          "title": "Transcript",
+          "type": "string"
+        },
+        "transcript_abs_path": {
+          "title": "Transcript Abs Path",
+          "type": "string"
+        },
+        "transcript_path": {
+          "title": "Transcript Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "speech_manifest_version",
+        "modality",
+        "rel_path",
+        "abs_path",
+        "exported_path",
+        "exported_abs_path",
+        "transcript_path",
+        "transcript_abs_path",
+        "target_profile",
+        "transcript",
+        "duration_s",
+        "sample_rate",
+        "channels",
+        "speaker_id",
+        "speaker_label",
+        "speaker_cluster",
+        "speaker_mismatch",
+        "accent",
+        "language",
+        "gender",
+        "age",
+        "score",
+        "similar_group",
+        "split",
+        "corpus",
+        "license",
+        "provenance",
+        "consent_release_sha256",
+        "consent_record_sha256"
+      ],
+      "title": "SpeechManifestRow",
+      "type": "object"
+    },
+    "SpeechMos": {
+      "description": "DNSMOS P.835 predictions for a clip, each 1-5: speech (SIG), background (BAK), overall (OVRL).",
+      "properties": {
+        "bak": {
+          "title": "Bak",
+          "type": "number"
+        },
+        "model": {
+          "const": "dnsmos",
+          "default": "dnsmos",
+          "title": "Model",
+          "type": "string"
+        },
+        "ovrl": {
+          "title": "Ovrl",
+          "type": "number"
+        },
+        "sig": {
+          "title": "Sig",
+          "type": "number"
+        }
+      },
+      "required": [
+        "model",
+        "sig",
+        "bak",
+        "ovrl"
+      ],
+      "title": "SpeechMos",
+      "type": "object"
+    },
+    "SpeechSelectStats": {
+      "description": "What a speech selection keeps, in hours of audio (#187).",
+      "properties": {
+        "hours": {
+          "title": "Hours",
+          "type": "number"
+        },
+        "hours_by_accent": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Hours By Accent",
+          "type": "object"
+        },
+        "hours_by_speaker": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Hours By Speaker",
+          "type": "object"
+        },
+        "hours_by_split": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Hours By Split",
+          "type": "object"
+        },
+        "speakers_by_split": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Speakers By Split",
+          "type": "object"
+        }
+      },
+      "required": [
+        "hours",
+        "hours_by_speaker",
+        "hours_by_accent",
+        "hours_by_split",
+        "speakers_by_split"
+      ],
+      "title": "SpeechSelectStats",
+      "type": "object"
+    },
+    "SpeechSelection": {
+      "description": "How a speech scan's clips are selected, and where they came from (#187).\n\nThe speech part of :class:`ExportRequest` and :class:`SelectRequest`, and\nthe only part a speech scan reads besides ``min_score``, ``keep_similar``,\n``max_keep``, ``split`` and the transfer fields; the image filters are\nrefused on a speech scan.\n\nFilters: ``speakers`` (by ``speaker_id``), ``accents`` and ``languages``\n(the corpus labels, exact). ``exclude_speaker_mismatch`` drops clips whose\ncorpus speaker label the clustering disputes. Caps, in hours of audio,\nbest-scoring clips first: ``min_hours_per_speaker`` drops a speaker with\nless, ``max_hours_per_speaker`` caps one, ``max_hours_per_accent`` caps an\naccent, and ``balance_accents`` caps every accent at the smallest one's\nhours. An accent cap takes clips from its speakers in turn, so it keeps\nthem as even as it can.\n\nProvenance, required to export (not to select): ``corpus`` and\n``license`` name the licensed corpus every clip comes from; or\n``consent_record`` names a cortex ``ConsentRecord`` (a path under the\nscanned folder, as ``ConsentConfig.record``) for a real person's voice\noutside a licensed corpus, checked for ``training`` of the ``voice`` at\n``consent_delivery``. Nothing estimates a speaker's age: the corpus's\nlabel is carried, and an unknown age stays unknown.",
+      "properties": {
+        "accents": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accents"
+        },
+        "balance_accents": {
+          "default": false,
+          "title": "Balance Accents",
+          "type": "boolean"
+        },
+        "consent_delivery": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Delivery"
+        },
+        "consent_record": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Record"
+        },
+        "corpus": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Corpus"
+        },
+        "exclude_speaker_mismatch": {
+          "default": false,
+          "title": "Exclude Speaker Mismatch",
+          "type": "boolean"
+        },
+        "languages": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Languages"
+        },
+        "license": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "License"
+        },
+        "max_hours_per_accent": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Hours Per Accent"
+        },
+        "max_hours_per_speaker": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Hours Per Speaker"
+        },
+        "min_hours_per_speaker": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Hours Per Speaker"
+        },
+        "speakers": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speakers"
+        }
+      },
+      "title": "SpeechSelection",
+      "type": "object"
+    },
+    "SpeechTargetProfile": {
+      "description": "argus-cortex's ``TargetProfile`` for a speech dataset: ``modality`` is ``speech``.\n\n``target_category`` is a speech category (``voice`` by default), and\n``target_backend`` names a TTS model family (``xtts-v2``, ``qwen3-tts``) or\nis ``None``. Accepted by the speech scan only; image scoring and the image\nmanifest never see it.",
       "properties": {
         "checkpoint": {
           "anyOf": [
@@ -3756,6 +5886,128 @@
           ],
           "default": null,
           "title": "Checkpoint"
+        },
+        "modality": {
+          "const": "speech",
+          "default": "speech",
+          "title": "Modality",
+          "type": "string"
+        },
+        "target_backend": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Backend"
+        },
+        "target_category": {
+          "default": "voice",
+          "enum": [
+            "voice",
+            "accent",
+            "language",
+            "speaking_style"
+          ],
+          "title": "Target Category",
+          "type": "string"
+        },
+        "target_style": {
+          "default": "photo",
+          "enum": [
+            "photo",
+            "anime"
+          ],
+          "title": "Target Style",
+          "type": "string"
+        }
+      },
+      "title": "SpeechTargetProfile",
+      "type": "object"
+    },
+    "SplitConfig": {
+      "description": "A deterministic train/held-out split of the kept images (#183).\n\nSet exactly one of ``held_out`` (images) or ``held_out_fraction``. Whole\ngroups (``group_by``) go to one part, never both; a group that would take\nthe held-out part past its target is skipped, so the held-out count can\nfall short of it, never exceed it. Both parts must end up non-empty.\n\n``method`` \"spread\" takes held-out groups evenly through the ranking, so\nthe held-out images are as good as the training ones (argus-mint's rule);\n\"random\" shuffles the groups with ``seed``. The same request on the same\nscan always gives the same split.",
+      "properties": {
+        "group_by": {
+          "default": "image",
+          "enum": [
+            "image",
+            "face_cluster",
+            "similar_group",
+            "speaker"
+          ],
+          "title": "Group By",
+          "type": "string"
+        },
+        "held_out": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Held Out"
+        },
+        "held_out_fraction": {
+          "anyOf": [
+            {
+              "exclusiveMaximum": 1.0,
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Held Out Fraction"
+        },
+        "method": {
+          "default": "spread",
+          "enum": [
+            "spread",
+            "random"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "seed": {
+          "default": 0,
+          "title": "Seed",
+          "type": "integer"
+        }
+      },
+      "title": "SplitConfig",
+      "type": "object"
+    },
+    "TargetProfile": {
+      "description": "What a dataset was curated for, shared verbatim across the suite.\n\nargus-cortex's ``TargetProfile`` for an image dataset: ``modality`` is\nalways ``image`` and ``target_category`` an image category. argus-curator\ncurates images, so a speech profile is refused.",
+      "properties": {
+        "checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint"
+        },
+        "modality": {
+          "const": "image",
+          "default": "image",
+          "title": "Modality",
+          "type": "string"
         },
         "target_backend": {
           "anyOf": [
@@ -3822,6 +6074,60 @@
         "bbox"
       ],
       "title": "WatermarkDetection",
+      "type": "object"
+    },
+    "ZeroShotResult": {
+      "description": "Zero-shot CLIP scores for one image (#197; see zeroshot.py).\n\nPlain scores only: the image's embedding itself is never stored. A field\nis None when its check was not asked for.",
+      "properties": {
+        "junk": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Junk"
+        },
+        "junk_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "screenshot",
+                "collage",
+                "text",
+                "meme"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Junk Kind"
+        },
+        "profile_fit": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile Fit"
+        }
+      },
+      "required": [
+        "profile_fit",
+        "junk",
+        "junk_kind"
+      ],
+      "title": "ZeroShotResult",
       "type": "object"
     }
   },

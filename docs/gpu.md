@@ -51,6 +51,28 @@ load lease, so a cold start does not hold the GPU while weights hit the disk.
   and reinstall `onnxruntime-gpu` (the GPU image does this and fails the build
   if CUDA is still absent).
 
+## How much VRAM curator holds
+
+ONNX Runtime keeps the GPU memory a session's arena reserves and never hands it
+back, so what curator holds is the most any session has needed, not what it uses
+now. Two settings keep that high-water mark close to the lease asks
+(`runtime.VRAM_MB`):
+
+- Every CUDA session (curator's own, plus InsightFace's face pack and body
+  detector) grows its arena only by what an allocation asks
+  (`arena_extend_strategy=kSameAsRequested`), up to a per-session cap
+  (`gpu_mem_limit`). `ARGUS_CURATOR_GPU_MEM_LIMIT_MB` sets the cap (default
+  1024). A session that needs more fails that image's check rather than taking
+  the card.
+- MiVOLO and FairFace run one face per pass (`runtime.ATTRIBUTE_BATCH`), so
+  a crowd shot needs no more memory per pass than a portrait. A MiVOLO pass of
+  8 faces overruns a 1 GB arena.
+
+On release, each lease reports the VRAM the process holds as `peak_vram_mb`, so
+iris's leases table shows the real figure. NVML lists processes by host PID, so
+inside a container curator finds itself only with `pid: host` in compose.
+Without it nothing is reported.
+
 ## The argus-iris GPU broker
 
 [argus-iris](https://github.com/smk762/argus-iris) is the suite's GPU lease
@@ -68,8 +90,9 @@ taking the host lock (argus-cortex's `BrokerCoordinator`, from cortex 0.6):
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none` |
 
 [`gpu-tenant.yaml`](../gpu-tenant.yaml) declares curator's kinds of GPU work:
-`faces`, `scenes` and `garments`, with each one's footprint from
-`runtime.VRAM_MB` (`vram_mb` is the load ask plus one image's run ask,
+`faces`, `scenes`, `garments`, `embeddings`, and for [speech scans](speech.md) `mos` (DNSMOS) and
+`speakers` (the ECAPA-TDNN speaker embeddings), with each one's footprint from
+`runtime.VRAM_MB` (`vram_mb` is the load ask plus one image's (or one speech pass's) run ask,
 `model_mb` the load ask). Each lease names its model as the kind. Scans take
 the kinds' `batch` priority. `POST /faces`, which darkroom waits on, asks for
 `interactive`. A test checks that the manifest validates as cortex's

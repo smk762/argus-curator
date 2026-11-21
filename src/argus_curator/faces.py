@@ -35,7 +35,7 @@ from argus_curator.models import (
     ScanSummary,
     SetAge,
 )
-from argus_curator.runtime import gpu_lease, providers
+from argus_curator.runtime import gpu_lease, providers, session_providers
 
 logger = structlog.get_logger()
 
@@ -95,7 +95,12 @@ def _build_app(cfg: FaceConfig, *, lease_wait_s: float | None = None):
         ensure_available("models", cfg.model, root=INSIGHTFACE_ROOT)
     ctx_id = 0 if "CUDAExecutionProvider" in provs else -1
     with gpu_lease(cfg.device, "faces", "load", wait_s=lease_wait_s):
-        app = FaceAnalysis(name=cfg.model, root=INSIGHTFACE_ROOT, providers=provs, allowed_modules=list(FACE_MODULES))
+        app = FaceAnalysis(
+            name=cfg.model,
+            root=INSIGHTFACE_ROOT,
+            providers=session_providers(provs),
+            allowed_modules=list(FACE_MODULES),
+        )
         app.prepare(ctx_id=ctx_id, det_size=(640, 640))
     return app
 
@@ -664,42 +669,151 @@ def _cosine_distance(a: np.ndarray, unit_b: np.ndarray) -> float:
     return round(max(0.0, 1.0 - float(np.dot(_unit(a), unit_b))), 4)
 
 
-def measure_reference(results: list[ImageResult], detected: DetectedFaces, cfg: FaceConfig) -> str | None:
-    """Set each face's ``reference_distance`` from ``cfg.reference_paths``; return why not, or None.
+def reference_distance(embedding: object, reference: object) -> float:
+    """Cosine distance (0..2, rounded to 4 places) from a face *embedding* to a *reference*.
 
-    The reference is the centroid of the primary faces of the named images.
-    Run after :func:`cluster_identities` (which picks the primary faces). Only
-    the distances are kept: the embeddings stay in *detected*, which the scan
+    Neither needs to be unit length. The measure behind every
+    ``FaceDetection.reference_distance``: 0 is the same direction, about 1 an
+    unrelated face.
+    """
+    a = np.asarray(embedding, dtype=np.float32).ravel()
+    b = np.asarray(reference, dtype=np.float32).ravel()
+    if a.shape != b.shape:
+        raise ValueError(f"embedding has {a.size} values, the reference {b.size}")
+    return _cosine_distance(a, _unit(b))
+
+
+def _primary_embedding(app: object, bgr: np.ndarray, cfg: FaceConfig) -> np.ndarray | None:
+    """The unit embedding of the face :func:`_assign_primary` would pick in *bgr*, or None."""
+    with _INFER_LOCK:
+        detections = app.get(bgr) or []  # type: ignore[attr-defined]
+    best: tuple[float, np.ndarray] | None = None
+    for face in detections:
+        det_score = float(getattr(face, "det_score", 0.0))
+        if det_score < cfg.min_det_score:
+            continue
+        emb = getattr(face, "normed_embedding", None)
+        if emb is None:
+            emb = getattr(face, "embedding", None)
+            if emb is None:
+                continue
+        x1, y1, x2, y2 = (float(v) for v in face.bbox)
+        weight = (x2 - x1) * (y2 - y1) * (0.5 + 0.5 * det_score)
+        if best is None or weight > best[0]:
+            best = (weight, _unit(np.asarray(emb, dtype=np.float32)))
+    return None if best is None else best[1]
+
+
+def _embed_primaries(images: list[bytes], cfg: FaceConfig, lease_wait_s: float | None) -> list[np.ndarray | None]:
+    """Each image's primary-face embedding (None for no face or an undecodable image)."""
+    if not images:
+        return []
+    app = _get_app(cfg, lease_wait_s=lease_wait_s)
+    out: list[np.ndarray | None] = []
+    for data in images:
+        bgr = _to_bgr(data)
+        if bgr is None:
+            out.append(None)
+            continue
+        with gpu_lease(cfg.device, "faces", wait_s=lease_wait_s):
+            out.append(_primary_embedding(app, bgr, cfg))
+    return out
+
+
+def reference_embedding(
+    images: list[bytes], cfg: FaceConfig | None = None, *, lease_wait_s: float | None = None
+) -> list[float]:
+    """The identity centroid of *images*: the mean of their primary faces' unit embeddings.
+
+    Pass the result as ``FaceConfig.reference_embedding`` and every face the
+    scan detects gets its ``reference_distance`` from it, or compare an
+    embedding directly with :func:`reference_distance`. For reference images
+    that are not in the scanned folder, such as a consenting person's
+    reference photos (#133). *cfg* picks the model and device (the defaults
+    otherwise); the images run under the GPU lease like a scan's. The result
+    is a biometric template: hold it in memory, never write it out.
+
+    Raises :class:`ValueError` when no image has a face.
+    """
+    cfg = cfg or FaceConfig(enabled=True)
+    embs = [e for e in _embed_primaries(list(images), cfg, lease_wait_s) if e is not None]
+    if not embs:
+        raise ValueError("no reference image has a face")
+    return [float(v) for v in _unit(np.vstack(embs).mean(axis=0))]
+
+
+def measure_reference(
+    results: list[ImageResult],
+    detected: DetectedFaces,
+    cfg: FaceConfig,
+    items: list[tuple[str, str, bytes]] | None = None,
+    *,
+    lease_wait_s: float | None = None,
+) -> str | None:
+    """Set each face's ``reference_distance`` from the scan's reference; return why not, or None.
+
+    The reference is ``cfg.reference_embedding`` when given, else the centroid
+    of the primary faces of ``cfg.reference_paths``. Run after
+    :func:`cluster_identities` (which picks the primary faces). A reference
+    image the scan's filters rejected was never face-checked, so it is
+    embedded here from its bytes in *items* (the row stays rejected). Only the
+    distances are kept: the embeddings stay in *detected*, which the scan
     never writes.
     """
-    if not cfg.reference_paths or not detected.embeddings:
-        return None if not cfg.reference_paths else "no faces were detected"
+    if not cfg.has_reference:
+        return None
+    if not detected.embeddings:
+        return "no faces were detected"
+    if cfg.reference_embedding is not None:
+        centroid = _unit(np.asarray(cfg.reference_embedding, dtype=np.float32))
+        size = detected.embeddings[0].size
+        if centroid.size != size:
+            return f"reference_embedding has {centroid.size} values; this face model's embeddings have {size}"
+    else:
+        centroid_or_why = _paths_centroid(results, detected, cfg, items, lease_wait_s)
+        if isinstance(centroid_or_why, str):
+            return centroid_or_why
+        centroid = centroid_or_why
+    result_by_rel = {r.rel_path: r for r in results}
+    for (rel, face_idx, *_rest), emb in zip(detected.meta, detected.embeddings, strict=True):
+        result_by_rel[rel].faces[face_idx].reference_distance = _cosine_distance(emb, centroid)
+    return None
+
+
+def _paths_centroid(
+    results: list[ImageResult],
+    detected: DetectedFaces,
+    cfg: FaceConfig,
+    items: list[tuple[str, str, bytes]] | None,
+    lease_wait_s: float | None,
+) -> np.ndarray | str:
+    """The centroid of ``cfg.reference_paths``' primary faces, or why there is none."""
     result_by_rel = {r.rel_path: r for r in results}
     missing = [p for p in cfg.reference_paths if p not in result_by_rel]
     if len(missing) == len(cfg.reference_paths):
         return f"no reference image is in the scan ({', '.join(missing)})"
+    if missing:
+        logger.warning("reference_paths_missing", missing=missing)
     index = {(rel, face_idx): i for i, (rel, face_idx, *_rest) in enumerate(detected.meta)}
-    refs = []
+    data_by_rel = {rel: data for rel, _abs, data in items or []}
+    refs: list[np.ndarray] = []
+    unchecked: list[bytes] = []
     for rel in cfg.reference_paths:
         r = result_by_rel.get(rel)
         if r is None:
             continue
+        if not r.passed:
+            # A rejected image is never face-checked; embed it from the scan's bytes.
+            if data_by_rel.get(rel) is not None:
+                unchecked.append(data_by_rel[rel])
+            continue
         primary = next((j for j, f in enumerate(r.faces) if f.primary), None)
         if primary is not None and (rel, primary) in index:
             refs.append(detected.embeddings[index[(rel, primary)]])
+    refs.extend(e for e in _embed_primaries(unchecked, cfg, lease_wait_s) if e is not None)
     if not refs:
-        rejected = [p for p in cfg.reference_paths if p in result_by_rel and not result_by_rel[p].passed]
-        if rejected:
-            # A rejected image is never face-checked, so it cannot be a reference.
-            why = result_by_rel[rejected[0]].reject_reason or "rejected"
-            return f"no reference image has a face; the scan rejected {rejected[0]} ({why})"
         return "no reference image has a face"
-    centroid = _unit(np.vstack([_unit(e) for e in refs]).mean(axis=0))
-    for (rel, face_idx, *_rest), emb in zip(detected.meta, detected.embeddings, strict=True):
-        result_by_rel[rel].faces[face_idx].reference_distance = _cosine_distance(emb, centroid)
-    if missing:
-        logger.warning("reference_paths_missing", missing=missing)
-    return None
+    return _unit(np.vstack([_unit(e) for e in refs]).mean(axis=0))
 
 
 def repool_identities(clusters: list[FaceCluster], results: list[ImageResult]) -> None:
@@ -786,6 +900,6 @@ def detect_and_cluster(
     """Detect, attribute, and cluster. Ages are set before clustering starts."""
     detected = detect_faces(results, items, cfg, progress=progress)
     clusters = cluster_identities(results, detected, cfg)
-    if (skipped := measure_reference(results, detected, cfg)) is not None:
+    if (skipped := measure_reference(results, detected, cfg, items)) is not None:
         logger.warning("reference_skipped", reason=skipped)
     return clusters
