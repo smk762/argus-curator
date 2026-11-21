@@ -262,4 +262,5 @@ key is always present; a field with no value is `null`.
 | `consent_release_sha256`, `consent_record_sha256` | string or null | a consented voice only |
 
 argus-forge reading this file is
-[argus-forge#56](https://github.com/smk762/argus-forge/issues/56).
+[argus-forge#58](https://github.com/smk762/argus-forge/issues/58) (for its
+XTTS-v2 emitter, [argus-forge#56](https://github.com/smk762/argus-forge/issues/56)).
