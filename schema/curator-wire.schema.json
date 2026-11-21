@@ -1,5 +1,187 @@
 {
   "$defs": {
+    "ConsentBinding": {
+      "description": "Whether one image is bound to the scan's consent record (ImageResult.consent).",
+      "properties": {
+        "bound": {
+          "title": "Bound",
+          "type": "boolean"
+        },
+        "distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distance"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "not-consented",
+                "provenance",
+                "unchecked",
+                "no-face",
+                "bystander",
+                "mismatch"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "bound",
+        "distance",
+        "reason"
+      ],
+      "title": "ConsentBinding",
+      "type": "object"
+    },
+    "ConsentCheck": {
+      "description": "What the scan made of its consent record (ScanSummary.consent).\n\nNever the record: a record names a person, so the scan keeps only the\nverdict, the record's hashes and which images are the references. It is\npart of the scan, so deleting or purging the scan removes it.",
+      "properties": {
+        "checked_at": {
+          "format": "date-time",
+          "title": "Checked At",
+          "type": "string"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "eligible": {
+          "title": "Eligible",
+          "type": "boolean"
+        },
+        "max_distance": {
+          "title": "Max Distance",
+          "type": "number"
+        },
+        "missing_references": {
+          "default": 0,
+          "title": "Missing References",
+          "type": "integer"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "missing",
+                "invalid",
+                "no-reference-image",
+                "no-reference-face"
+              ],
+              "type": "string"
+            },
+            {
+              "enum": [
+                "revoked",
+                "not-yet-signed",
+                "expired",
+                "likeness-not-covered",
+                "use-not-covered",
+                "delivery-not-covered"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "record": {
+          "title": "Record",
+          "type": "string"
+        },
+        "record_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Record Sha256"
+        },
+        "references": {
+          "items": {
+            "type": "string"
+          },
+          "title": "References",
+          "type": "array"
+        },
+        "release_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Release Sha256"
+        }
+      },
+      "required": [
+        "record",
+        "eligible",
+        "reason",
+        "detail",
+        "release_sha256",
+        "record_sha256",
+        "checked_at",
+        "max_distance",
+        "references",
+        "missing_references"
+      ],
+      "title": "ConsentCheck",
+      "type": "object"
+    },
+    "ConsentConfig": {
+      "description": "Bind a real person's face set to their consent record (#133; see consent.py).\n\n``record`` is the :class:`argus_cortex.consent.ConsentRecord` file, a path\nrelative to the scanned folder (the server refuses one that resolves\noutside it). None = no consent check. With a record the scan reads it,\nchecks it for the ``avatar`` use of the subject's face, builds the identity\nreference from the record's reference images (found in the scan by their\nsha256), and binds each image: its primary face within ``max_distance`` of\nthat reference, and no one else in the frame. Turning it on turns on face\ndetection, MiVOLO and the set age, which the export gate needs.",
+      "properties": {
+        "max_distance": {
+          "default": 0.4,
+          "maximum": 2.0,
+          "minimum": 0.0,
+          "title": "Max Distance",
+          "type": "number"
+        },
+        "record": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Record"
+        }
+      },
+      "title": "ConsentConfig",
+      "type": "object"
+    },
     "CropBox": {
       "description": "A crop in pixels of the image as displayed: after its EXIF orientation, ``right``/``bottom`` exclusive.\n\nRecorded beside a source as ``<image>.crop.json`` (``{\"left\": .., \"top\": ..,\n\"right\": .., \"bottom\": ..}``) or passed inline in :class:`CropConfig`. A box\nmust lie inside the frame and be non-empty; one that does not makes the\nimage a ``crop:`` reject rather than letting it through uncropped.",
       "properties": {
@@ -878,7 +1060,7 @@
           "title": "Manifest Path"
         },
         "manifest_version": {
-          "default": "2.5",
+          "default": "2.6",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -1595,6 +1777,11 @@
           "default": null,
           "title": "Cluster"
         },
+        "consent": {
+          "default": false,
+          "title": "Consent",
+          "type": "boolean"
+        },
         "max_identity_distance": {
           "anyOf": [
             {
@@ -1808,6 +1995,52 @@
       "title": "GarmentDetection",
       "type": "object"
     },
+    "Generator": {
+      "additionalProperties": false,
+      "description": "How a generated source was made (argus-mask#26): the model, its sha256, the seed and the prompt.",
+      "properties": {
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Sha256"
+        },
+        "prompt": {
+          "default": "",
+          "title": "Prompt",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "Generator",
+      "type": "object"
+    },
     "GuardConfig": {
       "description": "SingGuard policy check via a remote SingGuard server (see guard.py).\n\nLike NudeNet, the URL (ARGUS_CURATOR_SINGGUARD_URL) is process\nconfiguration. A request picks a policy by name, never by text.\n\n``thinking``: a request may pick the SingGuard mode (``fast``,\n``fast-slow``, ``slow`` or ``cascade``); null runs the server's default\n(ARGUS_CURATOR_SINGGUARD_THINKING). The server refuses a mode outside\nARGUS_CURATOR_SINGGUARD_THINKING_ALLOWED with 422. A finished scan records\nthe mode it ran in, whichever set it. ``fell_back`` is recorded by the scan\nonly (a value a request sends is replaced): whether the server refused the\nmode so checks dropped to ``fast``.",
       "properties": {
@@ -1956,6 +2189,17 @@
           "default": 0.0,
           "title": "Artifact Score",
           "type": "number"
+        },
+        "consent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsentBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "content_rating": {
           "anyOf": [
@@ -2377,6 +2621,7 @@
         "primary_face_roll",
         "primary_face_attributes",
         "set_age",
+        "consent",
         "scene",
         "garments",
         "nsfw",
@@ -2551,6 +2796,30 @@
           "title": "Abs Path",
           "type": "string"
         },
+        "consent_record_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Record Sha256"
+        },
+        "consent_release_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Release Sha256"
+        },
         "crop": {
           "anyOf": [
             {
@@ -2571,7 +2840,7 @@
           "type": "string"
         },
         "manifest_version": {
-          "default": "2.5",
+          "default": "2.6",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -2614,6 +2883,17 @@
           ],
           "default": null,
           "title": "Primary Face Pose"
+        },
+        "provenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Provenance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "rel_path": {
           "title": "Rel Path",
@@ -2672,7 +2952,10 @@
         "crop",
         "primary_face",
         "set_age",
-        "split"
+        "split",
+        "consent_release_sha256",
+        "consent_record_sha256",
+        "provenance"
       ],
       "title": "ManifestRow",
       "type": "object"
@@ -2933,6 +3216,80 @@
       "title": "PrefilterConfig",
       "type": "object"
     },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "Where a source came from. Required wherever the suite serves or trains on a likeness.\n\n- ``personal``: the user's own use; needs only ``source``; not cleared to show or share.\n- ``stock``: a published asset under its licence. ``synthetic``: generated, with no real person\n  or owned character going in.\n- ``consented``: a real person's likeness (or an owned character) under a signed release, bound\n  by the release's sha256 (never the document) and the subject as the release names them.\n- ``curated``: reserved; not cleared.\n\nUnknown fields are refused, so a misspelt field cannot be dropped in silence (argus-mask#64).\n``licence`` is read as ``license``, and the derived ``cleared`` a dumped record carries is\ndropped and recomputed, never believed.",
+      "properties": {
+        "cleared": {
+          "description": "Whether the source may be shown beyond the user's own screens: a demo, a release, anything public.",
+          "readOnly": true,
+          "title": "Cleared",
+          "type": "boolean"
+        },
+        "generator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Generator"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "enum": [
+            "personal",
+            "stock",
+            "synthetic",
+            "consented",
+            "curated"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "license": {
+          "default": "",
+          "title": "License",
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        },
+        "release_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Release Sha256"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "subject": {
+          "default": "",
+          "title": "Subject",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "cleared"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
     "ScanConfig": {
       "description": "Tunable parameters for a training-suitability scan.",
       "properties": {
@@ -3008,6 +3365,9 @@
         "config": {
           "$ref": "#/$defs/ScanConfig"
         },
+        "consent": {
+          "$ref": "#/$defs/ConsentConfig"
+        },
         "crops": {
           "$ref": "#/$defs/CropConfig"
         },
@@ -3051,6 +3411,17 @@
       "properties": {
         "config": {
           "$ref": "#/$defs/ScanConfig"
+        },
+        "consent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsentCheck"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "crop_config": {
           "$ref": "#/$defs/CropConfig"
@@ -3225,6 +3596,7 @@
         "set_age",
         "set_age_skipped",
         "reference_skipped",
+        "consent",
         "results",
         "legacy_min_short_side",
         "offset",

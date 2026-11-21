@@ -7,7 +7,7 @@ of the suite reads: argus-lens batch-captions it (an upload to its
 builds training sets from it. Curator and lens share one `TargetProfile`, so a
 manifest written here is captioned downstream with no remapping.
 
-This page describes manifest **2.5**, the version current releases write, and
+This page describes manifest **2.6**, the version current releases write, and
 what changed in each earlier version.
 
 ## Where it is written
@@ -36,7 +36,7 @@ Pretty-printed here; in the file each row is one line.
 
 ```json
 {
-  "manifest_version": "2.5",
+  "manifest_version": "2.6",
   "rel_path": "shoots/2026-07/IMG_0412.jpg",
   "abs_path": "/data/images/shoots/2026-07/IMG_0412.jpg",
   "exported_path": "shoots/2026-07/IMG_0412.jpg",
@@ -66,13 +66,17 @@ Pretty-printed here; in the file each row is one line.
     "age_years": 31.4,
     "landmarks": null
   },
-  "set_age": { "years": 31.0, "cluster_id": "face_2", "faces": 42, "share": 0.95 }
+  "set_age": { "years": 31.0, "cluster_id": "face_2", "faces": 42, "share": 0.95 },
+  "split": null,
+  "consent_release_sha256": null,
+  "consent_record_sha256": null,
+  "provenance": null
 }
 ```
 
-## Row fields (2.5)
+## Row fields (2.6)
 
-Every key is always present in a 2.5 row; a field with no value is written as
+Every key is always present in a 2.6 row; a field with no value is written as
 `null`, not left out.
 
 | Field | Type | Since | Meaning |
@@ -91,6 +95,9 @@ Every key is always present in a 2.5 row; a field with no value is written as
 | `primary_face` | object or null | 2.3 | The primary face's measurements, or null for an image with no face. See [`primary_face`](#primary_face). |
 | `set_age` | object or null | 2.3 | The scan's set age, when the scan read one. See [`set_age`](#set_age). |
 | `split` | string or null | 2.4 | `train` or `held_out` when the export asked for a train/held-out split (`split`, exporting `split_part`), else null. See the [HTTP API](http-api.md#ranking-max_keep-and-splits). |
+| `consent_release_sha256` | string or null | 2.6 | A consented face set only (`face_source.consent`): the consent record's key, the sha256 of the signed release. Null otherwise. See [Consented face sets](face-sources.md#consented-face-sets-of-a-real-person). |
+| `consent_record_sha256` | string or null | 2.6 | A consented face set only: the sha256 of the consent record file as read at export. Null otherwise. |
+| `provenance` | object or null | 2.6 | A consented face set only: where the image came from, as argus-cortex's `Provenance` (`kind`, `source`, `license`, `subject`, `release_sha256`, `cleared`…). It is the `provenance` in the image's `<stem>.json` sidecar when there is one, else `kind: "consented"` under the record's release. Null otherwise. |
 
 ### `target_profile`
 
@@ -184,6 +191,7 @@ The export response carries the same mappings as `exported_paths` and
 | 2.3 | 0.15.0 | Adds `primary_face` and `set_age`. |
 | 2.4 | unreleased | Adds `split`. |
 | 2.5 | unreleased | Adds `target_profile.modality`, always `image` (argus-cortex 0.12). |
+| 2.6 | unreleased | Adds `consent_release_sha256`, `consent_record_sha256` and `provenance` (consented face sets, #133). |
 
 2.0 is a new major because a 1.x consumer that derives destinations from
 `rel_path`, or trusts every row to name a file on disk, misreads a 2.x manifest.
@@ -208,7 +216,7 @@ and requires `exported_path` from 2.0 on.
 ## Schema
 
 The row is published as `ManifestRow` (with `ManifestFace`, `FaceLandmarks`,
-`CropBox`, `SetAge` and `TargetProfile`) in the wire-contract JSON Schema,
+`CropBox`, `SetAge`, `TargetProfile` and `Provenance`) in the wire-contract JSON Schema,
 [`schema/curator-wire.schema.json`](../schema/curator-wire.schema.json).
 `argus-curator schema` regenerates it from the models, and CI fails if the
 committed copy is stale. In Python, `argus_curator.models.ManifestRow` reads a

@@ -29,6 +29,11 @@ frontend (:3000); allow-list other origins with `--cors-origin <origin>`
 on public demos. A literal `*` in the allow-list is treated as `--cors-any`
 (wildcard without credentials), never as origin reflection.
 
+A scan's consent record (`consent.record`) resolves under the scanned folder
+the same way, a symlink included, and is re-checked at select and export
+since the stored path is data (see
+[Consented face sets](face-sources.md#consented-face-sets-of-a-real-person)).
+
 ## CORS and cross-site writes
 
 CORS is not a write boundary — `POST /upload` sends `multipart/form-data`, which
@@ -112,7 +117,8 @@ has it.
   "target_profile": { "target_style": "photo", "target_category": "identity" },
   "config": { "min_short_side": 512, "max_aspect_ratio": 3.0, "blur_threshold": 100.0,
               "cluster_distance": 10, "max_workers": 4 },
-  "faces":  { "enabled": true, "model": "buffalo_l", "min_det_score": 0.5, "cluster_eps": 0.5 }
+  "faces":  { "enabled": true, "model": "buffalo_l", "min_det_score": 0.5, "cluster_eps": 0.5 },
+  "consent": { "record": null, "max_distance": 0.4 }  // optional: a consent record under the folder
 }
 ```
 

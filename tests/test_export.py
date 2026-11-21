@@ -55,6 +55,9 @@ def test_manifest_rows_carry_target_profile(dataset: Path, tmp_path: Path) -> No
         "primary_face",
         "set_age",
         "split",
+        "consent_release_sha256",
+        "consent_record_sha256",
+        "provenance",
     }
     assert row["manifest_version"] == MANIFEST_VERSION
     assert row["target_profile"]["target_category"] == "identity"

@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import datetime
 from typing import Any, Literal
 
+from argus_cortex.consent import ConsentRefusal
 from argus_cortex.moderation import (  # re-exported: part of curator's wire contract
     DEFAULT_EXPOSED_LABELS,
     GuardResult,
@@ -22,6 +24,7 @@ from argus_cortex.moderation import (  # re-exported: part of curator's wire con
 )
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import PolicyName
+from argus_cortex.provenance import SHA256_PATTERN, Provenance
 from argus_cortex.taxonomy import (  # re-exported: the suite's one taxonomy, not a local copy
     TARGET_CATEGORIES,  # noqa: F401
     TARGET_STYLES,  # noqa: F401
@@ -127,7 +130,11 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # 2.5: target_profile carries modality, always "image" (argus-cortex 0.12's
 # TargetProfile, narrowed to the image modality: target_category keeps its
 # image-only enum). Additive.
-MANIFEST_VERSION = "2.5"
+# 2.6: rows of a consented face set (face_source.consent) carry the consent
+# record's release_sha256 and the sha256 of the record file as read at export,
+# and the image's own provenance (cortex's Provenance); null otherwise.
+# Additive (#133).
+MANIFEST_VERSION = "2.6"
 
 # Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
 # written to disk verbatim, so a runaway payload must not fill the export root.
@@ -368,6 +375,86 @@ class NsfwConfig(BaseModel):
     # True = required (a scan fails if no URL is configured); False = opted out.
     # A finished scan records what actually happened as True or False.
     enabled: bool | None = None
+
+
+class ConsentConfig(BaseModel):
+    """Bind a real person's face set to their consent record (#133; see consent.py).
+
+    ``record`` is the :class:`argus_cortex.consent.ConsentRecord` file, a path
+    relative to the scanned folder (the server refuses one that resolves
+    outside it). None = no consent check. With a record the scan reads it,
+    checks it for the ``avatar`` use of the subject's face, builds the identity
+    reference from the record's reference images (found in the scan by their
+    sha256), and binds each image: its primary face within ``max_distance`` of
+    that reference, and no one else in the frame. Turning it on turns on face
+    detection, MiVOLO and the set age, which the export gate needs.
+    """
+
+    record: str | None = None
+    # Ceiling on the primary face's reference_distance for an image to be bound.
+    max_distance: float = Field(0.4, ge=0.0, le=2.0)
+
+    @field_validator("record")
+    @classmethod
+    def _named(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("consent.record names the record file (e.g. consent.json), or is null")
+        return value
+
+
+# Why a consent record makes a scan's set ineligible: cortex's refusals from
+# consent_valid, or curator's own. "missing": no record file. "invalid": not a
+# ConsentRecord. "no-reference-image": none of the record's reference images
+# is in the scan. "no-reference-face": none of them has a face, or the
+# reference gave no distances.
+ConsentIneligible = Literal["missing", "invalid", "no-reference-image", "no-reference-face"] | ConsentRefusal
+
+# Why an image is not bound to the scan's consent record. "not-consented": its
+# <stem>.json sidecar marks its subject as not consenting (argus-quarry's
+# likeness_consent: false). "provenance": its sidecar's provenance is
+# unreadable, or names another source than this release. "unchecked": face
+# detection failed on it. "no-face": no face. "bystander": someone else is in
+# the frame. "mismatch": the primary face is not within max_distance of the
+# record's reference.
+ConsentExclusion = Literal["not-consented", "provenance", "unchecked", "no-face", "bystander", "mismatch"]
+
+
+class ConsentCheck(BaseModel):
+    """What the scan made of its consent record (ScanSummary.consent).
+
+    Never the record: a record names a person, so the scan keeps only the
+    verdict, the record's hashes and which images are the references. It is
+    part of the scan, so deleting or purging the scan removes it.
+    """
+
+    model_config = RESPONSE_ONLY
+
+    # ConsentConfig.record as the scan was given it.
+    record: str
+    eligible: bool
+    reason: ConsentIneligible | None = None
+    detail: str = ""
+    # The record's key (the signed release's sha256) and the sha256 of the
+    # record file the scan read; None when there was no readable record.
+    release_sha256: str | None = Field(None, pattern=SHA256_PATTERN)
+    record_sha256: str | None = Field(None, pattern=SHA256_PATTERN)
+    checked_at: datetime
+    max_distance: float
+    # rel_paths of the scanned images that are the record's reference images.
+    references: list[str] = Field(default_factory=list)
+    # Reference images the record lists that the scan did not find.
+    missing_references: int = 0
+
+
+class ConsentBinding(BaseModel):
+    """Whether one image is bound to the scan's consent record (ImageResult.consent)."""
+
+    model_config = RESPONSE_ONLY
+
+    bound: bool
+    # The primary face's reference_distance, kept for review of the borderline ones.
+    distance: float | None = None
+    reason: ConsentExclusion | None = None
 
 
 EraxLabel = Literal["anus", "make_love", "nipple", "penis", "vagina"]
@@ -808,6 +895,8 @@ class ImageResult(BaseModel):
     primary_face_attributes: FaceAttributes | None = None
     # Only on a passing frame with no face, when FaceConfig.set_age found one subject.
     set_age: SetAge | None = None
+    # Only when the scan read an eligible consent record (ConsentConfig).
+    consent: ConsentBinding | None = None
 
     # Places365 scene tags (when SceneConfig.enabled ran).
     scene: SceneTags | None = None
@@ -906,6 +995,9 @@ class ScanSummary(BaseModel):
     # scan, none with a face, or an embedding of the wrong length), else None.
     # Set only when a reference was asked for.
     reference_skipped: str | None = None
+    # When ConsentConfig.record asked: whether the record makes the set
+    # eligible, and why not. None when not asked.
+    consent: ConsentCheck | None = None
     results: list[ImageResult] = Field(default_factory=list)
 
     # The min_short_side a scan cached before MIN_SHORT_SIDE existed actually ran
@@ -975,6 +1067,7 @@ class ScanRequest(BaseModel):
     guard: GuardConfig = Field(default_factory=GuardConfig)
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
     crops: CropConfig = Field(default_factory=CropConfig)
+    consent: ConsentConfig = Field(default_factory=ConsentConfig)
 
 
 class FaceSourceFilter(BaseModel):
@@ -1011,6 +1104,17 @@ class FaceSourceFilter(BaseModel):
     # A MiVOLO age of at least 18 on the face, and an adult set age when the
     # scan read one. An image with no age is kept out.
     require_adult: bool = True
+    # A consented face set (#133): keep only images bound to the scan's consent
+    # record (ConsentConfig), re-checked at export, with an adult set age and no
+    # matched face under 18; refuse when none qualifies. Rows then carry the
+    # record's hashes and each image's provenance.
+    consent: bool = False
+
+    @model_validator(mode="after")
+    def _consent_is_adult_only(self) -> FaceSourceFilter:
+        if self.consent and not self.require_adult:
+            raise ValueError("face_source.consent keeps adults only; it cannot run with require_adult false")
+        return self
 
 
 # How the kept images are ordered, best first (selection.rank_key). "score":
@@ -1238,6 +1342,12 @@ class ExportRequest(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _consent_needs_the_filter(self) -> ExportRequest:
+        if self.face_source is not None and self.face_source.consent and self.selection is not None:
+            raise ValueError("a consented face set is chosen by face_source, not by a named selection")
+        return self
+
+    @model_validator(mode="after")
     def _age_range_in_order(self) -> ExportRequest:
         if (
             self.min_age_years is not None
@@ -1322,6 +1432,13 @@ class ManifestRow(BaseModel):
     set_age: SetAge | None = None
     # Manifest 2.4: the row's part of ExportRequest.split, None without one.
     split: SplitPart | None = None
+    # Manifest 2.5, a consented face set only (face_source.consent): the
+    # consent record's key (its release's sha256), the sha256 of the record
+    # file as read at export, and where this image came from (its <stem>.json
+    # sidecar's provenance, else captured under the release). None otherwise.
+    consent_release_sha256: str | None = None
+    consent_record_sha256: str | None = None
+    provenance: Provenance | None = None
 
 
 class ExportResult(BaseModel):

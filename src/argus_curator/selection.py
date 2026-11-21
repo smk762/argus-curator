@@ -17,7 +17,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import imagehash
 import numpy as np
@@ -39,6 +39,9 @@ from argus_curator.models import (
     SplitPart,
 )
 from argus_curator.nsfw import exposed_score, is_exposed
+
+if TYPE_CHECKING:
+    from argus_curator.consent import FaceSourceGate
 
 # A MiVOLO age under this, together with any reported exposed detection, is never kept.
 MINOR_AGE_YEARS = 18.0
@@ -497,6 +500,36 @@ def face_source_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
             f"({summary.reference_skipped}); rescan with a usable reference, "
             "or set face_source.max_identity_distance to null"
         )
+    if fs.consent:
+        return consent_set_problem(summary)
+    return None
+
+
+def consent_set_problem(summary: ScanSummary) -> str | None:
+    """Why *summary* cannot give a consented face set, from the scan alone, else ``None``.
+
+    The record must have made the set eligible, the scan must have read an
+    adult set age, and no face bound to the record may read under 18: one
+    young estimate on the consenting person refuses the whole set. The record
+    itself is read again at export (:func:`argus_curator.consent.face_source_gate`).
+    """
+    check = summary.consent
+    if check is None:
+        return "face_source.consent needs a scan that read a consent record; rescan with consent.record"
+    if not check.eligible:
+        return f"the consent record makes this set ineligible ({check.reason}): {check.detail}"
+    if summary.set_age is None:
+        why = summary.set_age_skipped or "the scan did not read one"
+        return f"a consented face set needs an adult set age, and the scan read none ({why})"
+    if summary.set_age.years < MINOR_AGE_YEARS:
+        return "a consented face set needs an adult set age; the scan's reads under 18, so the set is refused"
+    for r in summary.results:
+        if r.consent is None or not r.consent.bound:
+            continue
+        face = primary_face(r)
+        years = _mivolo_years(face.attributes) if face is not None else None
+        if years is not None and years < MINOR_AGE_YEARS:
+            return f"a face bound to the consent record reads under 18 ({r.rel_path}), so the set is refused"
     return None
 
 
@@ -596,13 +629,30 @@ def _under(value: float | None, floor: float | None) -> bool:
 
 
 def _face_source_exclusion(
-    r: ImageResult, fs: FaceSourceFilter, cluster: str | None, set_age: SetAge | None
+    r: ImageResult,
+    fs: FaceSourceFilter,
+    cluster: str | None,
+    set_age: SetAge | None,
+    gate: FaceSourceGate | None = None,
 ) -> str | None:
     """Why the face-source preset keeps *r* out (``face-source:<check>``), or None.
 
     A measurement the scan does not have fails its check: a face source is
-    better missed than taken on trust.
+    better missed than taken on trust. *gate* holds what was read from disk
+    for this selection (argus-quarry's likeness mark, the re-checked consent).
     """
+    if gate is not None and (reason := gate.excluded.get(r.rel_path)) is not None:
+        return reason
+    if fs.consent:
+        if r.consent is None:
+            return "face-source:consent-unbound"
+        if not r.consent.bound:
+            # One reason for argus-quarry's mark, whether the scan or the gate read it.
+            if r.consent.reason == "not-consented":
+                return "face-source:not-consented"
+            return f"face-source:consent-{r.consent.reason}"
+        if gate is None or gate.consent is None or r.rel_path not in gate.consent.provenance:
+            return "face-source:consent-provenance"
     face = primary_face(r)
     if face is None:
         return "face-source:no-face"
@@ -730,15 +780,20 @@ def plan_selection(
     *,
     set_age: SetAge | None = None,
     embeddings: Mapping[str, Any] | None = None,
+    gate: FaceSourceGate | None = None,
 ) -> SelectionPlan:
     """The filter, cap, ranking and split for *req*: the one path select and export share.
 
     *diversity_weight* is the scan's; ``req.diversity_weight`` overrides it.
     *embeddings* are the scan's in-memory ones (``ScanSummary.embeddings``),
-    read by ``req.diversify_semantic``. Raises :class:`SplitError` when
+    read by ``req.diversify_semantic``. *gate* is
+    :func:`argus_curator.consent.face_source_gate` for the face-source preset
+    (required with ``face_source.consent``). Raises :class:`SplitError` when
     ``req.split`` cannot be made.
     """
-    chosen, keep_reason = decide_selection(results, req, diversity_weight, set_age=set_age, embeddings=embeddings)
+    chosen, keep_reason = decide_selection(
+        results, req, diversity_weight, set_age=set_age, embeddings=embeddings, gate=gate
+    )
     split: dict[str, SplitPart] = {}
     if req.split is not None:
         key = SPLIT_GROUP_KEYS[req.split.group_by]
@@ -754,6 +809,7 @@ def decide_selection(
     *,
     set_age: SetAge | None = None,
     embeddings: Mapping[str, Any] | None = None,
+    gate: FaceSourceGate | None = None,
 ) -> tuple[list[ImageResult], dict[str, str]]:
     """Return ``(selected_results, keep_reason_by_rel)`` for an export request.
 
@@ -769,7 +825,11 @@ def decide_selection(
     With ``req.face_source`` the preset runs last (*set_age* is the scan's, for
     its adult check). The selection always comes back ranked best first by
     :func:`rank_key` under ``req.rank``. Use :func:`plan_selection` for the split too.
+    A consented set (``face_source.consent``) needs *gate*, the record as
+    re-checked now; without it this raises ``ValueError`` rather than trust the scan.
     """
+    if req.face_source is not None and req.face_source.consent and (gate is None or gate.consent is None):
+        raise ValueError("face_source.consent needs the consent gate (consent.face_source_gate)")
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
     pose_filter = set(req.face_poses) if req.face_poses else None
@@ -808,7 +868,7 @@ def decide_selection(
             keep_reason[r.rel_path] = rating_reason
         elif (guard_reason := _guard_exclusion(r, req)) is not None:
             keep_reason[r.rel_path] = guard_reason
-        elif fs is not None and (fs_reason := _face_source_exclusion(r, fs, fs_cluster, set_age)) is not None:
+        elif fs is not None and (fs_reason := _face_source_exclusion(r, fs, fs_cluster, set_age, gate)) is not None:
             keep_reason[r.rel_path] = fs_reason
         else:
             eligible.append(r)
