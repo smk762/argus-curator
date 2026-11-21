@@ -147,6 +147,11 @@ MANIFEST_VERSION = "2.6"
 # (schema/speech-manifest-row.snapshot.json, `make manifest-snapshot`).
 SPEECH_MANIFEST_VERSION = "1.0"
 
+# SpeechSelection.consent_max_distance's default (#209): the cosine distance,
+# speaker embedding to the reference recordings' centroid, under which a clip
+# is the consenting voice. Measured with the pinned ECAPA model (docs/speech.md).
+VOICE_CONSENT_MAX_DISTANCE = 0.25
+
 # Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
 # written to disk verbatim, so a runaway payload must not fill the export root.
 RUN_STATS_MAX_BYTES = 5 * 1024 * 1024
@@ -1654,8 +1659,11 @@ class SpeechSelection(BaseModel):
     ``consent_record`` names a cortex ``ConsentRecord`` (a path under the
     scanned folder, as ``ConsentConfig.record``) for a real person's voice
     outside a licensed corpus, checked for ``training`` of the ``voice`` at
-    ``consent_delivery``. Nothing estimates a speaker's age: the corpus's
-    label is carried, and an unknown age stays unknown.
+    ``consent_delivery``. The record binds the export to its reference
+    recordings' voice (#209): a clip is kept only when its speaker embedding
+    is within ``consent_max_distance`` (cosine distance) of their centroid.
+    Nothing estimates a speaker's age: the corpus's label is carried, and an
+    unknown age stays unknown.
     """
 
     speakers: list[str] | None = Field(None, min_length=1)
@@ -1672,6 +1680,11 @@ class SpeechSelection(BaseModel):
     license: str | None = Field(None, min_length=1, max_length=200)
     consent_record: str | None = Field(None, min_length=1)
     consent_delivery: str | None = Field(None, min_length=1, max_length=100)
+    # Ceiling on a clip's cosine distance to the centroid of the consent
+    # record's reference recordings (#209). Strict on purpose: a clip of
+    # another voice let in is the harmful error, a clip of the subject's
+    # left out the safe one (docs/speech.md has the measurements).
+    consent_max_distance: float = Field(VOICE_CONSENT_MAX_DISTANCE, gt=0.0, lt=2.0)
 
     @model_validator(mode="after")
     def _provenance(self) -> SpeechSelection:
@@ -2113,6 +2126,10 @@ class SelectRow(BaseModel):
     split: SplitPart | None = None
     # A speech scan's clip (#187): its speaker_id (SpeechManifestRow), else None.
     speaker_id: str | None = None
+    # Under speech.consent_record (#209): the clip's cosine distance to the
+    # record's reference voice, for review of the borderline ones; None
+    # otherwise, or for a clip with no speaker embedding. Never the vector.
+    consent_distance: float | None = None
 
 
 class SelectRequest(BaseModel):
