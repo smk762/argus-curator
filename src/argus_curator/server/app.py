@@ -86,6 +86,7 @@ from argus_curator.selection import (
     minor_exposed,
     minor_exposed_mode,
     plan_selection,
+    scan_references,
     selection_problem,
 )
 from argus_curator.store import ScanStore
@@ -1244,6 +1245,7 @@ def create_app(
                 set_age=summary.set_age,
                 embeddings=summary.embeddings,
                 gate=gate,
+                references=scan_references(summary),
             )
         except SplitError as exc:
             raise HTTPException(status_code=400, detail=f"split refused: {exc}") from None

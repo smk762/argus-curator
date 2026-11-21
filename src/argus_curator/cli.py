@@ -942,7 +942,7 @@ def scan(
             raise typer.Exit(2) from exc
         if csv_out:
             from argus_curator.export import write_report
-            from argus_curator.selection import decide_selection
+            from argus_curator.selection import decide_selection, scan_references
 
             selected, keep_reason = decide_selection(
                 summary.results,
@@ -951,6 +951,7 @@ def scan(
                 set_age=summary.set_age,
                 embeddings=summary.embeddings,
                 gate=gate,
+                references=scan_references(summary),
             )
             exported_paths = result.exported_paths if result is not None else {}
             write_report(summary.results, keep_reason, {r.rel_path for r in selected}, exported_paths, csv_out)

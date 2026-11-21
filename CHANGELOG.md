@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Likeness: a consistency measure for subjects without a face (#191).** A
+  scan with `embeddings` on records each passing image's `likeness_distance`
+  (`ImageResult`): the cosine distance from its CLIP embedding to the subject,
+  which is the mean of `embeddings.reference_paths` (images in the scan; a
+  rejected one is embedded from the scan's bytes), a caller-supplied
+  `embeddings.reference_embedding` (request-only: the stored and served summary
+  drops it, as it does a face `reference_embedding`), or else the set's own
+  trimmed centroid. `ScanSummary.likeness_source` / `likeness_skipped` say
+  which, or why none was measured. Only the distances persist, so select and
+  export need no held vectors and survive a restart.
+  - `rank: "likeness"` (closest first) and `max_likeness_distance` (keep
+    reason `likeness-distance`) on `/scan/{id}/select` and `/export`, both 400
+    on a scan that measured no distances.
+  - `exclude_references` keeps the scan's reference images (face and likeness)
+    out of the selection (keep reason `reference`), so argus-mint's anchors
+    take no place in a cap or a split; 400 on a scan that named none.
+  - `split.group_by: "similar_group"` keeps an image's near-duplicates in its
+    part.
+  - `ManifestRow` and `MANIFEST_VERSION` are unchanged.
+
 - **Speech export (#187).** `POST /scan/{id}/select` and `POST /export` take a
   speech scan, through `ExportRequest.speech` / `SelectRequest.speech`
   (`SpeechSelection`).

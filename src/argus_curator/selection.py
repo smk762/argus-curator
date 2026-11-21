@@ -15,7 +15,7 @@ import os
 import random
 import re
 from collections import Counter
-from collections.abc import Callable, Hashable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
@@ -104,16 +104,23 @@ def _distance(r: ImageResult) -> float:
     return d if d is not None else _NO_DISTANCE
 
 
+def _likeness(r: ImageResult) -> float:
+    return r.likeness_distance if r.likeness_distance is not None else _NO_DISTANCE
+
+
 def rank_key(rank: RankBy) -> Callable[[ImageResult], tuple[float, float, str]]:
     """Sort key putting the best image first under *rank* (see ``models.RankBy``).
 
     ``"score"``: the curation score, then the identity distance. ``"identity"``:
     the identity distance (a face's ``reference_distance``, else its
-    ``cluster_distance``; no face or no distance last), then the score. Both
-    end on ``rel_path``, so the order never depends on scan order.
+    ``cluster_distance``; no face or no distance last), then the score.
+    ``"likeness"``: the image's ``likeness_distance`` (none last), then the
+    score. All end on ``rel_path``, so the order never depends on scan order.
     """
     if rank == "identity":
         return lambda r: (_distance(r), -r.score, r.rel_path)
+    if rank == "likeness":
+        return lambda r: (_likeness(r), -r.score, r.rel_path)
     return lambda r: (-r.score, _distance(r), r.rel_path)
 
 
@@ -121,6 +128,8 @@ def _quality(candidates: list[ImageResult], rank: RankBy) -> list[float]:
     """Each candidate's 0..1 merit under *rank*, the term diversity is blended against."""
     if rank == "identity":
         return [1.0 - _distance(r) / _NO_DISTANCE for r in candidates]
+    if rank == "likeness":
+        return [1.0 - _likeness(r) / _NO_DISTANCE for r in candidates]
     max_score = max((r.score for r in candidates), default=1.0) or 1.0
     return [r.score / max_score for r in candidates]
 
@@ -143,7 +152,8 @@ def select_diverse(
     ``quality * (1 - dw) + diversity_norm * dw`` where ``diversity_norm`` is
     the minimum pHash Hamming distance to any already-selected image, and
     ``quality`` is the score over the best score (``rank="score"``) or one
-    minus half the identity distance (``rank="identity"``). ``dw=0`` reduces
+    minus half the identity (``rank="identity"``) or likeness
+    (``rank="likeness"``) distance. ``dw=0`` reduces
     to the best *n* by :func:`rank_key`; ``dw=1`` maximises visual spread.
 
     ``scenes`` and ``outfits`` each add a novelty term — one minus the largest
@@ -568,6 +578,33 @@ def rank_split_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
         return 'split.group_by "face_cluster" needs a scan that ran face detection; rescan with faces on'
     if req.split is not None and req.split.group_by == "speaker":
         return 'split.group_by "speaker" is for a speech scan'
+    return likeness_problem(req, summary)
+
+
+def likeness_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """Why ``rank="likeness"`` or ``max_likeness_distance`` cannot be applied to *summary*, else ``None``.
+
+    Both read the distances the scan recorded (#191), never the vectors, so a
+    restart loses nothing; a scan without them is refused rather than ranked
+    by nothing or filtered to nothing.
+    """
+    asked = [
+        name
+        for name, on in (
+            ('rank "likeness"', req.rank == "likeness"),
+            ("max_likeness_distance", req.max_likeness_distance is not None),
+        )
+        if on
+    ]
+    if not asked:
+        return None
+    what = " and ".join(asked)
+    if not summary.embeddings_config.enabled:
+        return f"{what} needs a scan that computed embeddings; rescan with embeddings on"
+    if summary.likeness_skipped:
+        return f"{what} needs the scan's likeness distances, and it measured none ({summary.likeness_skipped})"
+    if not any(r.likeness_distance is not None for r in summary.results):
+        return f"{what} needs the scan's likeness distances, and it has none; rescan with embeddings on"
     return None
 
 
@@ -608,9 +645,25 @@ def selection_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
         guard_filter_problem(req, summary),
         rank_split_problem(req, summary),
         semantic_problem(req, summary),
+        references_problem(req, summary),
     ):
         if problem is not None:
             return problem
+    return None
+
+
+def scan_references(summary: ScanSummary) -> set[str]:
+    """The images *summary* measured distances to: its face and likeness ``reference_paths``."""
+    return {*summary.faces_config.reference_paths, *summary.embeddings_config.reference_paths}
+
+
+def references_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
+    """Why ``req.exclude_references`` cannot be applied to *summary*, else ``None``."""
+    if req.exclude_references and not scan_references(summary):
+        return (
+            "exclude_references: this scan named no reference images "
+            "(faces.reference_paths or embeddings.reference_paths)"
+        )
     return None
 
 
@@ -720,6 +773,8 @@ class SplitError(ValueError):
 SPLIT_GROUP_KEYS: dict[str, Callable[[ImageResult], str | None]] = {
     "image": lambda r: r.rel_path,
     "face_cluster": lambda r: r.primary_face_cluster,
+    # Every row is in a group (a lone image in its own), numbered per scan.
+    "similar_group": lambda r: f"similar:{r.similar_group}" if r.similar_group else None,
 }
 
 
@@ -837,6 +892,7 @@ def plan_selection(
     set_age: SetAge | None = None,
     embeddings: Mapping[str, Any] | None = None,
     gate: FaceSourceGate | None = None,
+    references: Collection[str] | None = None,
 ) -> SelectionPlan:
     """The filter, cap, ranking and split for *req*: the one path select and export share.
 
@@ -844,11 +900,13 @@ def plan_selection(
     *embeddings* are the scan's in-memory ones (``ScanSummary.embeddings``),
     read by ``req.diversify_semantic``. *gate* is
     :func:`argus_curator.consent.face_source_gate` for the face-source preset
-    (required with ``face_source.consent``). Raises :class:`SplitError` when
+    (required with ``face_source.consent``). *references* are the scan's
+    reference images (:func:`scan_references`, required with
+    ``req.exclude_references``). Raises :class:`SplitError` when
     ``req.split`` cannot be made.
     """
     chosen, keep_reason = decide_selection(
-        results, req, diversity_weight, set_age=set_age, embeddings=embeddings, gate=gate
+        results, req, diversity_weight, set_age=set_age, embeddings=embeddings, gate=gate, references=references
     )
     split: dict[str, SplitPart] = {}
     if req.split is not None:
@@ -866,6 +924,7 @@ def decide_selection(
     set_age: SetAge | None = None,
     embeddings: Mapping[str, Any] | None = None,
     gate: FaceSourceGate | None = None,
+    references: Collection[str] | None = None,
 ) -> tuple[list[ImageResult], dict[str, str]]:
     """Return ``(selected_results, keep_reason_by_rel)`` for an export request.
 
@@ -878,14 +937,20 @@ def decide_selection(
     the request asked to keep. Any rejected image comes next: it is never kept,
     and its keep reason is its own ``reject_reason`` (``prefilter:nsfw`` and so on).
 
-    With ``req.face_source`` the preset runs last (*set_age* is the scan's, for
-    its adult check). The selection always comes back ranked best first by
-    :func:`rank_key` under ``req.rank``. Use :func:`plan_selection` for the split too.
+    With ``req.face_source`` the preset runs next (*set_age* is the scan's, for
+    its adult check), then ``req.max_likeness_distance`` (#191). The selection
+    always comes back ranked best first by :func:`rank_key` under
+    ``req.rank``. Use :func:`plan_selection` for the split too.
     A consented set (``face_source.consent``) needs *gate*, the record as
     re-checked now; without it this raises ``ValueError`` rather than trust the scan.
+    ``req.exclude_references`` likewise needs *references* (:func:`scan_references`),
+    so a caller that forgets them is an error, not a filter that does nothing.
     """
     if req.face_source is not None and req.face_source.consent and (gate is None or gate.consent is None):
         raise ValueError("face_source.consent needs the consent gate (consent.face_source_gate)")
+    if req.exclude_references and references is None:
+        raise ValueError("exclude_references needs the scan's reference images (selection.scan_references)")
+    reference_set = set(references or ()) if req.exclude_references else set()
     keep_reason: dict[str, str] = {}
     face_filter = set(req.face_clusters) if req.face_clusters else None
     pose_filter = set(req.face_poses) if req.face_poses else None
@@ -904,6 +969,8 @@ def decide_selection(
     for r in results:
         if (hard := hard_exclusion(r)) is not None:
             keep_reason[r.rel_path] = hard
+        elif r.rel_path in reference_set:
+            keep_reason[r.rel_path] = "reference"
         elif r.score < req.min_score:
             keep_reason[r.rel_path] = "below-score"
         elif r.is_duplicate and not req.keep_similar:
@@ -926,6 +993,8 @@ def decide_selection(
             keep_reason[r.rel_path] = guard_reason
         elif fs is not None and (fs_reason := _face_source_exclusion(r, fs, fs_cluster, set_age, gate)) is not None:
             keep_reason[r.rel_path] = fs_reason
+        elif _over(r.likeness_distance, req.max_likeness_distance):
+            keep_reason[r.rel_path] = "likeness-distance"
         else:
             eligible.append(r)
 

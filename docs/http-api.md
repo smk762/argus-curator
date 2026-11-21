@@ -118,7 +118,10 @@ has it.
   "config": { "min_short_side": 512, "max_aspect_ratio": 3.0, "blur_threshold": 100.0,
               "cluster_distance": 10, "max_workers": 4 },
   "faces":  { "enabled": true, "model": "buffalo_l", "min_det_score": 0.5, "cluster_eps": 0.5 },
-  "consent": { "record": null, "max_distance": 0.4 }  // optional: a consent record under the folder
+  "consent": { "record": null, "max_distance": 0.4 },  // optional: a consent record under the folder
+  "embeddings": { "enabled": false, "device": "auto",  // CLIP image embeddings (memory only)
+                  "reference_paths": [],           // optional likeness reference: images in this scan
+                  "reference_embedding": null }    // or a centroid in curator's CLIP space (not both)
 }
 ```
 
@@ -144,7 +147,9 @@ has it.
   "garments": ["dress"], "exclude_garments": ["bag_wallet"],  // optional: Fashionpedia
   "min_garment_conf": 0.5, "garments_uncropped": false, "diversify_outfits": true,
   "max_keep": null, "diversity_weight": null,  // optional cap; null weight = the scan's
-  "rank": "score",                  // "score" | "identity": the order kept images come in
+  "rank": "score",                  // "score" | "identity" | "likeness": the order kept images come in
+  "max_likeness_distance": null,    // optional: ceiling on each image's likeness_distance
+  "exclude_references": false,      // optional: keep the scan's reference images out
   "split": null, "split_part": "train",        // optional train/held-out split; export one part
   "write_manifest": true,
   "caption_url": null,              // optional: POST manifest to argus-lens (internal hosts: CURATOR_CAPTION_ALLOWED_HOSTS)
@@ -178,7 +183,9 @@ images, in the same order, in the same parts.
   a reference, `faces.reference_paths` or `faces.reference_embedding`, else its
   `cluster_distance`; an image with no face or
   no distance comes last), then the score. Ties end on `rel_path`. `"identity"`
-  needs a scan that ran face detection (else 400). The manifest is written in
+  needs a scan that ran face detection (else 400). `"likeness"`: the image's
+  `likeness_distance` (see [Likeness](#likeness-subjects-without-a-face);
+  none last), then the score. The manifest is written in
   this order, and each select row's `rank` is its 1-based position.
 - **`max_keep`** caps the kept images; the rest get `diversity-trimmed`. The
   pick blends merit under `rank` with spread (pHash, plus scenes and outfits
@@ -190,7 +197,7 @@ images, in the same order, in the same parts.
   ```jsonc
   "split": {
     "held_out": 8,              // or "held_out_fraction": 0.2 (exactly one)
-    "group_by": "image",        // "image" | "face_cluster" | "speaker" (speech): a group never spans both parts
+    "group_by": "image",        // "image" | "face_cluster" | "similar_group" | "speaker" (speech): a group never spans both parts
     "method": "spread",         // "spread": evenly through the ranking | "random": shuffled by seed
     "seed": 0
   }
@@ -198,7 +205,10 @@ images, in the same order, in the same parts.
 
   Whole groups go to one part. With `group_by: "face_cluster"` one identity
   (the primary face's cluster) is never in both parts; an image with no
-  clustered face is a group of its own. A group that would push `held_out`
+  clustered face is a group of its own. With `group_by: "similar_group"` an
+  image's near-duplicates (the scan's `similar_group`: pHash, and CLIP with
+  `config.semantic_duplicates`) are in its part, so a held-out reference is
+  never a near-copy of a training image. A group that would push `held_out`
   past its target is skipped, so it can fall short of the target, never
   exceed it. A split that leaves either part empty (too few images, or one
   group) is refused with 400. The split is deterministic: the same request on
@@ -216,6 +226,55 @@ argus-mint's identity training, for example, selects with
 "diversity_weight": 0, "split": {"held_out": held_out}}`, then exports the
 `train` part to the training export and the `held_out` part to proof's
 references.
+
+## Likeness: subjects without a face
+
+A subject with no usable face (a creature, an object, a masked or stylised
+character) has no identity distance, so likeness gives it one from the scan's
+CLIP embeddings (#191). A scan with `embeddings` on records each passing
+image's `likeness_distance`: the cosine distance (0..2) from its embedding to
+the subject. The subject is, in order:
+
+- `embeddings.reference_paths`: images in the scan, their embeddings averaged.
+  A reference image the scan rejected is still embedded from the bytes it read
+  (its row stays rejected, with no distance);
+- `embeddings.reference_embedding`: a centroid the caller supplies, in
+  curator's embedding space (`embeddings.EMBEDDING_SPACE`; another CLIP's
+  vectors don't compare). Like a face `reference_embedding`, it is
+  request-only: the stored and served summary never carries it;
+- else the set's own centroid, recentred once on the closest 75% of the
+  passing images so a few strays pull it less.
+
+Either reference turns `embeddings` on. `ScanSummary.likeness_source` says
+which subject was used (`"reference"` | `"centroid"`), and `likeness_skipped`
+why no distance was measured (no reference image in the scan, none could be
+embedded, a `reference_embedding` of the wrong length). A reference that gives
+nothing is never swapped for the centroid.
+
+Select and export read the recorded distances, never the vectors, so they
+still work after a restart:
+
+- `rank: "likeness"` orders kept images closest first (none last), then by score.
+- `max_likeness_distance` keeps out an image farther than it, or with no
+  distance (keep reason `likeness-distance`).
+- `exclude_references` keeps the scan's reference images
+  (`embeddings.reference_paths` and `faces.reference_paths`) out, keep reason
+  `reference`: they are the yardstick, so a cap or a split never spends a place
+  on one. Refused on a scan that named none.
+
+Either one on a scan that didn't compute embeddings, or that measured no
+distances, is refused with 400, never ignored. The embedding is of the frame
+as the scan saw it: a background that varies more than the subject does
+dominates the distance, so crop to the subject first (`crops`, or a
+`.crop.json` sidecar) when it is small in the frame.
+
+argus-mint's `likeness` identities, for example, upload the candidates and the
+identity's references together, scan with
+`{"embeddings": {"reference_paths": anchors}}`, and select with
+`{"rank": "likeness", "max_likeness_distance": d, "exclude_references": true,
+"max_keep": train + held_out, "diversity_weight": 0,
+"split": {"held_out": held_out, "group_by": "similar_group"}}`, and export each
+part by the same fields with `split_part`.
 
 ## Scan cache
 
