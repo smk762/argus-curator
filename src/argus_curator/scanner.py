@@ -37,6 +37,7 @@ import structlog
 from PIL import Image, ImageFilter
 
 from argus_curator.models import (
+    SEMANTIC_DUPLICATES_NEED_EMBEDDINGS,
     SUPPORTED_EXTS,
     ConsentConfig,
     CropConfig,
@@ -418,27 +419,72 @@ def collect_images(root: Path) -> list[tuple[str, str, bytes]]:
 # ---------------------------------------------------------------------------
 
 
-def _mark_duplicates(results: list[ImageResult], cfg: ScanConfig) -> None:
+def _mark_duplicates(
+    results: list[ImageResult],
+    cfg: ScanConfig,
+    embeddings: dict[str, Any] | None = None,
+    semantic_links: Collection[tuple[str, str]] = (),
+) -> None:
     """Tag near-duplicates in-place; keep the highest-scoring representative.
 
-    A negative ``cluster_distance`` disables grouping entirely (every image is
-    its own cluster).
+    Leader clustering, best score first: each passing image joins the first
+    (highest-scoring) representative it is a near-duplicate of, else becomes a
+    representative itself. An image is a near-duplicate of a representative when
+    either test holds:
+
+    - **pHash**: Hamming distance within ``cfg.cluster_distance`` (a negative
+      distance turns this test off);
+    - **semantic** (#196): with ``cfg.semantic_duplicates`` on, the cosine
+      similarity of their unit *embeddings* is at least ``cfg.semantic_duplicate_cosine``. An image without
+      an embedding has no semantic link, unless the pair is in *semantic_links*
+      (``(image, representative)`` links a previous grouping recorded, for a
+      regroup after the vectors are gone: see :func:`drop_results`).
+
+    One rule over the union of both edge sets, rather than one grouping after
+    the other, so a group has one representative and one keep-best rule
+    whichever test found it. It is not a transitive closure: ``duplicate_of``
+    always names an image the duplicate itself matched, never one reached
+    through a chain (CLIP similarity chains across a whole shoot), and a
+    pHash-only scan groups exactly as before. ``duplicate_kind`` says which test
+    tied the image to ``duplicate_of``: "phash", "semantic" or "both".
     """
-    if cfg.cluster_distance < 0:
+    phash_on = cfg.cluster_distance >= 0
+    threshold = cfg.semantic_duplicate_cosine
+    vectors = embeddings or {}
+    links = set(semantic_links)
+    semantic_on = cfg.semantic_duplicates and bool(vectors or links)
+    if not phash_on and not semantic_on:
         return
     passing = sorted((r for r in results if r.passed), key=lambda r: -r.score)
-    seen: list[tuple[imagehash.ImageHash, str]] = []
+    rep_rels: list[str] = []
+    rep_hashes: list[imagehash.ImageHash | None] = []
+    # Row i is representative i's unit embedding (zeros, masked out, when it has none).
+    rep_vecs: np.ndarray | None = None
+    rep_has_vec: list[bool] = []
     for result in passing:
-        if not result.phash:
-            continue
-        ph = imagehash.hex_to_hash(result.phash)
-        for ref_hash, ref_rel in seen:
-            if (ph - ref_hash) <= cfg.cluster_distance:
+        ph = imagehash.hex_to_hash(result.phash) if phash_on and result.phash else None
+        vec = vectors.get(result.rel_path) if semantic_on else None
+        close: list[bool] = []
+        if vec is not None and rep_vecs is not None and rep_rels:
+            sims = rep_vecs[: len(rep_rels)] @ np.asarray(vec, dtype=np.float32)
+            close = [has and float(sim) >= threshold for has, sim in zip(rep_has_vec, sims, strict=True)]
+        for i, ref_rel in enumerate(rep_rels):
+            ref_hash = rep_hashes[i]
+            by_phash = ph is not None and ref_hash is not None and (ph - ref_hash) <= cfg.cluster_distance
+            by_semantic = semantic_on and ((bool(close) and close[i]) or (result.rel_path, ref_rel) in links)
+            if by_phash or by_semantic:
                 result.is_duplicate = True
                 result.duplicate_of = ref_rel
+                result.duplicate_kind = "both" if by_phash and by_semantic else "phash" if by_phash else "semantic"
                 break
         else:
-            seen.append((ph, result.rel_path))
+            if vec is not None and rep_vecs is None:
+                rep_vecs = np.zeros((len(passing), len(vec)), dtype=np.float32)
+            if vec is not None and rep_vecs is not None:
+                rep_vecs[len(rep_rels)] = vec
+            rep_rels.append(result.rel_path)
+            rep_hashes.append(ph)
+            rep_has_vec.append(vec is not None)
 
 
 def _assign_clusters(results: list[ImageResult]) -> int:
@@ -512,7 +558,12 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
     """Remove *gone* rows from a finished scan and bring everything derived from them up to date.
 
     Near-duplicate groups are rebuilt, so a deleted representative does not leave
-    its siblings marked ``similar-to`` a file that no longer exists. Identities
+    its siblings marked ``similar-to`` a file that no longer exists. Semantic
+    links are recomputed from the embeddings *summary* still holds; where they
+    are gone (a restart) the links the rows recorded stand in for them, so a
+    regroup never quietly turns a semantic group into a pHash-only one. A
+    semantic duplicate whose representative was dropped then cannot be matched
+    afresh, and ``semantic_groups_stale`` says so. Identities
     are recounted from the remaining faces (see :func:`recount_identities`),
     their attributes pooled again (:func:`faces.repool_identities`), and the set
     age read again.
@@ -521,10 +572,19 @@ def drop_results(summary: ScanSummary, gone: Collection[str]) -> None:
 
     gone = set(gone)
     results = [r for r in summary.results if r.rel_path not in gone]
+    vectors = summary.embeddings
+    semantic_links: set[tuple[str, str]] = set()
     for r in results:
+        # A semantic link whose vectors are gone: keep it, as the rows recorded it.
+        semantic = r.is_duplicate and r.duplicate_of and r.duplicate_kind in ("semantic", "both")
+        if semantic and (r.rel_path not in vectors or r.duplicate_of not in vectors):
+            semantic_links.add((r.rel_path, r.duplicate_of))
+            if r.duplicate_of in gone:
+                summary.semantic_groups_stale = True
         r.is_duplicate = False
         r.duplicate_of = None
-    _mark_duplicates(results, summary.config)
+        r.duplicate_kind = None
+    _mark_duplicates(results, summary.config, vectors, semantic_links)
     summary.similar_clusters = _assign_clusters(results)
 
     summary.face_clusters = recount_identities(summary.face_clusters, results)
@@ -627,6 +687,8 @@ def scan_items(
         if not watermarks_mod.configured():
             raise ValueError(f"watermark detection needs a detector: set {watermarks_mod.URL_ENV}")
         watermarks_mod.client()  # a malformed URL fails here, not after the scan has started
+    if cfg.semantic_duplicates and not embed_cfg.enabled:
+        raise ValueError(SEMANTIC_DUPLICATES_NEED_EMBEDDINGS)
     requested = requested_checks(faces_cfg, nsfw_cfg, guard_cfg)
     completed: set[str] = set()
 
@@ -1097,7 +1159,7 @@ def scan_items(
 
     check_cancelled()
     emit("clustering", 0, total)
-    _mark_duplicates(results, cfg)
+    _mark_duplicates(results, cfg, vectors)
     multi = _assign_clusters(results)
     emit("clustering", total, total)
 

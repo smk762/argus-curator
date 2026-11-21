@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Semantic near-duplicates (#196).** With embeddings on, `ScanConfig.semantic_duplicates`
+  (CLI `--semantic-dupes`) also groups images whose CLIP embeddings reach
+  `semantic_duplicate_cosine` (default 0.95, `--semantic-dupes-cosine`): mirrors,
+  small crops and rescans that pHash misses. One leader grouping over both
+  tests, so the keep-best rule and the `similar-to:` keep reason are unchanged,
+  and a scan without it groups exactly as before. `ImageResult.duplicate_kind`
+  (`phash`, `semantic` or `both`; also a CSV report column) says which test
+  linked the image to `duplicate_of`. Asking without embeddings is refused.
+  The vectors stay memory-only; a regroup after a restart keeps the recorded
+  semantic links, and `ScanSummary.semantic_groups_stale` says when a dropped
+  representative left one that could not be regrouped. `ManifestRow` is
+  unchanged.
 - **Consented face sets of a real person (#133).** A scan can read a consent
   record (`ScanRequest.consent`: `ConsentConfig` with `record`, a path under
   the scanned folder, and `max_distance`; CLI `--consent`,
