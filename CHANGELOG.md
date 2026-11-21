@@ -14,6 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Zero-shot profile fit and junk checks (#197).** With embeddings on,
+  `ScanConfig.profile_fit` (CLI `--profile-fit`) scores how well each image
+  reads as the kind the `TargetProfile` asks for, and `ScanConfig.junk_check`
+  (`--junk-check`) the probability that it is a screenshot, collage, page of
+  text or meme, against text prompts in the same CLIP space. The scores land on
+  `ImageResult.zero_shot` (`profile_fit`, `junk`, and `junk_kind` once `junk`
+  reaches `junk_threshold`, default 0.8; also CSV report columns) and feed the
+  target bonus (`profile_fit_weight` 0.10 up, `junk_weight` 0.15 down; listed as
+  `zero_shot_*` in `score_breakdown`). Neither rejects an image: the opt-in
+  `PrefilterConfig.drop_junk` (`--drop-junk`) drops flagged junk as
+  `prefilter:junk` before SingGuard. Each is off by default, and asking for any
+  without embeddings is refused. The prompt vectors are computed offline by the
+  pinned checkpoint's text tower (`embeddings-convert --prompts`) and shipped as
+  `data/clip_prompts.json`, pinned by sha256, so no text model or tokenizer runs
+  at scan time. Only the scores are stored, never the vectors. `ManifestRow` is
+  unchanged.
 - **Likeness: a consistency measure for subjects without a face (#191).** A
   scan with `embeddings` on records each passing image's `likeness_distance`
   (`ImageResult`): the cosine distance from its CLIP embedding to the subject,

@@ -39,6 +39,7 @@ from PIL import Image, ImageFilter
 from argus_curator.models import (
     SEMANTIC_DUPLICATES_NEED_EMBEDDINGS,
     SUPPORTED_EXTS,
+    ZERO_SHOT_NEEDS_EMBEDDINGS,
     ConsentConfig,
     CropConfig,
     EmbeddingConfig,
@@ -56,6 +57,7 @@ from argus_curator.models import (
     SceneConfig,
     TargetCategory,
     TargetProfile,
+    zero_shot_asked,
 )
 from argus_curator.runtime import ScanCancelled
 
@@ -229,8 +231,32 @@ def _face_penalty(face_count: int, category: TargetCategory) -> float:
     return 1.0
 
 
-def _target_bonus(result: ImageResult, profile: TargetProfile, faces_known: bool) -> float:
-    """Small additive bonus rewarding framing/composition that fits the target."""
+def _zero_shot_terms(result: ImageResult, cfg: ScanConfig | None) -> dict[str, float]:
+    """The zero-shot parts of the target bonus (#197): ``profile_fit`` up, ``junk`` down.
+
+    Only for a score the scan computed (``result.zero_shot``); an image with
+    none gets neither, so it is neither rewarded nor docked.
+    """
+    terms: dict[str, float] = {}
+    zs = result.zero_shot
+    if cfg is None or zs is None:
+        return terms
+    if cfg.profile_fit and zs.profile_fit is not None:
+        terms["profile_fit"] = cfg.profile_fit_weight * zs.profile_fit
+    if cfg.junk_check and zs.junk is not None:
+        terms["junk"] = -cfg.junk_weight * zs.junk
+    return terms
+
+
+def _target_bonus(
+    result: ImageResult, profile: TargetProfile, faces_known: bool, cfg: ScanConfig | None = None
+) -> float:
+    """Small additive bonus rewarding framing/composition that fits the target.
+
+    The framing heuristics are capped at 0.15; with *cfg*'s zero-shot scores
+    on (see :func:`_zero_shot_terms`), the profile fit is added and the junk
+    probability taken off on top of that, so the bonus can go negative.
+    """
     category = profile.target_category
     orientation = result.width / max(result.height, 1)
     bonus = 0.0
@@ -281,7 +307,7 @@ def _target_bonus(result: ImageResult, profile: TargetProfile, faces_known: bool
         if result.artifact_score >= 0.85:
             bonus += 0.01
 
-    return min(0.15, bonus)
+    return min(0.15, bonus) + sum(_zero_shot_terms(result, cfg).values())
 
 
 def _base_score(result: ImageResult, cfg: ScanConfig) -> tuple[float, dict[str, float]]:
@@ -303,8 +329,10 @@ def finalize_score(result: ImageResult, profile: TargetProfile, cfg: ScanConfig,
     if not result.passed:
         return
     base, breakdown = _base_score(result, cfg)
-    bonus = _target_bonus(result, profile, faces_known)
+    bonus = _target_bonus(result, profile, faces_known, cfg)
     breakdown["target_bonus"] = bonus
+    # The zero-shot parts are already in target_bonus; listed for the reviewer.
+    breakdown.update({f"zero_shot_{k}": v for k, v in _zero_shot_terms(result, cfg).items()})
     score = base + bonus
     if faces_known:
         penalty = _face_penalty(result.face_count, profile.target_category)
@@ -689,6 +717,14 @@ def scan_items(
         watermarks_mod.client()  # a malformed URL fails here, not after the scan has started
     if cfg.semantic_duplicates and not embed_cfg.enabled:
         raise ValueError(SEMANTIC_DUPLICATES_NEED_EMBEDDINGS)
+    # Refused, never run without: a zero-shot score needs the image vectors.
+    if not embed_cfg.enabled and (zero_shot_what := zero_shot_asked(cfg, prefilter_cfg)):
+        raise ValueError(ZERO_SHOT_NEEDS_EMBEDDINGS.format(what=zero_shot_what))
+    from argus_curator import zeroshot as zeroshot_mod
+
+    junk_wanted = cfg.junk_check or prefilter_cfg.drop_junk
+    if cfg.profile_fit or junk_wanted:
+        zeroshot_mod.prompt_vectors()  # a missing or unpinned prompt file fails here, before any work
     requested = requested_checks(faces_cfg, nsfw_cfg, guard_cfg)
     completed: set[str] = set()
 
@@ -1142,6 +1178,23 @@ def scan_items(
             logger.warning("likeness_skipped", reason=likeness["skipped"])
         passed_rels = {r.rel_path for r in results if r.passed}
         vectors = {rel: v for rel, v in vectors.items() if rel in passed_rels}
+
+    # Zero-shot profile fit and junk scores (opt-in, #197) from those vectors:
+    # plain floats on the rows, then the scores are redone with them. The
+    # junk prefilter (opt-in) drops here, so SingGuard passes those by.
+    if zeroshot_mod.score_images(results, vectors, profile, cfg, junk_check=junk_wanted):
+        for row in results:
+            if row.zero_shot is not None:
+                # Face detection ran on a row exactly when its breakdown carries a face penalty.
+                finalize_score(row, profile, cfg, faces_known="face_penalty" in row.score_breakdown)
+        # Only the junk rule: the others ran after identities.
+        junk_dropped = prefilter_mod.apply(results, PrefilterConfig(drop_junk=True)) if prefilter_cfg.drop_junk else []
+        if junk_dropped:
+            logger.info("prefilter", dropped=len(junk_dropped), rule="junk")
+            face_clusters = recount_identities(face_clusters, results)
+            # A reject holds no vector, as above.
+            vectors = {rel: v for rel, v in vectors.items() if rel not in {r.rel_path for r in junk_dropped}}
+        deliver("zero_shot", total, total, results, force=True)
 
     # SingGuard (opt-out), the same way as NudeNet. The slow GPU pass goes last
     # among the checks: its verdict can put a blur back, never lift one.

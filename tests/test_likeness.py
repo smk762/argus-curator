@@ -166,15 +166,15 @@ def test_a_reference_turns_embeddings_on_and_takes_one_kind() -> None:
 
 
 def test_a_scan_summary_never_holds_the_likeness_reference_embedding() -> None:
-    cfg = EmbeddingConfig(reference_embedding=[0.6, 0.8])
+    cfg = EmbeddingConfig(reference_embedding=[0.28, 0.96])
     summary = _summary([_row("a.png", distance=0.25)], cfg=cfg)
     assert summary.embeddings_config.reference_embedding is None
-    assert cfg.reference_embedding == [0.6, 0.8]  # the scan's own config is left as it was
+    assert cfg.reference_embedding == [0.28, 0.96]  # the scan's own config is left as it was
     for dumped in (summary.model_dump_json(), summary.model_dump_json(context=STORE_CONTEXT)):
-        assert "0.6" not in dumped and "0.8" not in dumped
+        assert "0.28" not in dumped and "0.96" not in dumped
         assert '"likeness_distance":0.25' in dumped  # the distance is what persists
     stored = json.loads(summary.model_dump_json(context=STORE_CONTEXT))
-    stored["embeddings_config"]["reference_embedding"] = [0.6, 0.8]  # even a cache someone edited
+    stored["embeddings_config"]["reference_embedding"] = [0.28, 0.96]  # even a cache someone edited
     assert ScanSummary.model_validate(stored).embeddings_config.reference_embedding is None
 
 

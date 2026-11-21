@@ -291,14 +291,14 @@ def measure_likeness(
 # ---------------------------------------------------------------------------
 
 
-def fetch_weights() -> Path:
-    """Download the pinned checkpoint from the Hugging Face Hub (cached there)."""
+def fetch_weights(files: tuple[str, ...] = HF_FILES) -> Path:
+    """Download the pinned checkpoint's *files* from the Hugging Face Hub (cached there)."""
     try:
         from huggingface_hub import hf_hub_download
     except Exception as exc:
         raise ModelUnavailable("Conversion requires: pip install argus-curator[embeddings-convert]") from exc
     sp = space()
-    paths = [Path(hf_hub_download(sp.hf_repo, f, revision=sp.hf_revision)) for f in HF_FILES]
+    paths = [Path(hf_hub_download(sp.hf_repo, f, revision=sp.hf_revision)) for f in files]
     return paths[0].parent
 
 
