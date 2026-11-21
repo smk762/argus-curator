@@ -1,0 +1,422 @@
+{
+  "manifest_version": "1.0",
+  "schema": {
+    "$defs": {
+      "Generator": {
+        "additionalProperties": false,
+        "description": "How a generated source was made (argus-mask#26): the model, its sha256, the seed and the prompt.",
+        "properties": {
+          "model": {
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "model_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Sha256"
+          },
+          "prompt": {
+            "default": "",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seed"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "title": "Generator",
+        "type": "object"
+      },
+      "Provenance": {
+        "additionalProperties": false,
+        "description": "Where a source came from. Required wherever the suite serves or trains on a likeness.\n\n- ``personal``: the user's own use; needs only ``source``; not cleared to show or share.\n- ``stock``: a published asset under its licence. ``synthetic``: generated, with no real person\n  or owned character going in.\n- ``consented``: a real person's likeness (or an owned character) under a signed release, bound\n  by the release's sha256 (never the document) and the subject as the release names them.\n- ``curated``: reserved; not cleared.\n\nUnknown fields are refused, so a misspelt field cannot be dropped in silence (argus-mask#64).\n``licence`` is read as ``license``, and the derived ``cleared`` a dumped record carries is\ndropped and recomputed, never believed.",
+        "properties": {
+          "cleared": {
+            "description": "Whether the source may be shown beyond the user's own screens: a demo, a release, anything public.",
+            "readOnly": true,
+            "title": "Cleared",
+            "type": "boolean"
+          },
+          "generator": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Generator"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "kind": {
+            "enum": [
+              "personal",
+              "stock",
+              "synthetic",
+              "consented",
+              "curated"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "license": {
+            "default": "",
+            "title": "License",
+            "type": "string"
+          },
+          "notes": {
+            "default": "",
+            "title": "Notes",
+            "type": "string"
+          },
+          "release_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Release Sha256"
+          },
+          "source": {
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "subject": {
+            "default": "",
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "source",
+          "cleared"
+        ],
+        "title": "Provenance",
+        "type": "object"
+      },
+      "SpeechTargetProfile": {
+        "description": "argus-cortex's ``TargetProfile`` for a speech dataset: ``modality`` is ``speech``.\n\n``target_category`` is a speech category (``voice`` by default), and\n``target_backend`` names a TTS model family (``xtts-v2``, ``qwen3-tts``) or\nis ``None``. Accepted by the speech scan only; image scoring and the image\nmanifest never see it.",
+        "properties": {
+          "checkpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Checkpoint"
+          },
+          "modality": {
+            "const": "speech",
+            "default": "speech",
+            "title": "Modality",
+            "type": "string"
+          },
+          "target_backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Backend"
+          },
+          "target_category": {
+            "default": "voice",
+            "enum": [
+              "voice",
+              "accent",
+              "language",
+              "speaking_style"
+            ],
+            "title": "Target Category",
+            "type": "string"
+          },
+          "target_style": {
+            "default": "photo",
+            "enum": [
+              "photo",
+              "anime"
+            ],
+            "title": "Target Style",
+            "type": "string"
+          }
+        },
+        "title": "SpeechTargetProfile",
+        "type": "object"
+      }
+    },
+    "description": "One line of a speech export's ``speech_manifest.jsonl`` (#187; ``speech_export.write_manifest``).\n\nIts own shape and version (:data:`SPEECH_MANIFEST_VERSION`), never mixed\nwith image rows: a consumer reads ``speech_manifest_version`` and refuses a\nmajor it does not know. Rows exist only for clips whose transfer and\ntranscript sidecar both succeeded.\n\nPaths follow :class:`ManifestRow`: ``exported_path`` and\n``exported_abs_path`` are the de-collided files on disk, ``abs_path`` is\nwhere the clip can be read (the destination under ``mode=\"move\"``), and\n``transcript_path`` / ``transcript_abs_path`` name the ``<stem>.txt``\nbeside the exported clip holding ``transcript``.\n\n``speaker_id`` is the corpus's speaker label when it has one, else the\nspeaker cluster; ``speaker_label`` and ``speaker_cluster`` are the two\nreadings. A split keeps every speaker (label and cluster alike) in one\npart. ``accent``, ``language``, ``gender`` and ``age`` are the corpus's\nlabels verbatim; ``age`` is null when the corpus gives none, and is never\nestimated. ``corpus``, ``license`` and ``provenance`` say where every clip\ncame from; a clip used under a consent record also names its hashes.",
+    "properties": {
+      "abs_path": {
+        "title": "Abs Path",
+        "type": "string"
+      },
+      "accent": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Accent"
+      },
+      "age": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Age"
+      },
+      "channels": {
+        "title": "Channels",
+        "type": "integer"
+      },
+      "consent_record_sha256": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Consent Record Sha256"
+      },
+      "consent_release_sha256": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Consent Release Sha256"
+      },
+      "corpus": {
+        "title": "Corpus",
+        "type": "string"
+      },
+      "duration_s": {
+        "title": "Duration S",
+        "type": "number"
+      },
+      "exported_abs_path": {
+        "title": "Exported Abs Path",
+        "type": "string"
+      },
+      "exported_path": {
+        "title": "Exported Path",
+        "type": "string"
+      },
+      "gender": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Gender"
+      },
+      "language": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Language"
+      },
+      "license": {
+        "title": "License",
+        "type": "string"
+      },
+      "modality": {
+        "const": "speech",
+        "default": "speech",
+        "title": "Modality",
+        "type": "string"
+      },
+      "provenance": {
+        "$ref": "#/$defs/Provenance"
+      },
+      "rel_path": {
+        "title": "Rel Path",
+        "type": "string"
+      },
+      "sample_rate": {
+        "title": "Sample Rate",
+        "type": "integer"
+      },
+      "score": {
+        "title": "Score",
+        "type": "number"
+      },
+      "similar_group": {
+        "title": "Similar Group",
+        "type": "integer"
+      },
+      "speaker_cluster": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Speaker Cluster"
+      },
+      "speaker_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Speaker Id"
+      },
+      "speaker_label": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Speaker Label"
+      },
+      "speaker_mismatch": {
+        "default": false,
+        "title": "Speaker Mismatch",
+        "type": "boolean"
+      },
+      "speech_manifest_version": {
+        "default": "1.0",
+        "title": "Speech Manifest Version",
+        "type": "string"
+      },
+      "split": {
+        "anyOf": [
+          {
+            "enum": [
+              "train",
+              "held_out"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Split"
+      },
+      "target_profile": {
+        "$ref": "#/$defs/SpeechTargetProfile"
+      },
+      "transcript": {
+        "title": "Transcript",
+        "type": "string"
+      },
+      "transcript_abs_path": {
+        "title": "Transcript Abs Path",
+        "type": "string"
+      },
+      "transcript_path": {
+        "title": "Transcript Path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "speech_manifest_version",
+      "modality",
+      "rel_path",
+      "abs_path",
+      "exported_path",
+      "exported_abs_path",
+      "transcript_path",
+      "transcript_abs_path",
+      "target_profile",
+      "transcript",
+      "duration_s",
+      "sample_rate",
+      "channels",
+      "speaker_id",
+      "speaker_label",
+      "speaker_cluster",
+      "speaker_mismatch",
+      "accent",
+      "language",
+      "gender",
+      "age",
+      "score",
+      "similar_group",
+      "split",
+      "corpus",
+      "license",
+      "provenance",
+      "consent_release_sha256",
+      "consent_record_sha256"
+    ],
+    "title": "SpeechManifestRow",
+    "type": "object"
+  }
+}

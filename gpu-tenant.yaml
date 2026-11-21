@@ -14,7 +14,7 @@
 # its models.
 tenant_version: "1.0"
 tenant: argus-curator
-description: Dataset curation for LoRA training sets (faces, scenes, garments, embeddings and speech MOS on CUDA).
+description: Dataset curation for LoRA and voice training sets (faces, scenes, garments, embeddings, speech MOS and speaker embeddings on CUDA).
 repo: smk762/argus-curator
 # In-process work runs on the GPU of the host curator runs on. Change this if
 # curator is deployed on another node.
@@ -44,4 +44,9 @@ kinds:
     description: DNSMOS P.835 speech quality for speech scans, one 9.01 s window per pass.
     vram_mb: 684
     model_mb: 300
+    priority: batch
+  - kind: speakers
+    description: WeSpeaker ECAPA-TDNN speaker embeddings for speech scans, one clip's 4 windows of 3 s per pass.
+    vram_mb: 542
+    model_mb: 350
     priority: batch

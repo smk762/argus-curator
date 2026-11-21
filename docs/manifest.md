@@ -8,7 +8,10 @@ builds training sets from it. Curator and lens share one `TargetProfile`, so a
 manifest written here is captioned downstream with no remapping.
 
 This page describes manifest **2.6**, the version current releases write, and
-what changed in each earlier version.
+what changed in each earlier version. A speech export writes no `manifest.jsonl`:
+its clips go in `speech_manifest.jsonl`, a row shape of its own
+(`SpeechManifestRow`) with its own version (`SPEECH_MANIFEST_VERSION`, 1.0),
+described in [Speech scans](speech.md#the-speech-manifest).
 
 ## Where it is written
 

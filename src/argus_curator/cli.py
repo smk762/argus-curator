@@ -151,6 +151,12 @@ def scan(
     dnsmos_model: Path | None = Option(
         None, "--dnsmos-model", help="Speech: DNSMOS ONNX model (ARGUS_CURATOR_DNSMOS_MODEL)"
     ),
+    speech_speakers: bool = Option(
+        False, "--speakers", help="Speech: embed and cluster each passing clip's speaker (see speaker-fetch)"
+    ),
+    speaker_model: Path | None = Option(
+        None, "--speaker-model", help="Speech: speaker-embedding ONNX model (ARGUS_CURATOR_SPEAKER_MODEL)"
+    ),
     speech_config: Path | None = Option(
         None, "--speech-config", help="Speech: a JSON SpeechConfig with the thresholds (the flags above override it)"
     ),
@@ -456,7 +462,9 @@ def scan(
         }
         if asked := [flag for flag, value in image_only.items() if value]:
             typer.echo(
-                f"Error: a speech scan has no image checks or export yet (#187); drop {', '.join(asked)}", err=True
+                f"Error: a speech scan runs no image checks, and exports over HTTP (POST /export with speech); "
+                f"drop {', '.join(asked)}",
+                err=True,
             )
             raise typer.Exit(2)
         _scan_speech(
@@ -468,6 +476,8 @@ def scan(
             transcripts=transcripts,
             mos=mos,
             dnsmos_model=dnsmos_model,
+            speakers=speech_speakers,
+            speaker_model=speaker_model,
             speech_config=speech_config,
             device=device,
             max_workers=max_workers,
@@ -476,8 +486,12 @@ def scan(
             verbose=verbose,
         )
         return
-    if transcripts or mos or dnsmos_model or speech_config:
-        typer.echo("Error: --transcripts, --mos, --dnsmos-model and --speech-config need --modality speech", err=True)
+    if transcripts or mos or dnsmos_model or speech_config or speech_speakers or speaker_model:
+        typer.echo(
+            "Error: --transcripts, --mos, --dnsmos-model, --speakers, --speaker-model and --speech-config "
+            "need --modality speech",
+            err=True,
+        )
         raise typer.Exit(2)
     import os
 
@@ -967,6 +981,8 @@ def _scan_speech(
     transcripts: str | None,
     mos: bool,
     dnsmos_model: Path | None,
+    speakers: bool,
+    speaker_model: Path | None,
     speech_config: Path | None,
     device: str,
     max_workers: int,
@@ -988,6 +1004,10 @@ def _scan_speech(
 
     if dnsmos_model is not None:
         os.environ[dnsmos_mod.MODEL_ENV] = str(dnsmos_model)
+    if speaker_model is not None:
+        from argus_curator import speakers as speakers_mod
+
+        os.environ[speakers_mod.MODEL_ENV] = str(speaker_model)
     try:
         base = json.loads(speech_config.read_text(encoding="utf-8")) if speech_config is not None else {}
     except (OSError, ValueError) as exc:
@@ -1001,6 +1021,8 @@ def _scan_speech(
         overrides["transcripts"] = transcripts
     if mos:
         overrides.update(mos=True, mos_device=device)
+    if speakers:
+        overrides.update(speakers=True, speaker_device=device)
     if no_cluster:
         overrides["duplicate_distance"] = -1
     try:
@@ -1025,6 +1047,11 @@ def _scan_speech(
     kept = [c for c in summary.clips if c.passed and not c.is_duplicate]
     hours = sum(c.duration_s or 0.0 for c in kept) / 3600
     typer.echo(f"  Usable audio:          {hours:.2f} h in {len(kept)} clips")
+    if summary.speaker_clusters:
+        typer.echo(
+            f"  Speakers (clustered):  {len(summary.speaker_clusters)}  "
+            f"({summary.speaker_mismatches} clips' corpus labels disagree)"
+        )
     scored = sorted(c.mos.ovrl for c in summary.clips if c.mos is not None)
     if scored:
         typer.echo(f"  DNSMOS OVRL (median):  {scored[len(scored) // 2]:.2f} over {len(scored)} clips")
@@ -1270,6 +1297,27 @@ def dnsmos_fetch(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"DNSMOS model in place -> {written}")
+
+
+@app.command("speaker-fetch")
+def speaker_fetch(
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the model (default: model cache)"),
+) -> None:
+    """Fetch the speaker-embedding model a speech scan's --speakers runs.
+
+    WeSpeaker's ECAPA-TDNN (VoxCeleb2, large-margin fine-tuned; code
+    Apache-2.0, model CC BY 4.0), pinned by Hugging Face revision and
+    sha256; 25 MB, runs on onnxruntime (argus-curator[speech]).
+    """
+    from argus_curator.runtime import ModelUnavailable
+    from argus_curator.speakers import fetch_model
+
+    try:
+        written = fetch_model(output)
+    except (ModelUnavailable, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Speaker model in place -> {written}")
 
 
 @app.command()

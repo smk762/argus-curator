@@ -55,7 +55,7 @@ no port), or its writes get 403.
 | Route | Description |
 |---|---|
 | `GET  /health` | Liveness. `faces` is true when `POST /faces` can run (InsightFace and MiVOLO). `minor_exposed` is the under-18 rule in use, `frame` or `overlap` (`ARGUS_CURATOR_MINOR_EXPOSED`). |
-| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, bodies, places365, garments, nudenet, erax, watermark, singguard, speech, dnsmos, … }` |
+| `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, bodies, places365, garments, nudenet, erax, watermark, singguard, speech, dnsmos, speaker_model, … }` |
 | `POST /faces` | One image in memory (raw bytes or multipart), at most `CURATOR_MAX_UPLOAD_MB` (else 413). `{ source: mivolo, faces: [{ age_estimate_years, bbox }] }`. Writes nothing. |
 | `GET  /guard/policies` | Each SingGuard policy a scan can name: `{ singguard, policies: [{ name, recorded, source, text, error }] }` |
 | `GET  /folders?path=<rel>` | Browse Docker-mounted folders under the source root (for the UI picker) |
@@ -63,10 +63,10 @@ no port), or its writes get 403.
 | `GET  /scan/{scan_id}` | Cached summary, paginated via `?offset=&limit=` |
 | `GET  /thumb?path=<rel>&scan_id=<id>` | `image/webp` thumbnail from the mount, of the cropped frame when that scan cropped it |
 | `GET  /image?path=<rel>&scan_id=<id>` | Original image bytes, same containment as `/thumb` |
-| `POST /scan/{scan_id}/select` | Dry-run of the export filter, cap, ranking and split → `{total, kept, rank, train, held_out, rows: [{rel_path, abs_path, keep_reason, rank, split}]}`, kept rows first and best first. Writes nothing. See [Ranking, max_keep and splits](#ranking-max_keep-and-splits) |
+| `POST /scan/{scan_id}/select` | Dry-run of the export filter, cap, ranking and split → `{total, kept, rank, train, held_out, rows: [{rel_path, abs_path, keep_reason, rank, split}]}`, kept rows first and best first. Writes nothing. See [Ranking, max_keep and splits](#ranking-max_keep-and-splits). A speech scan's rows carry `speaker_id`, and `speech` the hours kept ([Speech scans](speech.md#select-and-export)) |
 | `POST /scan/{scan_id}/delete` | Delete source files in the scan (`rel_path` or `rel_paths`, all or nothing: a path not in the scan is a 404, a running scan a 409) and drop their rows → `{rel_paths, total}`. Any image needs `--allow-delete` / `CURATOR_ALLOW_DELETE=1` / `CURATOR_DEVMODE=1` (else 403 unless under-18 exposed); `/health` reports `delete_any` |
 | `POST /upload` | Multipart image upload (`files` + `folder`) into a folder under the source root. Each file is capped at `CURATOR_MAX_UPLOAD_MB` (default 50); a larger one is a 413 and nothing is saved |
-| `POST /export` | Structure-preserving transfer + manifest → `ExportResult` |
+| `POST /export` | Structure-preserving transfer + manifest → `ExportResult`. A speech scan exports its clips, a `.txt` transcript beside each and `speech_manifest.jsonl` (`modality: speech`; needs `speech.corpus` and `speech.license`, or `speech.consent_record`) |
 | `POST /scan/folder/stream` | Same as `/scan/folder`, streaming live progress over SSE |
 | `POST /export/stream` | Same as `/export`, streaming per-file transfer progress over SSE |
 | `GET  /scans` | Cached scans, newest first, plus `active`: the one running, with its phase, counts, `pending_checks` and `cancelling` |
@@ -190,7 +190,7 @@ images, in the same order, in the same parts.
   ```jsonc
   "split": {
     "held_out": 8,              // or "held_out_fraction": 0.2 (exactly one)
-    "group_by": "image",        // "image" | "face_cluster": a group never spans both parts
+    "group_by": "image",        // "image" | "face_cluster" | "speaker" (speech): a group never spans both parts
     "method": "spread",         // "spread": evenly through the ranking | "random": shuffled by seed
     "seed": 0
   }
@@ -206,7 +206,10 @@ images, in the same order, in the same parts.
   kept row's `split`, and the `train` / `held_out` counts). An export
   transfers only `split_part`, and its manifest rows carry `split`; export
   each part to its own `dest` (argus-forge trains on everything under one).
-  A split can't be combined with an inline `selection`.
+  A split can't be combined with an inline `selection`. A speech scan's split
+  must group by `"speaker"` (and an image scan's can't): it is speaker-disjoint
+  and stratified by accent and gender, see
+  [Speech scans](speech.md#select-and-export).
 
 argus-mint's identity training, for example, selects with
 `{"face_source": {...}, "rank": "identity", "max_keep": train + held_out,

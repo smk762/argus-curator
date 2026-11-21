@@ -40,7 +40,7 @@ import numpy as np
 import structlog
 from argus_cortex.limits import DEFAULT_SAMPLE_RATES, BadInput, TooLarge, open_audio
 
-from argus_curator import dnsmos
+from argus_curator import dnsmos, speakers
 from argus_curator.models import (
     MAX_CLIP_CHANNELS,
     SPEECH_CHECKS,
@@ -49,6 +49,7 @@ from argus_curator.models import (
     FaceConfig,
     ScanConfig,
     ScanSummary,
+    SpeakerCluster,
     SpeechCheck,
     SpeechConfig,
     SpeechTargetProfile,
@@ -116,7 +117,7 @@ def require_speech() -> None:
 
 def requested_checks(cfg: SpeechConfig, transcriber: Transcriber | None = None) -> list[str]:
     """The slow checks a speech scan runs after its first pass (``pending_checks`` in its events)."""
-    return [name for name, on in (("mos", cfg.mos), ("cer", transcriber is not None)) if on]
+    return [name for name, on in (("mos", cfg.mos), ("cer", transcriber is not None), ("speakers", cfg.speakers)) if on]
 
 
 def problem(cfg: SpeechConfig, transcriber: Transcriber | None = None) -> str | None:
@@ -127,6 +128,8 @@ def problem(cfg: SpeechConfig, transcriber: Transcriber | None = None) -> str | 
         return "max_cer needs a speech-to-text engine (argus-echo#4), and none is configured"
     if cfg.mos and not dnsmos.dnsmos_available():
         return f"DNSMOS requested but the model is not in place (argus-curator dnsmos-fetch, or {dnsmos.MODEL_ENV})"
+    if cfg.speakers:
+        return speakers.problem()
     return None
 
 
@@ -316,6 +319,7 @@ def measure_clip(rel: str, path: Path, transcript: Transcript | None, cfg: Speec
         row.transcript_source = transcript.source if transcript.text else None
         row.speaker, row.accent = transcript.speaker, transcript.accent
         row.language, row.age = transcript.language, transcript.age
+        row.gender = transcript.gender
     failed: dict[SpeechCheck, str] = {}
     if under_18_label(row.age):
         # Never decoded: nothing measured on it could make it usable.
@@ -442,6 +446,36 @@ def mark_duplicates(rows: list[ClipResult], distance: int) -> int:
     return sum(1 for n in size.values() if n > 1)
 
 
+def drop_clips(summary: ScanSummary, gone: set[str] | list[str]) -> None:
+    """Remove *gone* clips from a finished speech scan and bring what is derived from them up to date.
+
+    The speech counterpart of :func:`argus_curator.scanner.drop_results`
+    (a move export takes its clips out of the source). Near-duplicate groups
+    are rebuilt, and the speaker clusters recounted from the clips that stay
+    (no clip changes cluster). The store drops the gone clips' embeddings.
+    """
+    gone = set(gone)
+    clips = [c for c in summary.clips if c.rel_path not in gone]
+    cfg = summary.speech_config or SpeechConfig()
+    summary.similar_clusters = mark_duplicates(clips, cfg.duplicate_distance)
+    if summary.speaker_clusters:
+        summary.speaker_clusters, summary.speaker_mismatches = speakers.agreement(clips)
+    for rel in gone:
+        summary.embeddings.pop(rel, None)
+    passed = [c for c in clips if c.passed]
+    reasons: dict[str, int] = {}
+    for c in clips:
+        if c.reject_reason is not None:
+            reasons[c.reject_reason] = reasons.get(c.reject_reason, 0) + 1
+    summary.clips = clips
+    summary.total = len(clips)
+    summary.passed = len(passed)
+    summary.rejected = len(clips) - len(passed)
+    summary.duplicates = sum(1 for c in passed if c.is_duplicate)
+    summary.reject_reasons = reasons
+    summary.returned = len(clips)
+
+
 # ---------------------------------------------------------------------------
 # The scan
 # ---------------------------------------------------------------------------
@@ -474,7 +508,8 @@ def scan_speech_folder(
     the last one (``clips``, with ``modality: "speech"``), *save* a snapshot
     now and then, and *cancelled* stops the scan between clips. Phases:
     ``collecting``, ``scoring`` (decode, measure, first-pass thresholds),
-    ``mos`` (with ``cfg.mos``) and ``cer`` (with a *transcriber*).
+    ``mos`` (with ``cfg.mos``), ``cer`` (with a *transcriber*) and
+    ``speakers`` (with ``cfg.speakers``: embeddings, then the clustering).
     """
     # A speech scan takes a speech profile only: an image one is refused here.
     profile = SpeechTargetProfile.model_validate(profile) if profile is not None else SpeechTargetProfile()
@@ -669,8 +704,40 @@ def scan_speech_folder(
         with lock:
             completed.add("cer")
 
+    # Phase 4: speaker embeddings on the clips still passing, one clip per pass
+    # under the GPU lease, then the clustering. The embeddings stay in memory.
+    embeddings: dict[str, np.ndarray] = {}
+    if cfg.speakers:
+        session = speakers.get_session(cfg.speaker_device)
+        pending = [rows[rel] for rel in order if rel in rows and rows[rel].passed]
+        emit("speakers", 0, len(pending))
+        for i, row in enumerate(pending, 1):
+            check_cancelled()
+            decoded = mono_of(row)
+            try:
+                if decoded is None:
+                    raise ValueError("the clip could not be read again")
+                embeddings[row.rel_path] = speakers.embed(session, decoded[0], decoded[1], cfg.speaker_device)
+            except GPU_UNAVAILABLE:
+                raise
+            except Exception as exc:
+                row.speaker_error = str(exc) or type(exc).__name__
+                logger.warning("speech_speaker_failed", rel_path=row.rel_path, error=row.speaker_error)
+            if i == len(pending) or i % 5 == 0:
+                emit("speakers", i, len(pending))
+
     check_cancelled()
     multi = mark_duplicates([rows[rel] for rel in order if rel in rows], cfg.duplicate_distance)
+    speaker_clusters: list[SpeakerCluster] = []
+    mismatches = 0
+    if cfg.speakers:
+        ordered = [rows[rel] for rel in order if rel in rows]
+        speakers.assign_clusters(ordered, embeddings, cfg.speaker_threshold)
+        speaker_clusters, mismatches = speakers.agreement(ordered)
+        with lock:
+            completed.add("speakers")
     summary = snapshot()
+    summary.speaker_clusters, summary.speaker_mismatches = speaker_clusters, mismatches
+    summary.embeddings.update(embeddings)
     logger.info("speech_scan_done", folder=folder_str, total=summary.total, passed=summary.passed)
     return summary

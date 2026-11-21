@@ -47,7 +47,9 @@ def test_only_models_no_request_carries_list_their_defaults_as_required() -> Non
         return set().union(*(_reachable(root) for root in roots))
 
     received = reach(models.ScanRequest, models.ExportRequest, models.SelectRequest)
-    sent = reach(models.ScanSummary, models.ExportResult, models.ManifestRow, models.SelectResult)
+    sent = reach(
+        models.ScanSummary, models.ExportResult, models.ManifestRow, models.SpeechManifestRow, models.SelectResult
+    )
     # Cortex's result types are built there; they can't take curator's config.
     ours = {m for m in sent - received if m.__module__ == models.__name__}
     flagged = {

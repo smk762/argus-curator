@@ -29,7 +29,7 @@ test:  ## Run pytest
 schema:  ## Regenerate the committed wire-contract JSON Schema
 	$(UV) run --no-sync argus-curator schema
 
-manifest-snapshot:  ## Record ManifestRow for MANIFEST_VERSION (refuses an unbumped or breaking change)
+manifest-snapshot:  ## Record ManifestRow and SpeechManifestRow for their versions (refuses an unbumped or breaking change)
 	$(UV) run --no-sync python tests/manifest_compat.py
 
 docs:  ## Regenerate docs/cli.md from the Typer app

@@ -38,7 +38,6 @@ from argus_curator.models import (
     SplitPart,
 )
 from argus_curator.selection import (
-    SPEECH_EXPORT_PROBLEM,
     consent_set_problem,
     hard_exclusion,
     plan_selection,
@@ -704,8 +703,10 @@ def export_selection(
     :class:`ExportResult` comes back.
     """
     if summary.is_speech:
-        # Never a manifest row for a clip until #187 gives speech its own row shape.
-        raise ValueError(SPEECH_EXPORT_PROBLEM)
+        # A speech scan's clips get their own rows (SpeechManifestRow) in their own file (#187).
+        from argus_curator.speech_export import export_speech
+
+        return export_speech(summary, req, progress=progress, moved=moved)
     results = summary.results
     split: dict[str, SplitPart] = {}
     gate: FaceSourceGate | None = None
