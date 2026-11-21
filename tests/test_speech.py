@@ -442,6 +442,8 @@ def test_scan_request_routes_by_modality_and_refuses_image_checks_on_speech() ->
     assert isinstance(speech_req.target_profile, SpeechTargetProfile) and speech_req.is_speech
     with pytest.raises(ValidationError, match="runs no image checks: turn off faces"):
         ScanRequest(folder="", target_profile={"modality": "speech"}, faces={"enabled": True})
+    with pytest.raises(ValidationError, match="turn off consent"):
+        ScanRequest(folder="", target_profile={"modality": "speech"}, consent={"record": "consent.json"})
     with pytest.raises(ValidationError):
         ScanRequest(folder="", target_profile={"modality": "speech", "target_category": "identity"})
     with pytest.raises(ValidationError):

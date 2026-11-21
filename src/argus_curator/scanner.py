@@ -38,6 +38,7 @@ from PIL import Image, ImageFilter
 
 from argus_curator.models import (
     SUPPORTED_EXTS,
+    ConsentConfig,
     CropConfig,
     EmbeddingConfig,
     EraxConfig,
@@ -1119,6 +1120,7 @@ def scan_folder(
     guard_cfg: GuardConfig | None = None,
     prefilter_cfg: PrefilterConfig | None = None,
     crop_cfg: CropConfig | None = None,
+    consent_cfg: ConsentConfig | None = None,
     scan_id: str | None = None,
     progress: ProgressFn | None = None,
     chunk: ChunkFn | None = None,
@@ -1131,12 +1133,23 @@ def scan_folder(
     SSE endpoint to stream live scan progress to the browser). Pass *chunk*
     to receive image batches as each phase produces them, and *cancelled* to
     be able to stop the scan (see :func:`scan_items`).
+
+    With *consent_cfg* naming a record (see :mod:`argus_curator.consent`) the
+    record is read and checked first, its reference images become the
+    identity reference, and every image is bound to it once the scan is done:
+    ``ScanSummary.consent`` and each ``ImageResult.consent``. Raises
+    ``ValueError`` when *faces_cfg* names a reference of its own as well.
     """
     # A cortex profile from a library caller converts; a speech one is refused here,
     # before scoring, which has no meaning for it.
     profile = TargetProfile.model_validate(profile) if profile is not None else TargetProfile()
     cfg = cfg or ScanConfig()
     faces_cfg = faces_cfg or FaceConfig()
+    consent_cfg = consent_cfg or ConsentConfig()
+    if consent_cfg.record is not None:
+        from argus_curator import consent as consent_mod
+
+        faces_cfg = consent_mod.faces_for_consent(faces_cfg)
 
     root = Path(folder)
     if not root.is_dir():
@@ -1149,7 +1162,14 @@ def scan_folder(
         logger.warning("scan_folder_empty", folder=str(root))
     _emit(progress, "collecting", len(items), len(items))
 
-    return scan_items(
+    prepared = None
+    if consent_cfg.record is not None:
+        prepared = consent_mod.prepare(root, consent_cfg, items, faces_cfg)
+        logger.info("consent_checked", eligible=prepared.check.eligible, reason=prepared.check.reason)
+        if prepared.embedding is not None:
+            faces_cfg = faces_cfg.model_copy(update={"reference_embedding": prepared.embedding})
+
+    summary = scan_items(
         items,
         profile,
         cfg,
@@ -1168,3 +1188,6 @@ def scan_folder(
         save=save,
         cancelled=cancelled,
     )
+    if prepared is not None:
+        consent_mod.bind(summary, prepared)
+    return summary

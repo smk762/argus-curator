@@ -25,6 +25,7 @@ from argus_cortex.moderation import rule_letter
 from argus_cortex.xmp import XmpData, XmpError, XmpRegion, XmpRegions, sidecar_path, write_xmp
 
 from argus_curator import crops
+from argus_curator.consent import ConsentHold, ConsentRefused, FaceSourceGate, face_source_gate
 from argus_curator.models import (
     ExportMode,
     ExportRequest,
@@ -36,7 +37,13 @@ from argus_curator.models import (
     ScanSummary,
     SplitPart,
 )
-from argus_curator.selection import SPEECH_EXPORT_PROBLEM, hard_exclusion, plan_selection, primary_face
+from argus_curator.selection import (
+    SPEECH_EXPORT_PROBLEM,
+    consent_set_problem,
+    hard_exclusion,
+    plan_selection,
+    primary_face,
+)
 
 logger = structlog.get_logger()
 
@@ -246,6 +253,7 @@ def write_manifest(
     *,
     landmarks: bool = False,
     split: dict[str, SplitPart] | None = None,
+    consent: ConsentHold | None = None,
 ) -> None:
     """Write the JSONL handoff manifest (one :class:`ManifestRow` per line).
 
@@ -265,7 +273,8 @@ def write_manifest(
 
     Each row carries the primary face's measurements (``primary_face``), with
     its landmarks only when *landmarks* asks, and the scan's set age; with
-    *split* (rel_path -> part), its part of the train/held-out split.
+    *split* (rel_path -> part), its part of the train/held-out split. With
+    *consent* (a consented face set), the record's hashes and the image's provenance.
     """
     abs_paths = exported_abs_paths or {}
     parts = split or {}
@@ -287,6 +296,9 @@ def write_manifest(
                 primary_face=_manifest_face(r, landmarks),
                 set_age=summary.set_age,
                 split=parts.get(r.rel_path),
+                consent_release_sha256=consent.release_sha256 if consent else None,
+                consent_record_sha256=consent.record_sha256 if consent else None,
+                provenance=consent.provenance[r.rel_path] if consent else None,
             )
             f.write(row.model_dump_json() + "\n")
 
@@ -694,6 +706,7 @@ def export_selection(
         raise ValueError(SPEECH_EXPORT_PROBLEM)
     results = summary.results
     split: dict[str, SplitPart] = {}
+    gate: FaceSourceGate | None = None
 
     if req.selection is not None:
         wanted = set(req.selection)
@@ -705,12 +718,18 @@ def export_selection(
         selected = [r for r in results if keep_reason[r.rel_path] == ""]
     else:
         # The same plan /scan/{id}/select reports: filter, cap, ranking, split.
+        # A consented set is checked from the scan, then against the record as it reads now.
+        fs = req.face_source
+        if fs is not None and fs.consent and (problem := consent_set_problem(summary)) is not None:
+            raise ConsentRefused(problem)
+        gate = face_source_gate(req, summary)
         plan = plan_selection(
             results,
             req,
             summary.config.diversity_weight,
             set_age=summary.set_age,
             embeddings=summary.embeddings,
+            gate=gate,
         )
         selected, keep_reason = plan.chosen, plan.keep_reason
         if req.split is not None:
@@ -720,6 +739,8 @@ def export_selection(
                 if split[r.rel_path] != req.split_part:
                     keep_reason[r.rel_path] = f"split-{split[r.rel_path].replace('_', '-')}"
             selected = [r for r in selected if split[r.rel_path] == req.split_part]
+        if gate is not None and gate.consent is not None and not selected:
+            raise ConsentRefused("no image qualifies for the consented face set; nothing was exported")
 
     selected_rel = {r.rel_path for r in selected}
     # A cropped image is written cropped; a link or a move would hand on the
@@ -804,6 +825,7 @@ def export_selection(
             req.mode,
             landmarks=req.landmarks,
             split=split or None,
+            consent=gate.consent if gate is not None else None,
         )
         write_report(results, keep_reason, selected_rel, exported, dest_root / REPORT_NAME)
 

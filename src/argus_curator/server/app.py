@@ -50,6 +50,7 @@ from PIL import Image, ImageFilter
 from pydantic import BaseModel, Field
 
 from argus_curator import __version__, crops, export, scanner
+from argus_curator import consent as consent_mod
 from argus_curator import dnsmos as dnsmos_mod
 from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
@@ -59,6 +60,7 @@ from argus_curator import speech as speech_mod
 from argus_curator import watermarks as watermarks_mod
 from argus_curator.attributes import fairface_available, mivolo_available
 from argus_curator.bodies import bodies_available
+from argus_curator.consent import ConsentRefused
 from argus_curator.embeddings import embeddings_available
 from argus_curator.faces import faces_available
 from argus_curator.garments import garments_available
@@ -771,6 +773,21 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"not a directory under the scan root: {requested}")
         return folder
 
+    def _with_consent(req: ScanRequest) -> ScanRequest:
+        """*req* with what its consent record needs turned on (faces, MiVOLO, set age), or 400."""
+        if req.consent.record is None:
+            return req
+        try:
+            faces = consent_mod.faces_for_consent(req.faces)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return req.model_copy(update={"faces": faces})
+
+    def _require_consent_record_within(folder: Path, req: ScanRequest) -> None:
+        """The consent record resolves under the scanned folder, as its images do (a symlink included)."""
+        if req.consent.record is not None:
+            _resolve_within(folder, req.consent.record)
+
     def _require_models(req: ScanRequest) -> None:
         """Refuse up front when an optional model is requested but not configured.
 
@@ -924,6 +941,7 @@ def create_app(
             guard_cfg=req.guard,
             prefilter_cfg=req.prefilter,
             crop_cfg=req.crops,
+            consent_cfg=req.consent,
             scan_id=scan_id,
             progress=progress,
             chunk=chunk,
@@ -960,8 +978,10 @@ def create_app(
 
     @app.post("/scan/folder", response_model=ScanSummary)
     async def scan_folder(req: ScanRequest) -> ScanSummary:
+        req = _with_consent(req)
         _require_models(req)
         folder = _resolve_scan_folder(req.folder)
+        _require_consent_record_within(folder, req)
         await asyncio.to_thread(_require_detector, req)
         scan_id = _claim_scan(folder, req)
         requested = _requested_checks(req)
@@ -996,8 +1016,10 @@ def create_app(
         (either way the partial summary is dropped). A second scan is refused
         while one is still running.
         """
+        req = _with_consent(req)
         _require_models(req)
         folder = _resolve_scan_folder(req.folder)
+        _require_consent_record_within(folder, req)
         await asyncio.to_thread(_require_detector, req)
         scan_id = _claim_scan(folder, req)
         requested = _requested_checks(req)
@@ -1126,6 +1148,15 @@ def create_app(
             raise HTTPException(status_code=400, detail="unsupported image type")
         return target
 
+    def _require_consent_record_of(summary: ScanSummary, req: ExportRequest) -> None:
+        """A consented set re-reads the scan's record: it must still resolve under the scan's folder.
+
+        The summary is data, so its record path is checked again, as its folder is.
+        """
+        fs = req.face_source
+        if fs is not None and fs.consent and summary.consent is not None:
+            _resolve_within(_scan_root_or_400(summary), summary.consent.record)
+
     @app.post("/scan/{scan_id}/select", response_model=SelectResult)
     async def select_scan(scan_id: str, req: SelectRequest) -> SelectResult:
         """Apply the export filter, cap, ranking and split to a cached scan.
@@ -1144,7 +1175,9 @@ def create_app(
         export_req = req.as_export_request()
         if (problem := selection_problem(export_req, summary)) is not None:
             raise HTTPException(status_code=400, detail=problem)
+        _require_consent_record_of(summary, export_req)
         try:
+            gate = await asyncio.to_thread(consent_mod.face_source_gate, export_req, summary)
             plan = await asyncio.to_thread(
                 plan_selection,
                 summary.results,
@@ -1152,9 +1185,12 @@ def create_app(
                 summary.config.diversity_weight,
                 set_age=summary.set_age,
                 embeddings=summary.embeddings,
+                gate=gate,
             )
         except SplitError as exc:
             raise HTTPException(status_code=400, detail=f"split refused: {exc}") from None
+        except ConsentRefused as exc:
+            raise HTTPException(status_code=400, detail=f"consent refused: {exc}") from None
         kept = [
             SelectRow(rel_path=r.rel_path, abs_path=r.abs_path, rank=i, split=plan.split.get(r.rel_path))
             for i, r in enumerate(plan.chosen, 1)
@@ -1383,6 +1419,7 @@ def create_app(
         # The scan's images are read straight from `abs_path`, so a scan rooted
         # outside the source root would export files the root should fence off.
         _scan_root_or_400(summary)
+        _require_consent_record_of(summary, req)
         if req.mode == "move" and not allow_move:
             raise HTTPException(
                 status_code=403,
@@ -1461,6 +1498,8 @@ def create_app(
             return await asyncio.to_thread(_export_and_drop, summary, req)
         except SplitError as exc:  # raised before anything is transferred
             raise HTTPException(status_code=400, detail=f"split refused: {exc}") from None
+        except ConsentRefused as exc:  # so is this
+            raise HTTPException(status_code=400, detail=f"consent refused: {exc}") from None
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"export failed: {exc}") from exc
 

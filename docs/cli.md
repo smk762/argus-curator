@@ -86,6 +86,9 @@ $ argus-curator scan [OPTIONS] {source}
 * `--face-clusters <str>`: Comma-separated cluster ids to export
 * `--face-reference <list[str]>`: An image whose face is the identity reference: a path relative to the scanned folder, or any image file outside it; repeatable (several are averaged). Each face then gets a reference_distance (implies --faces)
 * `--face-source`: Export only face-source images (one identity, frontal and level, large, sharp, eyes open, mouth closed, adult; needs --mivolo), ranked best first
+* `--consent <str>`: A real person&#x27;s consent record (argus-cortex ConsentRecord JSON), relative to the scanned folder or absolute: bind the set to its reference images (implies --mivolo --set-age)
+* `--consent-max-distance <float>`: Ceiling on a face&#x27;s distance from the record&#x27;s reference to be bound  [default: 0.4]
+* `--face-source-consent`: Export a consented face set: --face-source over the images bound to --consent&#x27;s record, re-checked at export, adult only; refused when none qualifies (implies --face-source)
 * `--landmarks`: Write the primary face&#x27;s landmarks into the manifest
 * `--pose <str>`: Export only these primary-face poses (comma-separated: frontal,three_quarter,profile)
 * `--race <str>`: Export only these primary-face races (comma-separated: white,black,latino_hispanic,east_asian,southeast_asian,indian,middle_eastern)
