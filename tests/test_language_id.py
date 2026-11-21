@@ -168,7 +168,9 @@ def test_a_language_model_not_converted_from_the_pinned_sources_is_refused(
         language_id.record_path(model).unlink()
     elif spoil == "other-sources":
         sources = {**language_id.SOURCE_SHA256, "classifier.ckpt": "0" * 64}
-        language_id.record_path(model).write_text(json.dumps({"sources": sources, "onnx_sha256": runtime.sha256(model)}))
+        language_id.record_path(model).write_text(
+            json.dumps({"sources": sources, "onnx_sha256": runtime.sha256(model)})
+        )
     else:
         model.write_bytes(b"something else")
     monkeypatch.setenv(language_id.MODEL_ENV, str(model))
@@ -322,9 +324,7 @@ def test_exclude_language_mismatch_at_select_and_export(tmp_path: Path, fake_lid
     out = tmp_path / "out"
     export_selection(
         summary,
-        ExportRequest(
-            scan_id=summary.scan_id, dest=str(out), speech={**CORPUS, "exclude_language_mismatch": True}
-        ),
+        ExportRequest(scan_id=summary.scan_id, dest=str(out), speech={**CORPUS, "exclude_language_mismatch": True}),
     )
     rows = [
         SpeechManifestRow.model_validate_json(line)
@@ -332,7 +332,9 @@ def test_exclude_language_mismatch_at_select_and_export(tmp_path: Path, fake_lid
     ]
     assert {r.speaker_label for r in rows} == {"s1", "s2", "s4"}
     # The speech manifest row is unchanged: the model's reading lives in the scan and the report.
-    assert not any(k.startswith("language_") for k in json.loads((out / SPEECH_MANIFEST_NAME).read_text().splitlines()[0]))
+    assert not any(
+        k.startswith("language_") for k in json.loads((out / SPEECH_MANIFEST_NAME).read_text().splitlines()[0])
+    )
     with (out / "curation_report.csv").open(encoding="utf-8") as fh:
         report = {r["rel_path"]: r for r in csv.DictReader(fh)}
     s3 = [r for r in report.values() if r["rel_path"].startswith("clips/s3")]
@@ -369,22 +371,44 @@ def test_language_probabilities_are_never_stored(tmp_path: Path, fake_lid: objec
     assert summary.embeddings == {}
 
 
-def test_cli_language_id_and_its_export_flag(
-    tmp_path: Path, fake_lid: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cli_language_id_and_its_export_flag(tmp_path: Path, fake_lid: object, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CURATOR_CACHE_DIR", str(tmp_path / "cache"))
     root = _corpus(tmp_path / "corpus")
     runner = CliRunner()
     refused = runner.invoke(
         app,
-        ["scan", str(root), "--modality", "speech", "--copy-to", str(tmp_path / "x"), "--exclude-language-mismatch",
-         "--corpus", "Common Voice pt", "--license", "CC0-1.0"],
+        [
+            "scan",
+            str(root),
+            "--modality",
+            "speech",
+            "--copy-to",
+            str(tmp_path / "x"),
+            "--exclude-language-mismatch",
+            "--corpus",
+            "Common Voice pt",
+            "--license",
+            "CC0-1.0",
+        ],
     )
     assert refused.exit_code == 2 and "--language-id" in refused.output
     result = runner.invoke(
         app,
-        ["scan", str(root), "--modality", "speech", "--language-id", "-v", "--copy-to", str(tmp_path / "out"),
-         "--exclude-language-mismatch", "--corpus", "Common Voice pt", "--license", "CC0-1.0"],
+        [
+            "scan",
+            str(root),
+            "--modality",
+            "speech",
+            "--language-id",
+            "-v",
+            "--copy-to",
+            str(tmp_path / "out"),
+            "--exclude-language-mismatch",
+            "--corpus",
+            "Common Voice pt",
+            "--license",
+            "CC0-1.0",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert f"Language disputes:     {CLIPS_PER_SPEAKER}" in result.output

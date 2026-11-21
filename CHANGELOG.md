@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Body pose from argus-puppet (manifest 2.7).** With
+  `ARGUS_CURATOR_PUPPET_URL` set, a scan sends each passing image to
+  argus-puppet's `POST /pose` after the faces (the primary face as the
+  `face=x,y,w,h` hint, turned into the EXIF-upright frame;
+  `X-Argus-Priority: batch`; a 503 retried after `Retry-After`, at most 3
+  times), then clusters the scan with one inline `POST /stats`. Rows gain
+  `pose_check` (`ok`, `unusable`, `no_person`, `failed`; null = not checked),
+  `pose_labels` (the primary person's `stance` / `arms` / `facing`) and
+  `pose_cluster` (the scan-level cluster id); `ScanSummary.pose` holds the
+  cluster sizes and medoids, `largest_cluster_share`, `diversity`, the usable
+  count and, when the scan was not clustered, why (`skipped`: over
+  `ARGUS_CURATOR_PUPPET_MAX_SET` / `_MAX_JSON_BYTES`, refused, failed; never
+  truncated). Clusters span the whole scan; a UI counts a selection's share of
+  its most common cluster itself. On whenever the URL is set, like NudeNet:
+  `pose.enabled` (`--body-pose/--no-body-pose`, `--puppet-url`) opts out or requires it,
+  and `GET /detectors` reports `puppet`. It never fails a scan: a failed image
+  keeps null, and after 8 failures with no success puppet is taken to be down.
+  No keypoints are stored anywhere. Manifest rows (2.7) carry `pose_labels`
+  and `pose_cluster`; the CSV report adds `pose_check`, `pose_stance`,
+  `pose_arms`, `pose_facing` and `pose_cluster`. See `docs/body-pose.md`.
+
 - **Speech export from the CLI (#207).** `scan --modality speech` takes
   `--copy-to`, `--move-to` and `--symlink-to`, with the selection as flags
   (`--speaker-id`, `--accent`, `--language`, `--exclude-speaker-mismatch`,
@@ -22,6 +43,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `speech_manifest.jsonl` and transcripts `POST /export` writes. A missing or
   half-given provenance, an image filter, or a speech flag on an image scan is
   refused before a clip is read.
+- **Silero VAD for speech scans (#204).** `SpeechConfig.vad: "silero"` (CLI
+  `--vad silero`, model from `argus-curator vad-fetch`: Silero VAD v6.2.3,
+  MIT, pinned by commit and sha256, `ARGUS_CURATOR_VAD_MODEL`) drives the
+  speech ratio and the SNR split instead of the energy VAD, which stays the
+  default. Rows record the VAD in `ClipResult.vad`, and a clip Silero couldn't
+  read gets `vad_error` and no ratio or SNR (never an energy fallback). Silero
+  runs on CPU alone, one thread per session, in fixed-shape 32 ms passes, and
+  takes no GPU lease (it was ~10x slower per pass on CUDA). On 49 real takes
+  mixed with noise its speech ratio held within 0.02 down to 0 dB SNR where
+  the energy VAD's fell to 0, and its SNR tracked the mixed SNR within 0.5 dB
+  (docs/speech.md). `GET /detectors` adds `silero_vad`. Speech manifest rows
+  are unchanged.
 
 ### Changed
 

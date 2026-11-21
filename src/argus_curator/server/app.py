@@ -50,6 +50,7 @@ from PIL import Image, ImageFilter
 from pydantic import BaseModel, Field
 
 from argus_curator import __version__, crops, export, scanner, speech_export, speech_select
+from argus_curator import bodypose as bodypose_mod
 from argus_curator import consent as consent_mod
 from argus_curator import dnsmos as dnsmos_mod
 from argus_curator import erax as erax_mod
@@ -57,6 +58,7 @@ from argus_curator import guard as guard_mod
 from argus_curator import language_id as language_id_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator import prefilter as prefilter_mod
+from argus_curator import silero as silero_mod
 from argus_curator import speakers as speakers_mod
 from argus_curator import speech as speech_mod
 from argus_curator import watermarks as watermarks_mod
@@ -233,6 +235,8 @@ def _detectors() -> dict[str, bool | list[str] | str | None]:
         "erax": erax_mod.configured(),
         "watermark": watermarks_mod.configured(),
         "singguard": guard_mod.configured(),
+        # An argus-puppet URL is configured (the body-pose stage); reachability is not probed.
+        "puppet": bodypose_mod.configured(),
         # Policy names a scan can pass as guard.policy; empty without a server.
         "singguard_policies": list(guard_mod.POLICIES) if guard_mod.configured() else [],
         # Modes a scan can pass as guard.thinking, and the one it runs in when it
@@ -246,6 +250,8 @@ def _detectors() -> dict[str, bool | list[str] | str | None]:
         "speaker_model": speakers_mod.speaker_model_available(),
         # SpeechConfig.language_id: the converted VoxLingua107 language-ID model is in place (#208).
         "language_id_model": language_id_mod.lid_available(),
+        # SpeechConfig.vad = "silero": the Silero VAD model is in place (#204).
+        "silero_vad": silero_mod.vad_model_available(),
     }
 
 
@@ -876,6 +882,14 @@ def create_app(
                         status_code=400,
                         detail=f"EraX fill-in configured but {erax_mod.URL_ENV} is not a valid http(s) URL",
                     ) from exc
+        if bodypose_mod.resolve_enabled(req.pose):
+            try:
+                pose_client = bodypose_mod.client()
+            except ModelUnavailable:
+                pose_client = None
+            if pose_client is None:
+                state = "is not a valid http(s) URL" if bodypose_mod.configured() else "is not set"
+                raise HTTPException(status_code=400, detail=f"body pose requested but {bodypose_mod.URL_ENV} {state}")
         if guard_mod.resolve_enabled(req.guard):
             try:
                 url = guard_mod.endpoint()
@@ -953,6 +967,7 @@ def create_app(
             guard_cfg=req.guard,
             prefilter_cfg=req.prefilter,
             crop_cfg=req.crops,
+            pose_cfg=req.pose,
             consent_cfg=req.consent,
             scan_id=scan_id,
             progress=progress,

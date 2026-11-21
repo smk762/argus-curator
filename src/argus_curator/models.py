@@ -138,7 +138,10 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # record's release_sha256 and the sha256 of the record file as read at export,
 # and the image's own provenance (cortex's Provenance); null otherwise.
 # Additive (#133).
-MANIFEST_VERSION = "2.6"
+# 2.7: rows carry pose_labels (the primary person's stance / arms / facing from
+# argus-puppet) and pose_cluster (the scan-level body-pose cluster), both null
+# when the pose stage did not run or could not say. Additive.
+MANIFEST_VERSION = "2.7"
 
 # Version of a speech export's manifest (#187), its own row shape
 # (SpeechManifestRow) in its own file (speech_manifest.jsonl). It moves
@@ -493,6 +496,19 @@ class NsfwConfig(BaseModel):
     # None (default) = on whenever a NudeNet URL is configured, i.e. opt-out;
     # True = required (a scan fails if no URL is configured); False = opted out.
     # A finished scan records what actually happened as True or False.
+    enabled: bool | None = None
+
+
+class PoseConfig(BaseModel):
+    """Body pose from a remote argus-puppet server (see bodypose.py).
+
+    The server URL is process configuration (ARGUS_CURATOR_PUPPET_URL), never a
+    request field, as for NudeNet. Same opt-out rule: None (default) = on
+    whenever the URL is set; True = required (the scan is refused without a
+    URL); False = opted out. A finished scan records whether the stage ran as
+    True or False.
+    """
+
     enabled: bool | None = None
 
 
@@ -987,6 +1003,33 @@ class ZeroShotResult(BaseModel):
     junk_kind: JunkKind | None = None
 
 
+# argus-puppet's coarse body-pose labels (geometry rules, not a classifier;
+# "unknown" when the joints a rule needs are not confident). Facing is the
+# subject's as the camera sees it: "left" means they face the image's left.
+BodyStance = Literal["standing", "jumping", "crouching", "seated", "lying", "unknown"]
+BodyArms = Literal["up", "out", "down", "mixed", "unknown"]
+BodyFacing = Literal["front", "back", "left", "right", "unknown"]
+
+# How the body-pose stage went for one image (None = not checked: the stage was
+# off, or the image was rejected before it). "ok": a primary person was found
+# (pose_labels holds their labels when the server gave them; pose_cluster is set
+# unless the scan's clustering was skipped, ScanSummary.pose.skipped says why).
+# "unusable": a person was found but too few body joints were confident for
+# clustering, so pose_cluster is None. "no_person": nobody in the frame.
+# "failed": the request failed or the server was unreachable.
+PoseCheck = Literal["ok", "unusable", "no_person", "failed"]
+
+
+class BodyPoseLabels(BaseModel):
+    """The primary person's body-pose labels, as argus-puppet derived them. Keypoints are never stored."""
+
+    model_config = RESPONSE_ONLY
+
+    stance: BodyStance
+    arms: BodyArms
+    facing: BodyFacing
+
+
 class ImageResult(BaseModel):
     """Per-image curation record — superset of imogen's scanner output.
 
@@ -1093,6 +1136,16 @@ class ImageResult(BaseModel):
     # hand, or the check failed).
     watermarks: list[WatermarkDetection] | None = None
 
+    # Body pose from argus-puppet (PoseConfig; see bodypose.py). pose_check says
+    # how it went (None = not checked). pose_labels: the primary person's labels,
+    # None without a person or a reading. pose_cluster: the scan-level cluster id
+    # (0 = the largest; ScanSummary.pose.clusters), None when the pose is
+    # unusable or the scan's clustering was skipped. Clusters are formed over
+    # the whole scan, never a selection. No keypoints are kept.
+    pose_check: PoseCheck | None = None
+    pose_labels: BodyPoseLabels | None = None
+    pose_cluster: int | None = None
+
     # Internal: perceptual hash + score breakdown (kept for HITL transparency)
     phash: str = ""
     score_breakdown: dict[str, float] = Field(default_factory=dict)
@@ -1144,6 +1197,10 @@ SPEECH_CHECKS: tuple[SpeechCheck, ...] = SpeechCheck.__args__
 TranscriptSource = Literal["sidecar", "ljspeech", "common_voice"]
 TranscriptLayout = Literal["auto", "sidecar", "ljspeech", "common_voice"]
 
+# Which voice activity detector marks a clip's speech frames (#204): the energy
+# VAD (numpy, no model) or Silero VAD (a pinned ONNX model, on CPU).
+SpeechVad = Literal["energy", "silero"]
+
 # Ceilings a request cannot raise: they bound what decoding one clip costs.
 MAX_CLIP_SECONDS = 120.0
 MAX_CLIP_CHANNELS = 2
@@ -1177,6 +1234,10 @@ class SpeechConfig(BaseModel):
     max_chars_per_s: float | None = Field(30.0, gt=0.0)
     min_snr_db: float | None = None
     min_speech_ratio: float | None = Field(None, ge=0.0, le=1.0)
+    # The VAD whose speech mask the speech ratio and the SNR split read (#204).
+    # "energy" needs no model; "silero" runs Silero VAD (ARGUS_CURATOR_VAD_MODEL)
+    # on CPU in the first pass, on every clip that gets that far.
+    vad: SpeechVad = "energy"
 
     # DNSMOS (ARGUS_CURATOR_DNSMOS_MODEL), run on each clip that passed the
     # checks above. min_mos is on its overall (OVRL) score, 1-5.
@@ -1276,6 +1337,10 @@ class ClipResult(BaseModel):
     trailing_silence_s: float | None = None
     snr_db: float | None = None
     speech_ratio: float | None = None
+    # The VAD that produced speech_ratio and snr_db (SpeechConfig.vad), and why
+    # Silero gave no mask for a clip it was asked to read, else None.
+    vad: SpeechVad | None = None
+    vad_error: str | None = None
 
     transcript: str | None = None
     transcript_source: TranscriptSource | None = None
@@ -1356,6 +1421,47 @@ class FaceCluster(BaseModel):
     attributes: FaceAttributes | None = None
 
 
+class PoseCluster(BaseModel):
+    """One scan-level body-pose cluster from argus-puppet's ``POST /stats`` (average linkage over the scan)."""
+
+    model_config = RESPONSE_ONLY
+
+    # 0 for the largest, as ImageResult.pose_cluster names it.
+    id: int
+    size: int
+    # size / ScanSummary.pose.usable.
+    share: float
+    # The image whose pose is most central to the cluster; None once that row was dropped.
+    medoid_rel_path: str | None = None
+
+
+class PoseSummary(BaseModel):
+    """What the body-pose stage found over the whole scan (see bodypose.py and docs/body-pose.md).
+
+    ``posed`` images came back from argus-puppet (``no_person`` of them with
+    nobody in frame), ``failed`` did not. The rest comes from one ``POST
+    /stats`` over every posed image, or is None/empty with ``skipped`` saying
+    why (the scan is over the set cap, the server refused or failed the call,
+    nothing was posed). ``stale``: rows were dropped since, so cluster sizes and
+    shares are recounted from the rows left but ``diversity`` and
+    ``comparable_share`` are as measured.
+    """
+
+    model_config = RESPONSE_ONLY
+
+    puppet_version: str | None = None
+    posed: int = 0
+    no_person: int = 0
+    failed: int = 0
+    skipped: str | None = None
+    usable: int | None = None
+    comparable_share: float | None = None
+    diversity: float | None = None
+    largest_cluster_share: float | None = None
+    clusters: list[PoseCluster] = Field(default_factory=list)
+    stale: bool = False
+
+
 class ScanSummary(BaseModel):
     """Full result of a scan — persisted on disk and paginated by the server."""
 
@@ -1380,6 +1486,9 @@ class ScanSummary(BaseModel):
     # Defaulted so scans cached before the prefilter existed still load.
     prefilter_config: PrefilterConfig = Field(default_factory=PrefilterConfig)
     crop_config: CropConfig = Field(default_factory=CropConfig)
+    # Whether the body-pose stage ran, and what it found over the scan (None when it did not run).
+    pose_config: PoseConfig = Field(default_factory=PoseConfig)
+    pose: PoseSummary | None = None
 
     total: int
     passed: int
@@ -1521,6 +1630,7 @@ class ScanRequest(BaseModel):
     guard: GuardConfig = Field(default_factory=GuardConfig)
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
     crops: CropConfig = Field(default_factory=CropConfig)
+    pose: PoseConfig = Field(default_factory=PoseConfig)
     consent: ConsentConfig = Field(default_factory=ConsentConfig)
     speech: SpeechConfig = Field(default_factory=SpeechConfig)
 
@@ -1556,6 +1666,7 @@ class ScanRequest(BaseModel):
                 ("nsfw", self.nsfw.enabled is True),
                 ("guard", self.guard.enabled is True),
                 ("crops", self.crops.enabled),
+                ("pose", self.pose.enabled is True),
                 ("prefilter", any(self.prefilter.model_dump().values())),
                 ("consent", self.consent.record is not None),
             )
@@ -2023,6 +2134,12 @@ class ManifestRow(BaseModel):
     consent_release_sha256: str | None = None
     consent_record_sha256: str | None = None
     provenance: Provenance | None = None
+    # Manifest 2.7: the primary person's body-pose labels and the scan-level
+    # pose cluster (ImageResult.pose_labels / pose_cluster). None = the pose
+    # stage did not run, found nobody, failed, or (cluster) the pose was
+    # unusable or clustering was skipped. Clusters span the whole scan.
+    pose_labels: BodyPoseLabels | None = None
+    pose_cluster: int | None = None
 
 
 class SpeechManifestRow(BaseModel):

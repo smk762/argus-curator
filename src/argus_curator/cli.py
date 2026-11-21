@@ -178,6 +178,12 @@ def scan(
     lid_model: Path | None = Option(
         None, "--lid-model", help="Speech: language-ID ONNX model (ARGUS_CURATOR_LID_MODEL)"
     ),
+    vad: str | None = Option(
+        None, "--vad", help="Speech: energy (default) or silero, the VAD for speech ratio and SNR (see vad-fetch)"
+    ),
+    vad_model: Path | None = Option(
+        None, "--vad-model", help="Speech: Silero VAD ONNX model (ARGUS_CURATOR_VAD_MODEL)"
+    ),
     speech_config: Path | None = Option(
         None, "--speech-config", help="Speech: a JSON SpeechConfig with the thresholds (the flags above override it)"
     ),
@@ -417,6 +423,14 @@ def scan(
     singguard_url: str | None = Option(
         None, "--singguard-url", help="SingGuard server origin, e.g. http://guard:9150 (ARGUS_CURATOR_SINGGUARD_URL)"
     ),
+    body_pose: bool | None = Option(
+        None,
+        "--body-pose/--no-body-pose",
+        help="Body pose from argus-puppet (default: on when a puppet URL is configured; --no-body-pose opts out)",
+    ),
+    puppet_url: str | None = Option(
+        None, "--puppet-url", help="argus-puppet server origin, e.g. http://puppet:8220 (ARGUS_CURATOR_PUPPET_URL)"
+    ),
     guard_policy: str = Option(
         "default",
         "--guard-policy",
@@ -523,6 +537,7 @@ def scan(
         GarmentConfig,
         GuardConfig,
         NsfwConfig,
+        PoseConfig,
         PrefilterConfig,
         ScanConfig,
         SceneConfig,
@@ -640,6 +655,8 @@ def scan(
             speaker_model=speaker_model,
             language_id=language_id,
             lid_model=lid_model,
+            vad=vad,
+            vad_model=vad_model,
             speech_config=speech_config,
             device=device,
             max_workers=max_workers,
@@ -650,10 +667,11 @@ def scan(
         if speech_req is not None:
             _export_speech(summary, speech_req)
         return
-    if transcripts or mos or dnsmos_model or speech_config or speech_speakers or speaker_model or language_id or lid_model:
+    speech_only = (transcripts, mos, dnsmos_model, speech_config, speech_speakers, speaker_model, vad, vad_model)
+    if any(speech_only) or language_id or lid_model:
         typer.echo(
-            "Error: --transcripts, --mos, --dnsmos-model, --speakers, --speaker-model, --language-id, --lid-model "
-            "and --speech-config need --modality speech",
+            "Error: --transcripts, --mos, --dnsmos-model, --speakers, --speaker-model, --vad, --vad-model, "
+            "--language-id, --lid-model and --speech-config need --modality speech",
             err=True,
         )
         raise typer.Exit(2)
@@ -662,6 +680,7 @@ def scan(
         raise typer.Exit(2)
     import os
 
+    from argus_curator import bodypose as bodypose_mod
     from argus_curator import embeddings as embeddings_mod
     from argus_curator import erax as erax_mod
     from argus_curator import fairface as fairface_mod
@@ -682,6 +701,7 @@ def scan(
         (erax_url, erax_mod.URL_ENV),
         (watermark_url, watermarks_mod.URL_ENV),
         (singguard_url, guard_mod.URL_ENV),
+        (puppet_url, bodypose_mod.URL_ENV),
     ):
         if model_file is not None:
             os.environ[env] = str(model_file)
@@ -705,6 +725,17 @@ def scan(
             raise typer.Exit(2) from exc
         if detector is not None and (why := detector.unreachable()) is not None:
             typer.echo(f"Error: --detect-watermarks: the detector {why}", err=True)
+            raise typer.Exit(2)
+    if bodypose_mod.resolve_enabled(PoseConfig(enabled=body_pose)):
+        from argus_curator.runtime import ModelUnavailable
+
+        try:
+            puppet = bodypose_mod.client()
+        except ModelUnavailable as exc:  # names the variable, never the URL
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        if puppet is None:
+            typer.echo(f"Error: --body-pose needs a server: --puppet-url or {bodypose_mod.URL_ENV}", err=True)
             raise typer.Exit(2)
 
     try:
@@ -969,6 +1000,7 @@ def scan(
         guard_cfg=guard_cfg,
         prefilter_cfg=prefilter_cfg,
         crop_cfg=CropConfig(enabled=crops, detect=detect_watermarks, max_cut=max_cut, reject_overlay=not keep_overlays),
+        pose_cfg=PoseConfig(enabled=body_pose),
         consent_cfg=consent_cfg,
     )
 
@@ -1351,6 +1383,8 @@ def _scan_speech(
     speaker_model: Path | None,
     language_id: bool,
     lid_model: Path | None,
+    vad: str | None,
+    vad_model: Path | None,
     speech_config: Path | None,
     device: str,
     max_workers: int,
@@ -1380,6 +1414,10 @@ def _scan_speech(
         from argus_curator import language_id as lid_mod
 
         os.environ[lid_mod.MODEL_ENV] = str(lid_model)
+    if vad_model is not None:
+        from argus_curator import silero as silero_mod
+
+        os.environ[silero_mod.MODEL_ENV] = str(vad_model)
     try:
         base = json.loads(speech_config.read_text(encoding="utf-8")) if speech_config is not None else {}
     except (OSError, ValueError) as exc:
@@ -1397,6 +1435,8 @@ def _scan_speech(
         overrides.update(speakers=True, speaker_device=device)
     if language_id:
         overrides.update(language_id=True, language_id_device=device)
+    if vad is not None:
+        overrides["vad"] = vad
     if no_cluster:
         overrides["duplicate_distance"] = -1
     try:
@@ -1747,6 +1787,26 @@ def lid_convert(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"Wrote language-ID ONNX model -> {written}")
+
+
+@app.command("vad-fetch")
+def vad_fetch(
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the model (default: model cache)"),
+) -> None:
+    """Fetch the Silero VAD model a speech scan's --vad silero runs.
+
+    snakers4/silero-vad (MIT), pinned by release commit and sha256; 2.3 MB,
+    runs on onnxruntime on CPU (argus-curator[speech]).
+    """
+    from argus_curator.runtime import ModelUnavailable
+    from argus_curator.silero import fetch_model
+
+    try:
+        written = fetch_model(output)
+    except (ModelUnavailable, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Silero VAD model in place -> {written}")
 
 
 @app.command()

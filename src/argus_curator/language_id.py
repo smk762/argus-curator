@@ -182,7 +182,12 @@ _ALIASES = {"he": "iw", "jv": "jw", "nb": "no", "fil": "tl", "cmn": "zh"}
 _BY_NAME = {name.lower(): code for code, name in LANGUAGES}
 # Languages a listener can barely tell apart by ear, which the model confuses
 # with each other: a prediction inside the label's group is not a dispute.
-SAME_LANGUAGE = (frozenset({"bs", "hr", "sr"}), frozenset({"no", "nn"}), frozenset({"hi", "ur"}), frozenset({"id", "ms"}))
+SAME_LANGUAGE = (
+    frozenset({"bs", "hr", "sr"}),
+    frozenset({"no", "nn"}),
+    frozenset({"hi", "ur"}),
+    frozenset({"id", "ms"}),
+)
 
 FEATURE_RATE = 16000
 N_MELS = 60
