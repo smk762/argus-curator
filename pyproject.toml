@@ -111,6 +111,15 @@ embeddings-convert = [
     "huggingface_hub>=0.23",
     "onnx>=1.16",
 ]
+# One-time export of SpeechBrain's VoxLingua107 language-ID model (`argus-curator
+# lid-convert`, #208); --language-id itself runs on onnxruntime alone ([speech]).
+# Uses the legacy TorchScript exporter, so no onnxscript.
+lid-convert = [
+    "torch>=2.6",
+    "speechbrain>=1.0",
+    "huggingface_hub>=0.23",
+    "onnx>=1.16",
+]
 # Speech scans (#186): WAV/FLAC decoding through argus_cortex.limits.open_audio
 # (soundfile, which bundles libsndfile), and onnxruntime for the optional DNSMOS
 # score (`argus-curator dnsmos-fetch`). Everything else is numpy.

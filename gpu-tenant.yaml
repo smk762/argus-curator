@@ -50,3 +50,8 @@ kinds:
     vram_mb: 542
     model_mb: 350
     priority: batch
+  - kind: language
+    description: SpeechBrain VoxLingua107 ECAPA-TDNN spoken language ID for speech scans, one clip's 4 windows of 3 s per pass.
+    vram_mb: 656
+    model_mb: 400
+    priority: batch

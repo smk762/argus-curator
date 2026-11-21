@@ -1116,7 +1116,9 @@ SPEECH_EXTS = {".wav", ".flac"}
 # ``failed_checks`` every one measured. ``unreadable``: not a WAV/FLAC clip the
 # scan can decode (``reject_detail`` says why). ``corpus_under_18``: the
 # corpus's own metadata marks the speaker as under 18 (a hard exclusion, never
-# configurable). ``cer`` needs an STT engine (argus-echo#4).
+# configurable). ``cer`` needs an STT engine (argus-echo#4). ``language``: the
+# language-ID model disputes the corpus's language label (only with
+# ``SpeechConfig.reject_language_mismatch``; by default a dispute is flagged, not rejected).
 SpeechCheck = Literal[
     "unreadable",
     "corpus_under_18",
@@ -1133,6 +1135,7 @@ SpeechCheck = Literal[
     "speech_ratio",
     "mos",
     "cer",
+    "language",
 ]
 SPEECH_CHECKS: tuple[SpeechCheck, ...] = SpeechCheck.__args__
 
@@ -1195,6 +1198,16 @@ class SpeechConfig(BaseModel):
     speakers: bool = False
     speaker_device: str = "auto"
     speaker_threshold: float = Field(0.5, gt=0.0, lt=2.0)
+
+    # Spoken language ID (SpeechBrain VoxLingua107 ECAPA, ARGUS_CURATOR_LID_MODEL,
+    # #208), run on each clip that passed: a clip whose corpus language label the
+    # model disputes with at least language_dispute_confidence is flagged
+    # (ClipResult.language_mismatch). The label is never changed; the clip is
+    # rejected (check "language") only with reject_language_mismatch.
+    language_id: bool = False
+    language_id_device: str = "auto"
+    language_dispute_confidence: float = Field(0.8, gt=0.0, le=1.0)
+    reject_language_mismatch: bool = False
 
     # Composite score weights (a term the scan did not measure drops out and
     # the rest are renormalised), and the SNR that scores 1.
@@ -1292,6 +1305,17 @@ class ClipResult(BaseModel):
     speaker_mismatch: bool = False
     # Why no speaker embedding was made for a clip that passed, else None.
     speaker_error: str | None = None
+
+    # SpeechConfig.language_id (#208): the model's top language (its own code,
+    # ISO 639-1 mostly) and its probability, the probability it gives the corpus
+    # label (None when the label is missing or one the model doesn't know), and
+    # whether it disputes the label. ``language`` itself is never changed.
+    language_predicted: str | None = None
+    language_confidence: float | None = None
+    language_label_confidence: float | None = None
+    language_mismatch: bool = False
+    # Why no language was predicted for a clip that passed, else None.
+    language_error: str | None = None
 
     # 64-bit spectrogram fingerprint (hex), the counterpart of ImageResult.phash.
     fingerprint: str = ""
@@ -1397,6 +1421,8 @@ class ScanSummary(BaseModel):
     # many clips' corpus speaker labels disagree with them.
     speaker_clusters: list[SpeakerCluster] = Field(default_factory=list)
     speaker_mismatches: int = 0
+    # SpeechConfig.language_id (#208): how many clips' corpus language labels the model disputes.
+    language_mismatches: int = 0
 
     # The min_short_side a scan cached before MIN_SHORT_SIDE existed actually ran
     # with, when it was below the floor; None otherwise. ``config`` reads the
@@ -1647,7 +1673,9 @@ class SpeechSelection(BaseModel):
 
     Filters: ``speakers`` (by ``speaker_id``), ``accents`` and ``languages``
     (the corpus labels, exact). ``exclude_speaker_mismatch`` drops clips whose
-    corpus speaker label the clustering disputes. Caps, in hours of audio,
+    corpus speaker label the clustering disputes, and
+    ``exclude_language_mismatch`` those whose language label the language-ID
+    model disputes (#208). Caps, in hours of audio,
     best-scoring clips first: ``min_hours_per_speaker`` drops a speaker with
     less, ``max_hours_per_speaker`` caps one, ``max_hours_per_accent`` caps an
     accent, and ``balance_accents`` caps every accent at the smallest one's
@@ -1670,6 +1698,7 @@ class SpeechSelection(BaseModel):
     accents: list[str] | None = Field(None, min_length=1)
     languages: list[str] | None = Field(None, min_length=1)
     exclude_speaker_mismatch: bool = False
+    exclude_language_mismatch: bool = False
 
     min_hours_per_speaker: float | None = Field(None, gt=0.0)
     max_hours_per_speaker: float | None = Field(None, gt=0.0)

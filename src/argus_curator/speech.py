@@ -14,6 +14,9 @@ duration caps are checked before a sample is decoded) and gets:
   clip less its edge silence) and, given an STT engine, the CER between the
   transcript and its pass (the :class:`Transcriber` hook; argus-echo#4).
 * **Near-duplicates**: a 64-bit spectrogram fingerprint, the counterpart of pHash.
+* **Language labels**: with ``SpeechConfig.language_id``, a spoken language-ID
+  model's reading beside the corpus label, and a flag where it disputes it
+  (:mod:`argus_curator.language_id`, under the GPU lease).
 
 Every threshold is a prefilter: a clip past one is rejected and names the
 check (``ClipResult.reject_reason``, ``failed_checks``, ``reject_detail``). A
@@ -40,7 +43,7 @@ import numpy as np
 import structlog
 from argus_cortex.limits import DEFAULT_SAMPLE_RATES, BadInput, TooLarge, open_audio
 
-from argus_curator import dnsmos, speakers
+from argus_curator import dnsmos, language_id, speakers
 from argus_curator.models import (
     MAX_CLIP_CHANNELS,
     SPEECH_CHECKS,
@@ -117,7 +120,8 @@ def require_speech() -> None:
 
 def requested_checks(cfg: SpeechConfig, transcriber: Transcriber | None = None) -> list[str]:
     """The slow checks a speech scan runs after its first pass (``pending_checks`` in its events)."""
-    return [name for name, on in (("mos", cfg.mos), ("cer", transcriber is not None), ("speakers", cfg.speakers)) if on]
+    checks = (("mos", cfg.mos), ("cer", transcriber is not None), ("language", cfg.language_id), ("speakers", cfg.speakers))
+    return [name for name, on in checks if on]
 
 
 def problem(cfg: SpeechConfig, transcriber: Transcriber | None = None) -> str | None:
@@ -128,6 +132,8 @@ def problem(cfg: SpeechConfig, transcriber: Transcriber | None = None) -> str | 
         return "max_cer needs a speech-to-text engine (argus-echo#4), and none is configured"
     if cfg.mos and not dnsmos.dnsmos_available():
         return f"DNSMOS requested but the model is not in place (argus-curator dnsmos-fetch, or {dnsmos.MODEL_ENV})"
+    if cfg.language_id and (why := language_id.problem()) is not None:
+        return why
     if cfg.speakers:
         return speakers.problem()
     return None
@@ -460,6 +466,7 @@ def drop_clips(summary: ScanSummary, gone: set[str] | list[str]) -> None:
     summary.similar_clusters = mark_duplicates(clips, cfg.duplicate_distance)
     if summary.speaker_clusters:
         summary.speaker_clusters, summary.speaker_mismatches = speakers.agreement(clips)
+    summary.language_mismatches = language_id.count_mismatches(clips)
     for rel in gone:
         summary.embeddings.pop(rel, None)
     passed = [c for c in clips if c.passed]
@@ -508,8 +515,9 @@ def scan_speech_folder(
     the last one (``clips``, with ``modality: "speech"``), *save* a snapshot
     now and then, and *cancelled* stops the scan between clips. Phases:
     ``collecting``, ``scoring`` (decode, measure, first-pass thresholds),
-    ``mos`` (with ``cfg.mos``), ``cer`` (with a *transcriber*) and
-    ``speakers`` (with ``cfg.speakers``: embeddings, then the clustering).
+    ``mos`` (with ``cfg.mos``), ``cer`` (with a *transcriber*), ``language``
+    (with ``cfg.language_id``) and ``speakers`` (with ``cfg.speakers``:
+    embeddings, then the clustering).
     """
     # A speech scan takes a speech profile only: an image one is refused here.
     profile = SpeechTargetProfile.model_validate(profile) if profile is not None else SpeechTargetProfile()
@@ -704,7 +712,44 @@ def scan_speech_folder(
         with lock:
             completed.add("cer")
 
-    # Phase 4: speaker embeddings on the clips still passing, one clip per pass
+    # Phase 4: language ID on the clips still passing (#208), one clip's
+    # fixed-size windows per pass under the GPU lease. A dispute is flagged;
+    # it rejects the clip only with reject_language_mismatch.
+    if cfg.language_id:
+        session = language_id.get_session(cfg.language_id_device)
+        pending = [rows[rel] for rel in order if rel in rows and rows[rel].passed]
+        emit("language", 0, len(pending))
+        batch = []
+        for i, row in enumerate(pending, 1):
+            check_cancelled()
+            decoded = mono_of(row)
+            try:
+                if decoded is None:
+                    raise ValueError("the clip could not be read again")
+                probs = language_id.identify(session, decoded[0], decoded[1], cfg.language_id_device)
+                language_id.judge(row, probs, cfg.language_dispute_confidence)
+            except GPU_UNAVAILABLE:
+                raise
+            except Exception as exc:
+                row.language_error = str(exc) or type(exc).__name__
+                logger.warning("speech_language_id_failed", rel_path=row.rel_path, error=row.language_error)
+            if cfg.reject_language_mismatch and row.language_mismatch:
+                _settle(
+                    row,
+                    {
+                        "language": f"the language-ID model hears {row.language_predicted!r} "
+                        f"(p={row.language_confidence:g}), not the corpus label {row.language!r}"
+                    },
+                )
+            batch.append(row)
+            if i == len(pending) or len(batch) >= CHUNK_SIZE:
+                emit("language", i, len(pending))
+                deliver("language", i, len(pending), batch, finished="language" if i == len(pending) else None)
+                batch = []
+        with lock:
+            completed.add("language")
+
+    # Phase 5: speaker embeddings on the clips still passing, one clip per pass
     # under the GPU lease, then the clustering. The embeddings stay in memory.
     embeddings: dict[str, np.ndarray] = {}
     if cfg.speakers:
@@ -738,6 +783,7 @@ def scan_speech_folder(
             completed.add("speakers")
     summary = snapshot()
     summary.speaker_clusters, summary.speaker_mismatches = speaker_clusters, mismatches
+    summary.language_mismatches = language_id.count_mismatches(summary.clips)
     summary.embeddings.update(embeddings)
     logger.info("speech_scan_done", folder=folder_str, total=summary.total, passed=summary.passed)
     return summary

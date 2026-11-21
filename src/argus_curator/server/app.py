@@ -54,6 +54,7 @@ from argus_curator import consent as consent_mod
 from argus_curator import dnsmos as dnsmos_mod
 from argus_curator import erax as erax_mod
 from argus_curator import guard as guard_mod
+from argus_curator import language_id as language_id_mod
 from argus_curator import nsfw as nsfw_mod
 from argus_curator import prefilter as prefilter_mod
 from argus_curator import speakers as speakers_mod
@@ -243,6 +244,8 @@ def _detectors() -> dict[str, bool | list[str] | str | None]:
         "dnsmos": dnsmos_mod.dnsmos_available(),
         # SpeechConfig.speakers: the WeSpeaker ECAPA-TDNN model is in place (#187).
         "speaker_model": speakers_mod.speaker_model_available(),
+        # SpeechConfig.language_id: the converted VoxLingua107 language-ID model is in place (#208).
+        "language_id_model": language_id_mod.lid_available(),
     }
 
 

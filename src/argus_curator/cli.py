@@ -170,6 +170,14 @@ def scan(
     speaker_model: Path | None = Option(
         None, "--speaker-model", help="Speech: speaker-embedding ONNX model (ARGUS_CURATOR_SPEAKER_MODEL)"
     ),
+    language_id: bool = Option(
+        False,
+        "--language-id",
+        help="Speech: check each passing clip's corpus language label with a language-ID model (see lid-convert)",
+    ),
+    lid_model: Path | None = Option(
+        None, "--lid-model", help="Speech: language-ID ONNX model (ARGUS_CURATOR_LID_MODEL)"
+    ),
     speech_config: Path | None = Option(
         None, "--speech-config", help="Speech: a JSON SpeechConfig with the thresholds (the flags above override it)"
     ),
@@ -186,6 +194,12 @@ def scan(
         False,
         "--exclude-speaker-mismatch",
         help="Speech export: drop clips whose corpus speaker label the clustering disputes (needs --speakers)",
+    ),
+    exclude_language_mismatch: bool = Option(
+        False,
+        "--exclude-language-mismatch",
+        help="Speech export: drop clips whose corpus language label the language-ID model disputes "
+        "(needs --language-id)",
     ),
     min_hours_per_speaker: float | None = Option(
         None, "--min-hours-per-speaker", help="Speech export: drop a speaker with fewer hours of kept audio"
@@ -530,6 +544,7 @@ def scan(
         "--accent": accents,
         "--language": languages,
         "--exclude-speaker-mismatch": exclude_speaker_mismatch,
+        "--exclude-language-mismatch": exclude_language_mismatch,
         "--min-hours-per-speaker": min_hours_per_speaker is not None,
         "--max-hours-per-speaker": max_hours_per_speaker is not None,
         "--max-hours-per-accent": max_hours_per_accent is not None,
@@ -593,6 +608,7 @@ def scan(
             accents=accents,
             languages=languages,
             exclude_speaker_mismatch=exclude_speaker_mismatch,
+            exclude_language_mismatch=exclude_language_mismatch,
             min_hours_per_speaker=min_hours_per_speaker,
             max_hours_per_speaker=max_hours_per_speaker,
             max_hours_per_accent=max_hours_per_accent,
@@ -603,6 +619,7 @@ def scan(
             consent_delivery=consent_delivery,
             voice_consent_max_distance=voice_consent_max_distance,
             speakers_clustered=speech_speakers,
+            languages_checked=language_id,
             held_out=held_out,
             held_out_fraction=held_out_fraction,
             split_method=split_method,
@@ -621,6 +638,8 @@ def scan(
             dnsmos_model=dnsmos_model,
             speakers=speech_speakers,
             speaker_model=speaker_model,
+            language_id=language_id,
+            lid_model=lid_model,
             speech_config=speech_config,
             device=device,
             max_workers=max_workers,
@@ -631,10 +650,10 @@ def scan(
         if speech_req is not None:
             _export_speech(summary, speech_req)
         return
-    if transcripts or mos or dnsmos_model or speech_config or speech_speakers or speaker_model:
+    if transcripts or mos or dnsmos_model or speech_config or speech_speakers or speaker_model or language_id or lid_model:
         typer.echo(
-            "Error: --transcripts, --mos, --dnsmos-model, --speakers, --speaker-model and --speech-config "
-            "need --modality speech",
+            "Error: --transcripts, --mos, --dnsmos-model, --speakers, --speaker-model, --language-id, --lid-model "
+            "and --speech-config need --modality speech",
             err=True,
         )
         raise typer.Exit(2)
@@ -1158,6 +1177,7 @@ def _speech_export_request(
     accents: str | None,
     languages: str | None,
     exclude_speaker_mismatch: bool,
+    exclude_language_mismatch: bool,
     min_hours_per_speaker: float | None,
     max_hours_per_speaker: float | None,
     max_hours_per_accent: float | None,
@@ -1168,6 +1188,7 @@ def _speech_export_request(
     consent_delivery: str | None,
     voice_consent_max_distance: float | None,
     speakers_clustered: bool,
+    languages_checked: bool,
     held_out: int | None,
     held_out_fraction: float | None,
     split_method: str,
@@ -1233,6 +1254,9 @@ def _speech_export_request(
     if exclude_speaker_mismatch and not speakers_clustered:
         typer.echo("Error: --exclude-speaker-mismatch needs a scan that clusters speakers; add --speakers", err=True)
         raise typer.Exit(2)
+    if exclude_language_mismatch and not languages_checked:
+        typer.echo("Error: --exclude-language-mismatch needs a scan that runs language ID; add --language-id", err=True)
+        raise typer.Exit(2)
     splitting = held_out is not None or held_out_fraction is not None
     if not splitting and (asked := [f for f in ("--split-method", "--split-seed", "--split-part") if flags[f]]):
         typer.echo(f"Error: {', '.join(asked)} need a split: --held-out or --held-out-fraction", err=True)
@@ -1246,6 +1270,7 @@ def _speech_export_request(
             accents=_csv_list(accents),
             languages=_csv_list(languages),
             exclude_speaker_mismatch=exclude_speaker_mismatch,
+            exclude_language_mismatch=exclude_language_mismatch,
             min_hours_per_speaker=min_hours_per_speaker,
             max_hours_per_speaker=max_hours_per_speaker,
             max_hours_per_accent=max_hours_per_accent,
@@ -1324,6 +1349,8 @@ def _scan_speech(
     dnsmos_model: Path | None,
     speakers: bool,
     speaker_model: Path | None,
+    language_id: bool,
+    lid_model: Path | None,
     speech_config: Path | None,
     device: str,
     max_workers: int,
@@ -1349,6 +1376,10 @@ def _scan_speech(
         from argus_curator import speakers as speakers_mod
 
         os.environ[speakers_mod.MODEL_ENV] = str(speaker_model)
+    if lid_model is not None:
+        from argus_curator import language_id as lid_mod
+
+        os.environ[lid_mod.MODEL_ENV] = str(lid_model)
     try:
         base = json.loads(speech_config.read_text(encoding="utf-8")) if speech_config is not None else {}
     except (OSError, ValueError) as exc:
@@ -1364,6 +1395,8 @@ def _scan_speech(
         overrides.update(mos=True, mos_device=device)
     if speakers:
         overrides.update(speakers=True, speaker_device=device)
+    if language_id:
+        overrides.update(language_id=True, language_id_device=device)
     if no_cluster:
         overrides["duplicate_distance"] = -1
     try:
@@ -1393,6 +1426,8 @@ def _scan_speech(
             f"  Speakers (clustered):  {len(summary.speaker_clusters)}  "
             f"({summary.speaker_mismatches} clips' corpus labels disagree)"
         )
+    if cfg.language_id:
+        typer.echo(f"  Language disputes:     {summary.language_mismatches}  (corpus label vs the language-ID model)")
     scored = sorted(c.mos.ovrl for c in summary.clips if c.mos is not None)
     if scored:
         typer.echo(f"  DNSMOS OVRL (median):  {scored[len(scored) // 2]:.2f} over {len(scored)} clips")
@@ -1410,7 +1445,10 @@ def _scan_speech(
             why = f"  [{c.reject_reason}: {c.reject_detail}]" if c.reject_reason else ""
             snr = f" snr={c.snr_db:.1f}" if c.snr_db is not None else ""
             mos_text = f" mos={c.mos.ovrl:.2f}" if c.mos is not None else ""
-            typer.echo(f"  {c.score:.3f} {tag:>5}  {c.rel_path}{snr}{mos_text}{why}")
+            lang = ""
+            if c.language_mismatch:
+                lang = f" language={c.language}?{c.language_predicted}({c.language_confidence:g})"
+            typer.echo(f"  {c.score:.3f} {tag:>5}  {c.rel_path}{snr}{mos_text}{lang}{why}")
 
     ScanStore().save(summary)
     if json_out:
@@ -1679,6 +1717,36 @@ def speaker_fetch(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"Speaker model in place -> {written}")
+
+
+@app.command("lid-convert")
+def lid_convert(
+    checkpoint: Path | None = Option(
+        None,
+        "--checkpoint",
+        help="Local dir with embedding_model.ckpt, classifier.ckpt and label_encoder.txt "
+        "(default: download the pinned ones)",
+    ),
+    output: Path | None = Option(None, "--output", "-o", help="Where to write the ONNX model (default: model cache)"),
+) -> None:
+    """Fetch, verify and convert the language-ID model a speech scan's --language-id runs.
+
+    SpeechBrain's VoxLingua107 ECAPA-TDNN (speechbrain/lang-id-voxlingua107-ecapa,
+    Apache-2.0; VoxLingua107 data CC BY 4.0), pinned by Hugging Face revision
+    and sha256; 107 languages, ~85 MB fp32. Writes the ONNX model and its
+    conversion record (<model>.json) beside it; the scan runs it on onnxruntime
+    alone (argus-curator[speech]). Needs: pip install argus-curator[lid-convert]
+    """
+    from argus_curator.language_id import export_onnx, fetch_sources, model_path
+    from argus_curator.runtime import ModelUnavailable
+
+    try:
+        source = checkpoint or fetch_sources()
+        written = export_onnx(source, output or model_path())
+    except (ModelUnavailable, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote language-ID ONNX model -> {written}")
 
 
 @app.command()

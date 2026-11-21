@@ -92,6 +92,8 @@ def speech_problem(req: ExportRequest, summary: ScanSummary) -> str | None:
     speech = req.speech or SpeechSelection()
     if speech.exclude_speaker_mismatch and not summary.speaker_clusters:
         return "speech.exclude_speaker_mismatch needs a scan that clustered speakers; rescan with speech.speakers on"
+    if speech.exclude_language_mismatch and not (summary.speech_config and summary.speech_config.language_id):
+        return "speech.exclude_language_mismatch needs a scan that ran language ID; rescan with speech.language_id on"
     return None
 
 
@@ -267,6 +269,8 @@ def decide(
             keep_reason[c.rel_path] = "language-excluded"
         elif speech.exclude_speaker_mismatch and c.speaker_mismatch:
             keep_reason[c.rel_path] = "speaker-mismatch"
+        elif speech.exclude_language_mismatch and c.language_mismatch:
+            keep_reason[c.rel_path] = "language-mismatch"
         else:
             eligible.append(c)
 

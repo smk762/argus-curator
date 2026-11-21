@@ -142,6 +142,7 @@ def test_detectors_keys(client: TestClient) -> None:
         "speech",
         "dnsmos",
         "speaker_model",
+        "language_id_model",
     }
     assert resp.json()["singguard_policies"] == []  # no SingGuard server configured
     assert resp.json()["singguard_thinking_modes"] == [] and resp.json()["singguard_thinking_default"] is None
