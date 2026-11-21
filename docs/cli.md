@@ -125,6 +125,8 @@ $ argus-curator scan [OPTIONS] {source}
 * `--content-ratings <str>`: Keep only these NudeNet content ratings, comma-separated: safe, suggestive, explicit
 * `--guard / --no-guard`: SingGuard policy check (default: on when a SingGuard URL is configured; --no-guard opts out)
 * `--singguard-url <str>`: SingGuard server origin, e.g. http://guard:9150 (ARGUS_CURATOR_SINGGUARD_URL)
+* `--pose / --no-pose`: Body pose from argus-puppet (default: on when a puppet URL is configured; --no-pose opts out)
+* `--puppet-url <str>`: argus-puppet server origin, e.g. http://puppet:8220 (ARGUS_CURATOR_PUPPET_URL)
 * `--guard-policy <str>`: SingGuard policy: default (the policy file, else SingGuard&#x27;s rules) or adult (allows adult nudity)  [default: default]
 * `--guard-thinking <str>`: SingGuard mode: fast, fast-slow, slow or cascade (default: ARGUS_CURATOR_SINGGUARD_THINKING, else cascade)
 * `--guard-variants <str>`: Also judge every image under these policies, comma-separated (one more SingGuard pass each)

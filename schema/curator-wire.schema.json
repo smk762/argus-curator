@@ -1,5 +1,51 @@
 {
   "$defs": {
+    "BodyPoseLabels": {
+      "description": "The primary person's body-pose labels, as argus-puppet derived them. Keypoints are never stored.",
+      "properties": {
+        "arms": {
+          "enum": [
+            "up",
+            "out",
+            "down",
+            "mixed",
+            "unknown"
+          ],
+          "title": "Arms",
+          "type": "string"
+        },
+        "facing": {
+          "enum": [
+            "front",
+            "back",
+            "left",
+            "right",
+            "unknown"
+          ],
+          "title": "Facing",
+          "type": "string"
+        },
+        "stance": {
+          "enum": [
+            "standing",
+            "jumping",
+            "crouching",
+            "seated",
+            "lying",
+            "unknown"
+          ],
+          "title": "Stance",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stance",
+        "arms",
+        "facing"
+      ],
+      "title": "BodyPoseLabels",
+      "type": "object"
+    },
     "ClipResult": {
       "description": "Per-clip record of a speech scan, keyed by ``rel_path`` like :class:`ImageResult`.\n\nA measurement is ``None`` when the scan never got to it (the clip could not\nbe decoded, or the check was not asked for). The corpus labels\n(``speaker``, ``accent``, ``language``, ``age``) are copied verbatim from\nthe corpus metadata, never estimated.",
       "properties": {
@@ -1573,7 +1619,7 @@
           "title": "Manifest Path"
         },
         "manifest_version": {
-          "default": "2.6",
+          "default": "2.7",
           "title": "Manifest Version",
           "type": "string"
         },
@@ -2999,6 +3045,47 @@
           "title": "Phash",
           "type": "string"
         },
+        "pose_check": {
+          "anyOf": [
+            {
+              "enum": [
+                "ok",
+                "unusable",
+                "no_person",
+                "failed"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pose Check"
+        },
+        "pose_cluster": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pose Cluster"
+        },
+        "pose_labels": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BodyPoseLabels"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "primary_face_attributes": {
           "anyOf": [
             {
@@ -3211,6 +3298,9 @@
         "crop",
         "crop_source",
         "watermarks",
+        "pose_check",
+        "pose_labels",
+        "pose_cluster",
         "phash",
         "score_breakdown",
         "content_rating"
@@ -3418,9 +3508,32 @@
           "type": "string"
         },
         "manifest_version": {
-          "default": "2.6",
+          "default": "2.7",
           "title": "Manifest Version",
           "type": "string"
+        },
+        "pose_cluster": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pose Cluster"
+        },
+        "pose_labels": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BodyPoseLabels"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "primary_face": {
           "anyOf": [
@@ -3533,7 +3646,9 @@
         "split",
         "consent_release_sha256",
         "consent_record_sha256",
-        "provenance"
+        "provenance",
+        "pose_labels",
+        "pose_cluster"
       ],
       "title": "ManifestRow",
       "type": "object"
@@ -3770,6 +3885,181 @@
         "exposed_score"
       ],
       "title": "PersonDetection",
+      "type": "object"
+    },
+    "PoseCluster": {
+      "description": "One scan-level body-pose cluster from argus-puppet's ``POST /stats`` (average linkage over the scan).",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "medoid_rel_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Medoid Rel Path"
+        },
+        "share": {
+          "title": "Share",
+          "type": "number"
+        },
+        "size": {
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "size",
+        "share",
+        "medoid_rel_path"
+      ],
+      "title": "PoseCluster",
+      "type": "object"
+    },
+    "PoseConfig": {
+      "description": "Body pose from a remote argus-puppet server (see bodypose.py).\n\nThe server URL is process configuration (ARGUS_CURATOR_PUPPET_URL), never a\nrequest field, as for NudeNet. Same opt-out rule: None (default) = on\nwhenever the URL is set; True = required (the scan is refused without a\nURL); False = opted out. A finished scan records whether the stage ran as\nTrue or False.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        }
+      },
+      "title": "PoseConfig",
+      "type": "object"
+    },
+    "PoseSummary": {
+      "description": "What the body-pose stage found over the whole scan (see bodypose.py and docs/body-pose.md).\n\n``posed`` images came back from argus-puppet (``no_person`` of them with\nnobody in frame), ``failed`` did not. The rest comes from one ``POST\n/stats`` over every posed image, or is None/empty with ``skipped`` saying\nwhy (the scan is over the set cap, the server refused or failed the call,\nnothing was posed). ``stale``: rows were dropped since, so cluster sizes and\nshares are recounted from the rows left but ``diversity`` and\n``comparable_share`` are as measured.",
+      "properties": {
+        "clusters": {
+          "items": {
+            "$ref": "#/$defs/PoseCluster"
+          },
+          "title": "Clusters",
+          "type": "array"
+        },
+        "comparable_share": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Comparable Share"
+        },
+        "diversity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diversity"
+        },
+        "failed": {
+          "default": 0,
+          "title": "Failed",
+          "type": "integer"
+        },
+        "largest_cluster_share": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Largest Cluster Share"
+        },
+        "no_person": {
+          "default": 0,
+          "title": "No Person",
+          "type": "integer"
+        },
+        "posed": {
+          "default": 0,
+          "title": "Posed",
+          "type": "integer"
+        },
+        "puppet_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Puppet Version"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Skipped"
+        },
+        "stale": {
+          "default": false,
+          "title": "Stale",
+          "type": "boolean"
+        },
+        "usable": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usable"
+        }
+      },
+      "required": [
+        "puppet_version",
+        "posed",
+        "no_person",
+        "failed",
+        "skipped",
+        "usable",
+        "comparable_share",
+        "diversity",
+        "largest_cluster_share",
+        "clusters",
+        "stale"
+      ],
+      "title": "PoseSummary",
       "type": "object"
     },
     "PrefilterConfig": {
@@ -4016,6 +4306,9 @@
         "nsfw": {
           "$ref": "#/$defs/NsfwConfig"
         },
+        "pose": {
+          "$ref": "#/$defs/PoseConfig"
+        },
         "prefilter": {
           "$ref": "#/$defs/PrefilterConfig"
         },
@@ -4164,6 +4457,20 @@
           "title": "Passed",
           "type": "integer"
         },
+        "pose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PoseSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pose_config": {
+          "$ref": "#/$defs/PoseConfig"
+        },
         "prefilter_config": {
           "$ref": "#/$defs/PrefilterConfig"
         },
@@ -4294,6 +4601,8 @@
         "guard_config",
         "prefilter_config",
         "crop_config",
+        "pose_config",
+        "pose",
         "total",
         "passed",
         "rejected",
