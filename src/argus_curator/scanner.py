@@ -590,6 +590,8 @@ def scan_items(
     from argus_curator import guard as guard_mod
     from argus_curator import nsfw as nsfw_mod
 
+    profile = TargetProfile.model_validate(profile)  # a cortex speech profile is refused before scoring
+
     scan_id = scan_id or uuid.uuid4().hex
 
     def check_cancelled() -> None:
@@ -1122,7 +1124,9 @@ def scan_folder(
     to receive image batches as each phase produces them, and *cancelled* to
     be able to stop the scan (see :func:`scan_items`).
     """
-    profile = profile or TargetProfile()
+    # A cortex profile from a library caller converts; a speech one is refused here,
+    # before scoring, which has no meaning for it.
+    profile = TargetProfile.model_validate(profile) if profile is not None else TargetProfile()
     cfg = cfg or ScanConfig()
     faces_cfg = faces_cfg or FaceConfig()
 

@@ -24,8 +24,15 @@ from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from urllib.parse import urlsplit, urlunsplit
 
 import structlog
-from argus_cortex.moderation._http import _OPENER, CheckFailed, _split_credentials, post_json, service_url
-from argus_cortex.moderation.nudenet import _is_number, _multipart
+from argus_cortex.moderation._http import (
+    _OPENER,
+    CheckFailed,
+    _split_credentials,
+    is_number,
+    multipart_image,
+    post_json,
+    service_url,
+)
 from PIL import Image, ImageOps
 
 from argus_curator.models import WatermarkDetection
@@ -55,10 +62,10 @@ def to_detections(raw: list) -> list[WatermarkDetection]:
         label, score, box = d.get("class"), d.get("score"), d.get("box")
         if (
             not isinstance(label, str)
-            or not _is_number(score)
+            or not is_number(score)
             or not isinstance(box, list)
             or len(box) != 4
-            or not all(_is_number(v) for v in box)
+            or not all(is_number(v) for v in box)
             or box[2] <= 0
             or box[3] <= 0
         ):
@@ -78,7 +85,7 @@ class WatermarkClient:
         self.timeout = timeout
 
     def check(self, data: bytes, filename: str = "image.jpg") -> list[WatermarkDetection]:
-        body, content_type = _multipart(data, filename)
+        body, content_type = multipart_image(data, filename)
         payload = post_json(self.url, body, content_type, self.timeout, "watermark detector", WatermarkCheckFailed)
         prediction = payload.get("prediction") if isinstance(payload, dict) else None
         if not (isinstance(payload, dict) and payload.get("success") is True and isinstance(prediction, list)):

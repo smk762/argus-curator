@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`selection.SPLIT_GROUP_KEYS`) over a generic `split_held_out`, so other
   kinds of item can reuse it. This replaces argus-mint's own ranking and split.
 - **Manifest 2.4: rows carry `split`** (`train` / `held_out`, or null). Additive.
+- **Manifest 2.5: `target_profile` carries `modality`**, always `image`. Additive.
 - **A caller-supplied identity reference (#130).** `faces.reference_embedding`
   takes a centroid instead of `faces.reference_paths`, and
   `faces.reference_embedding()` builds one from images outside the set (a
@@ -44,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **argus-cortex 0.12 (`>=0.12,<0.13`, all three pins).** Cortex's
+  `TargetProfile` gained `modality` and speech categories; curator's
+  `TargetProfile` is now a subclass narrowed to `modality="image"` and the
+  image `TargetCategory`, so a speech profile is refused (a 422 over HTTP, a
+  `ValidationError` from `scan_folder`) instead of reaching the face-count
+  rules, and the manifest's `target_category` enum stays image-only. A cortex
+  image profile passed to `scan_folder` converts. EraX and the watermark
+  client use cortex's `moderation._http.is_number` / `multipart_image`
+  (moved from `nudenet._is_number` / `_multipart` in cortex 0.11).
 - **Kept images are always ranked.** Exports without `face_source` used to
   write the manifest in scan order (or the diversity pick's order with
   `max_keep`); every manifest is now in `rank` order.

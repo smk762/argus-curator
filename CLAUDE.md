@@ -48,6 +48,7 @@ Each rule names what enforces it. A new rule nothing checks yet is marked **UNEN
 | InsightFace's face models built outside the GPU lease (`FaceAnalysis()` builds its sessions in the constructor, not in `prepare()`) | `tests/test_bodies.py::test_face_sessions_are_built_under_the_gpu_lease` |
 | A CUDA session (curator's own or InsightFace's) built without the capped arena (`kSameAsRequested` plus `gpu_mem_limit`), or an attribute model run on a whole crowd at once (#189: one scan held ~20 GB on 512 MB leases) | `tests/test_gpu_lease.py::test_curators_own_sessions_are_built_with_the_cap`, `::test_insightface_sessions_are_built_with_the_cap`, `::test_attribute_models_run_a_crowd_in_fixed_size_chunks` |
 | A server that starts with an unknown `minor-exposed` mode (no fallback) | `tests/test_server.py::test_unknown_minor_exposed_mode_refuses_to_start` |
+| A speech `TargetProfile` scored as an image one (the face-count rules have no speech category), or a speech category in a manifest | `tests/test_scanner.py::test_a_speech_target_profile_is_refused_before_scoring`, `tests/test_server.py::test_scan_with_a_speech_target_profile_is_422`; the manifest snapshot's image-only `target_category` enum |
 | A prefiltered image kept or exported | `tests/test_server.py::test_prefiltered_images_are_never_kept_or_exported` |
 | A train/held-out split putting one group (identity, or any `SPLIT_GROUP_KEYS` key) in both parts | `tests/test_rank_split.py::test_no_group_lands_in_both_parts` |
 | `/scan/{id}/select` and export keeping different rows, or the same rows in a different order, for the same fields (both run `selection.plan_selection`) | `tests/test_rank_split.py::test_select_and_export_keep_the_same_rows_in_the_same_order` |
@@ -63,7 +64,7 @@ Each rule names what enforces it. A new rule nothing checks yet is marked **UNEN
 
 - **The CLI is deliberately unconstrained**: it's your own shell. Containment and the move/delete gates are the server's.
 - **`MANIFEST_VERSION` moves independently of the package version.** Bump the minor for an additive row change, the major for a breaking one, then `make manifest-snapshot`.
-- **`TargetProfile` and its taxonomy are argus-cortex's** (`argus_cortex.taxonomy`), re-exported from `models.py`. Every stage reads the profile verbatim, so change it in cortex, not here.
+- **`TargetProfile` and its taxonomy are argus-cortex's** (`argus_cortex.taxonomy`). `models.py` subclasses it only to narrow `modality` to `image` and `target_category` to `TargetCategory` (curator curates images); every field and validator is cortex's. Every stage reads the profile verbatim, so change it in cortex, not here.
 - **Versioning is git-tag-derived** (`hatch-vcs`). Never hand-edit a version; `_version.py` is generated. Tag `vX.Y.Z` to release (PyPI via OIDC).
 - CI (argus-ci's reusable `python-ci.yml`) runs on pushes and PRs to `dev` and `main`: `ruff check`, `ruff format --check`, tests, build and `argus-curator schema --check`. `make check` covers most of that locally; also run `make fmt`.
 

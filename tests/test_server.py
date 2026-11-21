@@ -285,6 +285,16 @@ def test_prefiltered_images_are_never_kept_or_exported(contained: tuple[TestClie
     assert not (exports / "named" / "personA").exists()
 
 
+def test_scan_with_a_speech_target_profile_is_422(contained: tuple[TestClient, Path]) -> None:
+    client, _ = contained
+    resp = client.post(
+        "/scan/folder",
+        json={"folder": "", "target_profile": {"modality": "speech"}, "faces": {"enabled": False}},
+    )
+    assert resp.status_code == 422
+    assert "curates images" in resp.text
+
+
 def test_scan_then_paginate_then_export(contained: tuple[TestClient, Path]) -> None:
     client, exports = contained
     resp = client.post(

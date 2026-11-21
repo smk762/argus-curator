@@ -30,6 +30,10 @@ _ALLOWED: dict[tuple[str, str], str] = {
     ("guard.py", "ADULT_CAUTIOUS_POLICY"): "built from cortex's policy_text(), named for curator's callers",
     ("guard.py", "ADULT_CINEMATIC_POLICY"): "built from cortex's policy_text(), named for curator's callers",
     ("guard_context.py", "parse_xmp"): "wraps cortex's parse_xmp into (keywords, description)",
+    (
+        "models.py",
+        "TargetProfile",
+    ): "a subclass of cortex's, narrowed to modality='image'; every field and validator inherited",
     ("models.py", "wire_schema"): "cortex's wire_schema bound to curator's WIRE_MODELS and title",
 }
 

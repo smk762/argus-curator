@@ -7,7 +7,7 @@ of the suite reads: argus-lens batch-captions it (an upload to its
 builds training sets from it. Curator and lens share one `TargetProfile`, so a
 manifest written here is captioned downstream with no remapping.
 
-This page describes manifest **2.4**, the version current releases write, and
+This page describes manifest **2.5**, the version current releases write, and
 what changed in each earlier version.
 
 ## Where it is written
@@ -36,12 +36,13 @@ Pretty-printed here; in the file each row is one line.
 
 ```json
 {
-  "manifest_version": "2.4",
+  "manifest_version": "2.5",
   "rel_path": "shoots/2026-07/IMG_0412.jpg",
   "abs_path": "/data/images/shoots/2026-07/IMG_0412.jpg",
   "exported_path": "shoots/2026-07/IMG_0412.jpg",
   "exported_abs_path": "/data/out/training-set-v1/shoots/2026-07/IMG_0412.jpg",
   "target_profile": {
+    "modality": "image",
     "target_style": "photo",
     "target_backend": "sdxl",
     "checkpoint": null,
@@ -69,9 +70,9 @@ Pretty-printed here; in the file each row is one line.
 }
 ```
 
-## Row fields (2.4)
+## Row fields (2.5)
 
-Every key is always present in a 2.4 row; a field with no value is written as
+Every key is always present in a 2.5 row; a field with no value is written as
 `null`, not left out.
 
 | Field | Type | Since | Meaning |
@@ -95,12 +96,16 @@ Every key is always present in a 2.4 row; a field with no value is written as
 
 | Field | Type | Values |
 |---|---|---|
+| `modality` | string | always `image` (2.5+; absent before, read as `image`) |
 | `target_style` | string | `photo` or `anime` |
 | `target_backend` | string or null | the diffusion backend family, e.g. `sdxl`, `flux-dev-1` |
 | `checkpoint` | string or null | the target checkpoint, when given |
 | `target_category` | string | `identity`, `wardrobe`, `pose_composition`, `setting` or `concept` |
 
-The style and category values are argus-cortex's shared taxonomy.
+The style and category values are argus-cortex's shared taxonomy. Curator
+curates images, so its profile is cortex's narrowed to the image modality: a
+speech profile (`modality: "speech"`) is refused at the request, and a
+manifest never carries a speech category.
 
 ### `crop`
 
@@ -178,6 +183,7 @@ The export response carries the same mappings as `exported_paths` and
 | 2.2 | 0.14.0 | Adds `crop`. |
 | 2.3 | 0.15.0 | Adds `primary_face` and `set_age`. |
 | 2.4 | unreleased | Adds `split`. |
+| 2.5 | unreleased | Adds `target_profile.modality`, always `image` (argus-cortex 0.12). |
 
 2.0 is a new major because a 1.x consumer that derives destinations from
 `rel_path`, or trusts every row to name a file on disk, misreads a 2.x manifest.

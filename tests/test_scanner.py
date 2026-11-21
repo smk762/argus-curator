@@ -584,3 +584,24 @@ def test_a_nudenet_failure_stops_face_detection_at_its_next_image(
     with pytest.raises(RuntimeError, match="NudeNet answered 500"):
         scan_folder(dataset, faces_cfg=FaceConfig(enabled=True), nsfw_cfg=NsfwConfig())
     assert len(reached) < 500
+
+
+def test_a_speech_target_profile_is_refused_before_scoring(tmp_path: Path) -> None:
+    """Curator scores images: a cortex speech profile never reaches the face-count rules."""
+    from argus_cortex.taxonomy import TargetProfile as CortexTargetProfile
+    from pydantic import ValidationError
+
+    Image.new("RGB", (64, 64)).save(tmp_path / "a.png")
+    with pytest.raises(ValidationError, match="curates images"):
+        scan_folder(tmp_path, CortexTargetProfile(modality="speech"), faces_cfg=FaceConfig(enabled=False))
+    with pytest.raises(ValidationError, match="curates images"):
+        TargetProfile(modality="speech")
+
+
+def test_a_cortex_image_profile_converts() -> None:
+    from argus_cortex.taxonomy import TargetProfile as CortexTargetProfile
+
+    profile = TargetProfile.model_validate(CortexTargetProfile(target_category="wardrobe"))
+    assert isinstance(profile, TargetProfile)
+    assert isinstance(profile, CortexTargetProfile)
+    assert (profile.modality, profile.target_category) == ("image", "wardrobe")
