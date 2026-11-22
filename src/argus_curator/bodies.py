@@ -154,6 +154,9 @@ def body_crop(
     if w < min_size or h < min_size:
         return None
     crop = np.array(image.crop((x1, y1, x2, y2)).convert("RGB"))
+    # What was blacked out, kept apart from the pixels: a black backdrop or a
+    # zero channel in the image itself is not masked area.
+    masked = np.zeros((h, w), dtype=bool)
     others = [(_xyxy(f), False) for f in faces_xywh]
     others += [(np.asarray(b, np.float64), True) for i, b in enumerate(bodies) if i != index]
     for box, is_person in others:
@@ -175,7 +178,8 @@ def body_crop(
             if h - oy2 < h * CROP_ROUND_RATE:
                 oy2 = h
         crop[oy1:oy2, ox1:ox2] = 0
-    if np.count_nonzero(crop) / crop.size < min_visible:
+        masked[oy1:oy2, ox1:ox2] = True
+    if 1.0 - masked.mean() < min_visible:
         return None
     return Image.fromarray(crop)
 

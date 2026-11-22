@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import re
 import time
@@ -218,6 +219,8 @@ def _retry_after(exc: BaseException) -> float | None:
         wait = float(raw) if raw is not None else 1.0
     except ValueError:
         wait = 1.0
+    if math.isnan(wait):  # float() takes "nan", and max()/min() pass NaN straight through
+        wait = 1.0
     return min(max(wait, 0.0), MAX_RETRY_WAIT_S)
 
 
@@ -344,7 +347,9 @@ def apply_stats(results: list[ImageResult], summary: PoseSummary, payload: objec
         )
         known.add(c["id"])
     for item in items:
-        if not isinstance(item, dict) or (row := by_rel.get(item.get("image"))) is None:  # type: ignore[arg-type]
+        image = item.get("image") if isinstance(item, dict) else None
+        # A list or object for "image" is unhashable: skip the row like any other malformed one.
+        if not isinstance(image, str) or (row := by_rel.get(image)) is None:
             continue
         if row.pose_check not in ("ok", "unusable"):
             continue  # nobody in frame: nothing to cluster or label

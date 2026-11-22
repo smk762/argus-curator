@@ -130,6 +130,19 @@ def test_small_or_mostly_masked_bodies_are_not_used() -> None:
     assert bodies.body_crop(image, body, 0, [big_face], min_size=50, min_visible=0.2) is not None
 
 
+def test_dark_pixels_in_the_image_do_not_count_as_masked() -> None:
+    """Visible area is what the masking left, not the non-zero pixels: a black
+    backdrop or a saturated colour (a zero channel) is still visible body."""
+    body = np.array([[0, 0, 200, 200]], np.float32)
+    black = Image.new("RGB", (200, 200), (0, 0, 0))
+    assert bodies.body_crop(black, body, 0, [], min_size=50, min_visible=0.4) is not None
+    red = Image.new("RGB", (200, 200), (255, 0, 0))  # two of three channels at 0
+    assert bodies.body_crop(red, body, 0, [], min_size=50, min_visible=0.4) is not None
+    small_face = [0.0, 0.0, 200.0, 100.0]  # half the crop masked: half is still visible
+    assert bodies.body_crop(black, body, 0, [small_face], min_size=50, min_visible=0.4) is not None
+    assert bodies.body_crop(black, body, 0, [small_face], min_size=50, min_visible=0.6) is None
+
+
 def test_mivolo_person_channels_carry_the_body_or_the_absent_image() -> None:
     face, body = Image.new("RGB", (60, 80), (200, 100, 50)), Image.new("RGB", (100, 300), (10, 200, 30))
     batch = mivolo.preprocess([face, face], [body, None])
