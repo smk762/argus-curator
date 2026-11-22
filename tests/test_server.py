@@ -626,6 +626,55 @@ def test_image_block_holds_for_any_spelling_of_the_path(tmp_path: Path) -> None:
         assert client.get("/image", params=params).status_code == 403, params
 
 
+def test_image_block_fails_closed_on_a_scan_file_that_does_not_parse(tmp_path: Path) -> None:
+    import json
+
+    root, cache = _seed_delete_scan(tmp_path)
+    scan_file = cache / "scan.json"
+    data = json.loads(scan_file.read_text())
+    data["total"] = "not a number"  # another schema version, or a hand edit
+    scan_file.write_text(json.dumps(data))
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    # Every file it names stays blocked.
+    assert client.get("/image", params={"path": "minor.png"}).status_code == 403
+    assert client.get("/image", params={"path": "minor-b.png"}).status_code == 403
+
+
+def test_image_block_fails_closed_on_a_scan_file_that_names_nothing_legibly(tmp_path: Path) -> None:
+    root, cache = _seed_delete_scan(tmp_path)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 200
+    (cache / "truncated.json").write_text('{"scan_id": "truncated", "results": [{"rel_pa')
+    # It could name any file, so none is served until it is fixed or deleted.
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 403
+    (cache / "truncated.json").unlink()
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 200
+
+
+def test_image_block_sees_a_re_save_within_one_mtime_tick(tmp_path: Path) -> None:
+    import os
+
+    from argus_curator.store import ScanStore
+
+    root, cache = _seed_delete_scan(tmp_path)
+    scan_file = cache / "scan.json"
+    tick = 1_700_000_000 * 1_000_000_000  # a whole second, as a coarse filesystem stores it
+    os.utime(scan_file, ns=(tick, tick))
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 200
+
+    store = ScanStore(cache)
+    summary = store.load("scan")
+    assert summary is not None
+    row = next(r for r in summary.results if r.rel_path == "adult.png")
+    row.primary_face_attributes.age_years = 10.0
+    row.faces[0].attributes.age_years = 10.0
+    store.save(summary)
+    os.utime(scan_file, ns=(tick, tick))  # re-saved in the same tick
+
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 403
+
+
 def test_thumb_of_an_under_18_exposed_frame_is_blurred_by_the_server(tmp_path: Path) -> None:
     import io
 

@@ -284,14 +284,20 @@ class _MinorBlockList:
     ``/image`` and ``/thumb`` decide from the *resolved* target, never the raw
     query string, so ``./x.jpg``, ``sub/../x.jpg``, a symlink, or omitting
     ``scan_id`` all land on the same verdict. Every cached scan counts, not only
-    the one a request names. Each scan file is parsed once per mtime.
+    the one a request names. Each scan file is parsed once per version (its
+    mtime in ns, size and inode, so a re-save in the same coarse mtime tick still
+    counts as new).
+
+    It fails closed: a scan file that does not parse blocks every file it names,
+    and one that names nothing legibly (truncated, not JSON) blocks every file
+    until it is fixed or deleted. ``None`` in the cache stands for that.
     """
 
     def __init__(self, store: ScanStore, rule: Any) -> None:
         self._store = store
         self._rule = rule
         self._lock = threading.Lock()
-        self._by_file: dict[Path, tuple[float, frozenset[Path]]] = {}
+        self._by_file: dict[Path, tuple[tuple[int, int, int], frozenset[Path] | None]] = {}
 
     def _scan_paths(self, summary: ScanSummary) -> frozenset[Path]:
         blocked: set[Path] = set()
@@ -305,29 +311,57 @@ class _MinorBlockList:
                     continue
         return frozenset(blocked)
 
+    @staticmethod
+    def _named_paths(raw: str) -> frozenset[Path] | None:
+        """Every file an unparseable scan file names, whatever its verdict; ``None`` when it names none legibly."""
+        try:
+            data = json.loads(raw)
+            folder = data.get("folder")
+            blocked: set[Path] = set()
+            for row in data["results"]:
+                for raw_path in (
+                    row.get("abs_path"),
+                    row.get("rel_path") and folder and str(Path(folder) / row["rel_path"]),
+                ):
+                    if raw_path:
+                        blocked.add(Path(raw_path).resolve())
+        except Exception:
+            return None
+        return frozenset(blocked)
+
     def blocked(self, target: Path) -> bool:
         resolved = target.resolve()
         seen: set[Path] = set()
         for path in self._store.cache_dir.glob("*.json"):
             seen.add(path)
             try:
-                mtime = path.stat().st_mtime
+                st = path.stat()
             except OSError:  # removed meanwhile
                 continue
+            version = (st.st_mtime_ns, st.st_size, st.st_ino)
             with self._lock:
                 cached = self._by_file.get(path)
-            if cached is None or cached[0] != mtime:
+            if cached is None or cached[0] != version:
+                prior = cached[1] if cached is not None else frozenset()
                 # Parsed outside the lock: a large scan re-saved every few seconds
                 # while it runs must not hold up every other /thumb and /image.
                 try:
-                    summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
-                    cached = (mtime, self._scan_paths(summary))
-                except Exception as exc:  # an unreadable cache file names no file to block
+                    raw = path.read_text(encoding="utf-8")
+                except FileNotFoundError:  # removed meanwhile
+                    continue
+                except OSError as exc:
                     logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
-                    cached = (mtime, frozenset())
+                    raw = ""
+                try:
+                    cached = (version, self._scan_paths(ScanSummary.model_validate_json(raw)))
+                except Exception as exc:
+                    # Fail closed: keep what it blocked before, plus every file it still names.
+                    logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
+                    named = self._named_paths(raw)
+                    cached = (version, None if named is None or prior is None else prior | named)
                 with self._lock:
                     self._by_file[path] = cached
-            if resolved in cached[1]:
+            if cached[1] is None or resolved in cached[1]:
                 return True
         with self._lock:
             for gone in set(self._by_file) - seen:
