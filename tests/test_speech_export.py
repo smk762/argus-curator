@@ -25,6 +25,7 @@ from argus_curator.export import export_selection
 from argus_curator.models import (
     SECOND_VOICE_MAX_DISTANCE,
     VOICE_CONSENT_MAX_DISTANCE,
+    ClipResult,
     ExportRequest,
     ScanSummary,
     SpeechConfig,
@@ -364,6 +365,22 @@ def test_hours_caps_and_accent_balance(tmp_path: Path) -> None:
     assert {c.accent for c in plan(accents=["pt"]).chosen} == {"pt"}
     floor = plan(min_hours_per_speaker=4 * clip_s / 3600)
     assert not floor.chosen and set(floor.keep_reason.values()) == {"speaker-under-min-hours"}
+
+
+def test_unlabelled_accents_never_set_the_accent_balance() -> None:
+    def row(name: str, accent: str | None) -> ClipResult:
+        return ClipResult(
+            rel_path=name, abs_path=f"/x/{name}", passed=True, score=0.9, transcript="hi",
+            duration_s=1.0, speaker=name, accent=accent,
+        )  # fmt: skip
+
+    clips = [row(f"br{i}", "br") for i in range(4)] + [row(f"pt{i}", "pt") for i in range(3)] + [row("u0", None)]
+    plan = speech_select.plan_speech_selection(
+        clips, ExportRequest(dest=".", speech={**CORPUS, "balance_accents": True})
+    )
+    # The cap is pt's three clips, not the one unlabelled clip's.
+    kept = [c.accent for c in plan.chosen]
+    assert (kept.count("br"), kept.count("pt"), kept.count(None)) == (3, 3, 1)
 
 
 def test_max_keep_takes_speakers_in_turn(tmp_path: Path) -> None:

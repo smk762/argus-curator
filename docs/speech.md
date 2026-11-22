@@ -416,7 +416,7 @@ least `min_score` and isn't a near-duplicate (unless `keep_similar`). Then:
 | `exclude_language_mismatch` | drop clips whose corpus language label the language-ID model disputes (needs `language_id` on the scan) | `language-mismatch` |
 | `min_hours_per_speaker` | drop a speaker with fewer hours | `speaker-under-min-hours` |
 | `max_hours_per_speaker` | cap each speaker, best clips first | `speaker-cap` |
-| `max_hours_per_accent`, `balance_accents` | cap each accent (at the smallest accent's hours with `balance_accents`), taking clips from its speakers in turn | `accent-cap` |
+| `max_hours_per_accent`, `balance_accents` | cap each accent (at the smallest labelled accent's hours with `balance_accents`: clips with no accent label are capped too but never set it), taking clips from its speakers in turn | `accent-cap` |
 
 `max_keep` then takes speakers in turn, each giving its best remaining clip
 (`max-keep`), so a cap doesn't hand the set to a few voices. A clip whose

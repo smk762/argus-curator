@@ -219,6 +219,24 @@ def test_a_silero_model_that_is_not_the_pinned_file_is_refused(tmp_path: Path, m
     assert str(tmp_path) not in str(exc.value)
 
 
+def test_a_same_size_swap_with_its_mtime_restored_is_hashed_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "silero.onnx"
+    model.write_bytes(b"pinned model")
+    monkeypatch.setattr(silero, "_verified", {})
+    monkeypatch.setattr(silero, "MODEL_SHA256", runtime.sha256(model))
+    silero._verify(model)
+    before = model.stat()
+    swap = tmp_path / "swap.onnx"
+    swap.write_bytes(b"swapped mode")  # same size
+    os.utime(swap, ns=(before.st_atime_ns, before.st_mtime_ns))
+    os.replace(swap, model)
+    assert (model.stat().st_size, model.stat().st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    with pytest.raises(ModelUnavailable, match="not the pinned file"):
+        silero._verify(model)
+
+
 # ---------------------------------------------------------------------------
 # The mask
 # ---------------------------------------------------------------------------
@@ -255,6 +273,15 @@ def test_the_snr_split_keeps_unsure_frames_and_a_guard_band_off_the_noise_side()
     guarded = speech.snr_db(db, mask, silero.guarded(mask))
     assert plain is not None and guarded is not None
     assert guarded == pytest.approx(60.0, abs=0.1) and plain < 45
+
+
+def test_the_guard_band_keeps_the_length_of_a_clip_shorter_than_its_kernel() -> None:
+    frames = np.array([False, True, False])
+    out = silero.guarded(frames, guard=5)
+    assert out.shape == frames.shape and out.all()
+    long = np.zeros(20, dtype=bool)
+    long[10] = True
+    assert silero.guarded(long, guard=2).tolist() == [8 <= i <= 12 for i in range(20)]
 
 
 @pytest.mark.skipif(
