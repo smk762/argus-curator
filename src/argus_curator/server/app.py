@@ -359,26 +359,27 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
     direct_images = 0
     try:
         for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
-            if entry.is_dir() and not entry.name.startswith("."):
-                sub_rel = str(Path(rel) / entry.name) if rel else entry.name
-                try:
-                    subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
-                    abs_path = str(entry.resolve())
-                except OSError as exc:
-                    # One unreadable child (lost+found, a dead mount) must not hide its siblings.
-                    logger.warning("browse_folder_unreadable", rel_path=sub_rel, error=str(exc))
-                    continue
-                folders.append(
-                    {
-                        "name": entry.name,
-                        "rel_path": sub_rel,
-                        "abs_path": abs_path,
-                        "image_count": _count_images(entry),
-                        "subfolder_count": subfolders,
-                    }
-                )
-            elif entry.is_file() and entry.suffix.lower() in SUPPORTED_EXTS:
-                direct_images += 1
+            sub_rel = str(Path(rel) / entry.name) if rel else entry.name
+            # Everything touching the child inside the try: one unreadable child
+            # (lost+found, a dead or stale mount) must not hide its siblings.
+            try:
+                if entry.is_dir() and not entry.name.startswith("."):
+                    folders.append(
+                        {
+                            "name": entry.name,
+                            "rel_path": sub_rel,
+                            "abs_path": str(entry.resolve()),
+                            "image_count": _count_images(entry),
+                            "subfolder_count": sum(
+                                1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith(".")
+                            ),
+                        }
+                    )
+                elif entry.is_file() and entry.suffix.lower() in SUPPORTED_EXTS:
+                    direct_images += 1
+            except OSError as exc:
+                logger.warning("browse_folder_unreadable", rel_path=sub_rel, error=str(exc))
+                continue
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"cannot read directory: {exc}") from exc
 

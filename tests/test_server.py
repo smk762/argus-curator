@@ -113,6 +113,27 @@ def test_one_unreadable_folder_does_not_hide_its_siblings(
     assert "personA" in names and "personB" not in names
 
 
+def test_a_stale_child_mount_does_not_hide_its_siblings(
+    dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    real_is_dir = Path.is_dir
+
+    def is_dir(self: Path, *args: object, **kwargs: object) -> bool:
+        # is_dir swallows ENOENT and the like, not ESTALE or EIO.
+        if self.name == "personB":
+            raise OSError(errno.ESTALE, "Stale file handle", str(self))
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    client = TestClient(create_app(cache_dir=str(tmp_path / "c2"), source_root=str(dataset)))
+    resp = client.get("/folders")
+    assert resp.status_code == 200
+    names = {f["name"] for f in resp.json()["folders"]}
+    assert "personA" in names and "personB" not in names
+
+
 def test_folders_requires_source_root(client: TestClient) -> None:
     assert client.get("/folders").status_code == 400
 
