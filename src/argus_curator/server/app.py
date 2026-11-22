@@ -335,6 +335,22 @@ class _MinorBlockList:
         return False
 
 
+def _write_new(dest: Path, data: bytes) -> None:
+    """Write *data* to a file that must not exist yet.
+
+    ``O_EXCL`` makes the create atomic (a concurrent upload of the same name
+    raises ``FileExistsError``) and refuses any symlink at *dest*, dangling or not,
+    so the write can never land outside the folder through one.
+    """
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
+
+
 def _count_images(directory: Path, cap: int = _COUNT_CAP) -> int:
     """Recursive count of supported images under *directory* (capped)."""
     n = 0
@@ -1457,7 +1473,8 @@ def create_app(
                 skipped.append(name)
                 continue
             dest = target / name
-            if dest.exists():
+            # is_symlink too: exists() follows a link, so a dangling one reads as free.
+            if dest.exists() or dest.is_symlink():
                 skipped.append(name)
                 continue
             try:
@@ -1467,8 +1484,10 @@ def create_app(
             except BadInput as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from None
             try:
-                await asyncio.to_thread(dest.write_bytes, data)
+                await asyncio.to_thread(_write_new, dest, data)
                 saved += 1
+            except FileExistsError:  # another upload, or a link, took the name meanwhile
+                skipped.append(name)
             except OSError as exc:
                 errors.append({"name": name, "detail": f"cannot save: {exc}"})
 

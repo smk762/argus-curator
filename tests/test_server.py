@@ -753,6 +753,38 @@ def test_upload_skips_existing_names(upload_setup: tuple[TestClient, Path]) -> N
     assert (existing / "a.png").read_bytes() == b"original"  # not overwritten
 
 
+def test_upload_never_writes_through_a_dangling_symlink(upload_setup: tuple[TestClient, Path]) -> None:
+    client, root = upload_setup
+    outside = root.parent / "outside.png"
+    (root / "uploads").mkdir()
+    (root / "uploads" / "a.png").symlink_to(outside)
+
+    resp = client.post("/upload", data={"folder": "uploads"}, files=[("files", ("a.png", _png_bytes(), "image/png"))])
+    assert resp.status_code == 200
+    assert resp.json()["skipped"] == ["a.png"]
+    assert not outside.exists()
+
+
+def test_upload_never_overwrites_a_file_saved_while_it_read(
+    upload_setup: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.server import app as app_mod
+
+    client, root = upload_setup
+    real_read_upload = app_mod.read_upload
+
+    async def read_upload(item, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        # A concurrent upload of the same name lands after the existence check.
+        (root / "uploads" / "a.png").write_bytes(b"first")
+        return await real_read_upload(item, *args, **kwargs)
+
+    monkeypatch.setattr(app_mod, "read_upload", read_upload)
+    resp = client.post("/upload", data={"folder": "uploads"}, files=[("files", ("a.png", _png_bytes(), "image/png"))])
+    assert resp.status_code == 200
+    assert resp.json()["skipped"] == ["a.png"]
+    assert (root / "uploads" / "a.png").read_bytes() == b"first"
+
+
 def test_thumb_path_traversal_blocked(contained: tuple[TestClient, Path]) -> None:
     client, _exports = contained
     summary = client.post(
