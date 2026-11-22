@@ -40,7 +40,14 @@ from argus_cortex.provenance import Provenance
 
 from argus_curator import speakers
 from argus_curator.consent import ConsentRefused, read_record
-from argus_curator.export import REPORT_NAME, RUN_STATS_NAME, ProgressFn, _plan_dest_paths, _transfer_one
+from argus_curator.export import (
+    REPORT_NAME,
+    RUN_STATS_NAME,
+    ProgressFn,
+    _plan_dest_paths,
+    _transfer_one,
+    _write_text_atomically,
+)
 from argus_curator.models import (
     ClipResult,
     ExportRequest,
@@ -233,15 +240,8 @@ def _is_source(dst: Path, src: Path) -> bool:
 
 
 def _write_transcript(path: Path, text: str) -> None:
-    """Write *text* to *path* through a temp file and a rename, so a link at *path* is replaced, never followed."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_text(text + "\n", encoding="utf-8")
-        tmp.replace(path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+    """Write *text* to *path* so a link at *path*, or at the temp file, is replaced, never followed."""
+    _write_text_atomically(path, text + "\n")
 
 
 def write_manifest(rows: list[SpeechManifestRow], path: Path) -> None:

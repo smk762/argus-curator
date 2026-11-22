@@ -1208,3 +1208,18 @@ def test_real_speaker_model_embeds_a_clip() -> None:  # pragma: no cover - needs
     a = speakers.embed(session, voice(3.0, seed=1), 16000, "cpu")
     b = speakers.embed(session, voice(3.0, seed=1), 16000, "cpu")
     assert a.shape == (speakers.EMBEDDING_DIM,) and float(a @ b) > 0.99
+
+
+def test_a_transcript_never_writes_through_a_link_planted_at_its_temp_name(tmp_path: Path) -> None:
+    from argus_curator import speech_export
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    out = tmp_path / "out"
+    out.mkdir()
+    target = out / "clip.txt"
+    # The temp name a writer could predict: the old one was .<name>.<pid>.tmp.
+    (out / f".{target.name}.{os.getpid()}.tmp").symlink_to(victim)
+    speech_export._write_transcript(target, "a line")
+    assert victim.read_text() == "keep me"
+    assert target.read_text(encoding="utf-8") == "a line\n" and not target.is_symlink()
