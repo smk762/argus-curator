@@ -112,6 +112,16 @@ def test_every_failed_check_is_listed_in_order(tmp_path: Path) -> None:
     assert row.reject_reason == "sample_rate" and "8000 Hz" in row.reject_detail
 
 
+def test_min_snr_db_on_a_clip_with_no_speech_frames_names_that_not_a_none_snr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _with_line(clip(tmp_path / "a.wav"))
+    monkeypatch.setattr(speech, "speech_mask", lambda mono, rate, db, *a: (np.zeros(len(db), bool),) * 2)
+    (row,) = scan_speech_folder(tmp_path, cfg=SpeechConfig(min_snr_db=10.0)).clips
+    assert row.snr_db is None and row.reject_reason == "snr"
+    assert "None" not in str(row.reject_detail) and "no speech" in str(row.reject_detail)
+
+
 def test_a_long_file_is_never_read_past_its_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A file bigger than max_duration_s could hold is a duration reject, and open_audio never sees it."""
     clip(tmp_path / "x.wav", 2.0)
