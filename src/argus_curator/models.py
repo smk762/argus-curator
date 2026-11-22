@@ -258,6 +258,10 @@ DEFAULT_NSFW_THRESHOLD = MIN_REPORTED_SCORE
 _INCLUDE_REJECTED_IGNORED = "Ignored: a rejected image is never kept. Accepted so older clients still validate."
 
 
+# Ceiling on a scan's worker threads (ScanConfig / SpeechConfig.max_workers):
+# a request sets it, and each worker holds a decoded file.
+MAX_WORKERS = 64
+
 SEMANTIC_DUPLICATES_NEED_EMBEDDINGS = "config.semantic_duplicates needs the scan's embeddings: turn embeddings on"
 ZERO_SHOT_NEEDS_EMBEDDINGS = "{what} needs the scan's embeddings: turn embeddings on"
 
@@ -297,11 +301,11 @@ class ScanConfig(BaseModel):
     junk_weight: float = Field(0.15, ge=0.0, le=1.0)
     junk_threshold: float = Field(0.8, ge=0.0, le=1.0)
 
-    # Composite score weights
-    weight_sharpness: float = 0.35
-    weight_resolution: float = 0.30
-    weight_artifact: float = 0.15
-    weight_subject: float = 0.20
+    # Composite score weights. A negative weight would invert its term, so it is refused.
+    weight_sharpness: float = Field(0.35, ge=0.0)
+    weight_resolution: float = Field(0.30, ge=0.0)
+    weight_artifact: float = Field(0.15, ge=0.0)
+    weight_subject: float = Field(0.20, ge=0.0)
 
     # Normalisation ceilings. 0 turns the term off (it scores 0); a negative
     # ceiling would invert the ranking, so it is refused.
@@ -309,10 +313,10 @@ class ScanConfig(BaseModel):
     resolution_ref: int = Field(1024, ge=0)
 
     # Diversity blend used by the optional selection cap (0=score, 1=spread)
-    diversity_weight: float = 0.40
+    diversity_weight: float = Field(0.40, ge=0.0, le=1.0)
 
-    # Runtime
-    max_workers: int = 4
+    # Runtime: 0 workers fails the scan, and one request must not spawn thousands.
+    max_workers: int = Field(4, ge=1, le=MAX_WORKERS)
 
 
 class FaceConfig(BaseModel):
@@ -1291,7 +1295,7 @@ class SpeechConfig(BaseModel):
     weight_speech_ratio: float = Field(0.2, ge=0.0)
     snr_ref_db: float = Field(40.0, gt=0.0)
 
-    max_workers: int = Field(4, ge=1)
+    max_workers: int = Field(4, ge=1, le=MAX_WORKERS)
 
     @model_validator(mode="after")
     def _ranges(self) -> SpeechConfig:

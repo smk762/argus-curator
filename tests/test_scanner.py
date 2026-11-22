@@ -524,6 +524,37 @@ def test_a_negative_normalisation_ceiling_is_refused(field: str) -> None:
     assert getattr(ScanConfig(**{field: 0}), field) == 0  # 0 turns the term off
 
 
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("weight_sharpness", -0.1),
+        ("weight_resolution", -0.1),
+        ("weight_artifact", -0.1),
+        ("weight_subject", -0.1),
+        ("diversity_weight", -0.1),
+        ("diversity_weight", 1.1),
+    ],
+)
+def test_a_weight_that_would_invert_the_ranking_is_refused(field: str, bad: float) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=field):
+        ScanConfig(**{field: bad})
+    assert getattr(ScanConfig(**{field: 0.0}), field) == 0.0
+
+
+@pytest.mark.parametrize("workers", [0, -1, 10_000])
+def test_max_workers_out_of_range_is_refused(workers: int) -> None:
+    from pydantic import ValidationError
+
+    from argus_curator.models import MAX_WORKERS, SpeechConfig
+
+    for model in (ScanConfig, SpeechConfig):
+        with pytest.raises(ValidationError, match="max_workers"):
+            model(max_workers=workers)
+        assert model(max_workers=MAX_WORKERS).max_workers == MAX_WORKERS
+
+
 def test_artifact_score_of_a_strip_averages_only_the_axis_it_measured() -> None:
     from argus_curator.scanner import _artifact_score
 
