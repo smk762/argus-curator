@@ -200,9 +200,12 @@ def test_lid_convert_refuses_sources_that_are_not_the_pinned_files(tmp_path: Pat
 
 
 def test_the_label_order_is_voxlingua107s() -> None:
-    assert language_id.N_LANGUAGES == 107 and len(set(language_id.CODES)) == 107
-    assert language_id.CODES[:3] == ("ab", "af", "am") and language_id.CODES[-1] == "zh"
-    assert language_id.CODES[language_id.CODES.index("pt")] == "pt"
+    codes = language_id.CODES
+    assert language_id.N_LANGUAGES == 107 and len(codes) == 107 and len(set(codes)) == 107
+    assert codes[:3] == ("ab", "af", "am") and codes[-1] == "zh"
+    # The model's classes are its codes in sorted order: a moved entry misaligns every logit after it.
+    assert codes == tuple(sorted(codes))
+    assert (codes.index("en"), codes.index("pt")) == (20, 75)
 
 
 # ---------------------------------------------------------------------------
@@ -382,10 +385,18 @@ def test_language_probabilities_are_never_stored(tmp_path: Path, fake_lid: objec
         if isinstance(node, list):
             return max([len(node), *(longest_list(v) for v in node)])
         if isinstance(node, dict):
-            return max([0, *(longest_list(v) for v in node.values())])
+            # A dict counts too: ``{"en": 0.91, "de": 0.03, ...}`` is the vector by another name.
+            return max([len(node), *(longest_list(v) for v in node.values())])
         return 0
 
     assert all(longest_list(c) < language_id.N_LANGUAGES for c in on_disk["clips"])
+    # Per clip: the top code and plain probabilities, never a mapping or a list.
+    for c in on_disk["clips"]:
+        assert c["language_predicted"] is None or isinstance(c["language_predicted"], str)
+        for key in ("language_confidence", "language_label_confidence"):
+            assert c[key] is None or isinstance(c[key], float)
+        assert not any(isinstance(v, dict | list) for k, v in c.items() if k.startswith("language"))
+    assert any(c["language_predicted"] for c in on_disk["clips"])  # the check ran: there was a vector to drop
     assert summary.embeddings == {}
 
 

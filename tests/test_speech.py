@@ -529,17 +529,35 @@ def test_cli_speech_scan_saves_the_scan_and_exports_nothing(tmp_path: Path, monk
 
 
 @pytest.mark.parametrize(
-    "extra", [["--copy-to", "out"], ["--faces"], ["--target-category", "identity"], ["--modality", "video"]]
+    ("extra", "error"),
+    [
+        # OUT is tmp_path/out: a relative path would land under pytest's working directory.
+        (["--copy-to", "OUT"], "a speech export names where its clips came from"),
+        (["--faces"], "a speech scan runs no image checks or image filters; drop --faces"),
+        (["--target-category", "identity"], "target_category: Input should be 'voice'"),
+    ],
+    ids=["copy-to", "faces", "target-category"],
 )
-def test_cli_speech_scan_refuses_image_options(tmp_path: Path, extra: list[str]) -> None:
+def test_cli_speech_scan_refuses_image_options(tmp_path: Path, extra: list[str], error: str) -> None:
     from typer.testing import CliRunner
 
     from argus_curator.cli import app
 
     clip(tmp_path / "a.wav")
+    extra = [str(tmp_path / "out") if arg == "OUT" else arg for arg in extra]
     result = CliRunner().invoke(app, ["scan", str(tmp_path), "--modality", "speech", *extra])
-    assert result.exit_code == 2, result.output
+    assert result.exit_code == 2 and error in result.output, result.output
     assert not (tmp_path / "out").exists()
+
+
+def test_cli_refuses_a_modality_it_does_not_scan(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from argus_curator.cli import app
+
+    clip(tmp_path / "a.wav")
+    result = CliRunner().invoke(app, ["scan", str(tmp_path), "--modality", "video"])
+    assert result.exit_code == 2 and "--modality must be image or speech" in result.output, result.output
 
 
 def test_cli_speech_options_need_the_speech_modality(tmp_path: Path) -> None:

@@ -416,8 +416,12 @@ def test_process_vram_counts_only_this_process_on_every_gpu(monkeypatch: pytest.
     # Not listed (the host PID differs inside a container): unknown, not zero.
     by_gpu[0], by_gpu[1] = [proc(pid=os.getpid() + 1, usedGpuMemory=9000 * mb)], []
     assert runtime.process_vram_mb() is None
-    # No NVML at all.
+    # No NVML at all: None even with this process listed again, so the answer comes
+    # from the missing NVML, not from the unlisted PID above.
+    by_gpu[0] = [proc(pid=os.getpid(), usedGpuMemory=700 * mb)]
     monkeypatch.setattr(runtime, "free_vram_mb", lambda device: None)
+    assert runtime.process_vram_mb() is None
+    monkeypatch.setitem(sys.modules, "pynvml", None)  # not installed: importing it raises
     assert runtime.process_vram_mb() is None
 
 

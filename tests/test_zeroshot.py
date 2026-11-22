@@ -232,7 +232,11 @@ def test_a_scan_asking_for_zero_shot_scores_without_embeddings_is_refused(body: 
 
 
 def test_the_weights_and_threshold_alone_turn_nothing_on() -> None:
-    assert ScanRequest(folder="", config={"junk_threshold": 0.3, "profile_fit_weight": 0.5, "junk_weight": 0.5})
+    # Accepted without embeddings, and nothing zero-shot switched on by the tuning alone.
+    req = ScanRequest(folder="", config={"junk_threshold": 0.3, "profile_fit_weight": 0.5, "junk_weight": 0.5})
+    assert (req.config.junk_threshold, req.config.profile_fit_weight, req.config.junk_weight) == (0.3, 0.5, 0.5)
+    assert not req.config.profile_fit and not req.config.junk_check and not req.prefilter.drop_junk
+    assert not req.embeddings.enabled
     with pytest.raises(ValidationError):
         ScanConfig(junk_threshold=1.5)
 
