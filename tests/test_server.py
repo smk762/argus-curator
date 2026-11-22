@@ -2109,6 +2109,44 @@ def test_deleting_a_scan_removes_a_half_written_save(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
+def test_a_scan_deleted_mid_load_reads_as_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    store.save(_summary("s", "/data", total=1))
+    real_read = Path.read_text
+
+    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+        # A delete lands between the existence check and the read.
+        self.unlink(missing_ok=True)
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert store.load("s") is None
+
+
+def test_list_meta_skips_a_scan_deleted_mid_listing_and_a_non_object_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    store.save(_summary("kept", "/data", total=2))
+    store.save(_summary("gone", "/data", total=1))
+    (tmp_path / "list.json").write_text("[1, 2]")
+    (tmp_path / "bad_total.json").write_text('{"total": "many"}')
+    real_read = Path.read_text
+
+    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+        text = real_read(self, *args, **kwargs)
+        if self.stem == "gone":  # deleted between the read and the stat
+            self.unlink()
+        return text
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert [row["scan_id"] for row in store.list_meta()] == ["kept"]
+
+
 def test_overlapping_saves_of_one_scan_each_use_their_own_temp_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

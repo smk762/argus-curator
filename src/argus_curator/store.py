@@ -143,9 +143,11 @@ class ScanStore:
 
     def load(self, scan_id: str) -> ScanSummary | None:
         path = self._path(scan_id)
-        if not path.exists():
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:  # never saved, or a delete got there first
             return None
-        summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
+        summary = ScanSummary.model_validate_json(raw)
         summary.embeddings.update(self.held_embeddings(scan_id))
         summary.voice_windows.update(self.held_voice_windows(scan_id))
         return summary
@@ -179,19 +181,20 @@ class ScanStore:
         """Scan id, folder, and image count, newest first. Skips unreadable files."""
         rows: list[dict[str, object]] = []
         for path in self.cache_dir.glob("*.json"):
+            # All of it inside the try: a delete can remove the file between the
+            # read and the stat, and a hand-edited file need not be an object.
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            updated = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
-            rows.append(
-                {
+                updated = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+                row = {
                     "scan_id": data.get("scan_id") or path.stem,
                     "folder": data.get("folder") or "",
                     "total": int(data.get("total") or 0),
                     "updated_at": updated,
                 }
-            )
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+            rows.append(row)
         rows.sort(key=lambda row: str(row["updated_at"]), reverse=True)
         return rows
 
