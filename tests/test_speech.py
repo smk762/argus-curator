@@ -513,6 +513,7 @@ def test_cli_speech_scan_saves_the_scan_and_exports_nothing(tmp_path: Path, monk
         (["--faces"], "a speech scan runs no image checks or image filters; drop --faces"),
         (["--target-category", "identity"], "target_category: Input should be 'voice'"),
     ],
+    ids=["copy-to", "faces", "target-category"],
 )
 def test_cli_speech_scan_refuses_image_options(tmp_path: Path, extra: list[str], error: str) -> None:
     from typer.testing import CliRunner

@@ -118,6 +118,7 @@ def test_a_shared_ref_inlined_by_the_new_schema_is_compared_at_every_use() -> No
         ("prefixItems", lambda ref: {"type": "array", "prefixItems": [ref]}),
         ("not", lambda ref: {"not": ref}),
     ],
+    ids=["oneOf", "allOf", "prefixItems", "not"],
 )
 def test_a_def_changed_behind_a_ref_under_any_combinator_is_breaking(keyword: str, wrap) -> None:
     """The `$ref` string stays the same while the def it names loses a field: still a break."""
