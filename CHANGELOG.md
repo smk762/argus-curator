@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-21
+
+**For downstream callers (argus-lens, argus-forge, argus-proof, argus-mint, and
+anything that drives `POST /export`).** One behaviour change, and nothing else
+breaks:
+
+- **A consented voice export over HTTP now needs `speech.second_voice` on at
+  scan time, or `POST /export` answers 400.** Under `speech.consent_record`
+  the export checks every clip for a second voice, from windows the scan made
+  and held in memory. Turn `second_voice` on in the scan's `SpeechConfig`
+  (it needs `speakers` on, as a consented export already does). A server
+  restart between the scan and the export also gives a 400, so rescan. The
+  CLI's `--voice-consent` turns `second_voice` on automatically.
+- **The default threshold is calibrated on synthetic audio only.**
+  `speech.second_voice_max_distance` defaults to 0.40, set on synthetic
+  voices; the A/B against real recordings is #228. Expect a consented export
+  to keep fewer clips: clips flagged `consent:second-voice` or
+  `consent:no-voice-windows` are left out.
+- **`MANIFEST_VERSION` stays 2.7 and `SPEECH_MANIFEST_VERSION` stays 1.0.**
+  Neither manifest row changed; the new `second_voice_distance` reading goes to
+  `SelectRow` and `curation_report.csv`.
+- No new extra, model, or GPU lease kind: the second-voice windows run under
+  the existing `speakers` lease. argus-cortex stays `>=0.13,<0.14`.
+
+### Added
+
+- **A consented voice export refuses clips with a second voice in them
+  (#217).** With `speech.second_voice` on (the CLI's `--voice-consent` turns it
+  on), the scan embeds each clip's speech, as marked by the scan's VAD, in
+  1.5 s windows every 0.75 s. They run in fixed-shape passes of 8 under the
+  `speakers` lease, and are held in memory only. Under `speech.consent_record`,
+  each window is measured against the centroid of the reference recordings'
+  own windows. A clip whose farthest window is past
+  `speech.second_voice_max_distance` (default 0.40) is left out as
+  `consent:second-voice`. The distance is a plain number:
+  `second_voice_distance` in `curation_report.csv` and on `SelectRow`. A
+  consented export refuses (400) when the check can't run: no
+  `second_voice` on the scan, a restart since the scan, or references with no
+  windows. A clip with no windows is left out as `consent:no-voice-windows`.
+  The default was calibrated on **synthetic** voices only. It reliably catches
+  a second voice of 2 s or more, catches 92% at 1 s, and flags 13% of the
+  subject's clean clips (docs/speech.md). The A/B against real recordings is
+  #228. New CLI flag: `--second-voice-max-distance`. `SpeechManifestRow` is
+  unchanged, so `SPEECH_MANIFEST_VERSION` stays 1.0.
+
 ## [0.20.0] - 2026-11-21
 
 **For downstream consumers (argus-lens, argus-forge, argus-proof, argus-mint).**
@@ -1529,7 +1574,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/smk762/argus-curator/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/smk762/argus-curator/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/smk762/argus-curator/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/smk762/argus-curator/compare/v0.17.0...v0.18.0

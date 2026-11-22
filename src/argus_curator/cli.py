@@ -240,6 +240,13 @@ def scan(
         help="Speech export: keep a clip under --voice-consent only within this cosine distance of the record's "
         "reference recordings' voice (default 0.25, strict; docs/speech.md)",
     ),
+    second_voice_max_distance: float | None = Option(
+        None,
+        "--second-voice-max-distance",
+        help="Speech export: under --voice-consent, leave out a clip whose farthest 1.5 s of speech is past this "
+        "cosine distance of the reference voice: a second voice (default 0.40, strict, synthetic calibration; "
+        "docs/speech.md)",
+    ),
     held_out: int | None = Option(
         None, "--held-out", help="Speech export: hold out about this many clips, by whole speakers (or a fraction)"
     ),
@@ -569,6 +576,7 @@ def scan(
         "--voice-consent": voice_consent,
         "--consent-delivery": consent_delivery,
         "--voice-consent-max-distance": voice_consent_max_distance is not None,
+        "--second-voice-max-distance": second_voice_max_distance is not None,
         "--held-out": held_out is not None,
         "--held-out-fraction": held_out_fraction is not None,
         "--split-method": split_method != "spread",
@@ -633,6 +641,7 @@ def scan(
             voice_consent=voice_consent,
             consent_delivery=consent_delivery,
             voice_consent_max_distance=voice_consent_max_distance,
+            second_voice_max_distance=second_voice_max_distance,
             speakers_clustered=speech_speakers,
             languages_checked=language_id,
             held_out=held_out,
@@ -652,6 +661,10 @@ def scan(
             mos=mos,
             dnsmos_model=dnsmos_model,
             speakers=speech_speakers,
+            # A consented voice export checks every clip for a second voice (#217): its windows come from the scan.
+            second_voice=speech_req is not None
+            and speech_req.speech is not None
+            and speech_req.speech.consent_record is not None,
             speaker_model=speaker_model,
             language_id=language_id,
             lid_model=lid_model,
@@ -1219,6 +1232,7 @@ def _speech_export_request(
     voice_consent: str | None,
     consent_delivery: str | None,
     voice_consent_max_distance: float | None,
+    second_voice_max_distance: float | None,
     speakers_clustered: bool,
     languages_checked: bool,
     held_out: int | None,
@@ -1280,8 +1294,11 @@ def _speech_export_request(
                 err=True,
             )
             raise typer.Exit(2)
-    elif voice_consent_max_distance is not None:
-        typer.echo("Error: --voice-consent-max-distance needs --voice-consent", err=True)
+    elif voice_consent_max_distance is not None or second_voice_max_distance is not None:
+        flag = (
+            "--voice-consent-max-distance" if voice_consent_max_distance is not None else "--second-voice-max-distance"
+        )
+        typer.echo(f"Error: {flag} needs --voice-consent", err=True)
         raise typer.Exit(2)
     if exclude_speaker_mismatch and not speakers_clustered:
         typer.echo("Error: --exclude-speaker-mismatch needs a scan that clusters speakers; add --speakers", err=True)
@@ -1312,6 +1329,11 @@ def _speech_export_request(
             consent_record=voice_consent,
             consent_delivery=consent_delivery,
             **({"consent_max_distance": voice_consent_max_distance} if voice_consent_max_distance is not None else {}),
+            **(
+                {"second_voice_max_distance": second_voice_max_distance}
+                if second_voice_max_distance is not None
+                else {}
+            ),
         )
         split = (
             SplitConfig(
@@ -1387,6 +1409,7 @@ def _scan_speech(
     vad_model: Path | None,
     speech_config: Path | None,
     device: str,
+    second_voice: bool = False,
     max_workers: int,
     no_cluster: bool,
     json_out: Path | None,
@@ -1433,6 +1456,8 @@ def _scan_speech(
         overrides.update(mos=True, mos_device=device)
     if speakers:
         overrides.update(speakers=True, speaker_device=device)
+    if second_voice:
+        overrides["second_voice"] = True
     if language_id:
         overrides.update(language_id=True, language_id_device=device)
     if vad is not None:

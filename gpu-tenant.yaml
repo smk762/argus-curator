@@ -46,7 +46,7 @@ kinds:
     model_mb: 300
     priority: batch
   - kind: speakers
-    description: WeSpeaker ECAPA-TDNN speaker embeddings for speech scans, one clip's 4 windows of 3 s per pass.
+    description: WeSpeaker ECAPA-TDNN speaker embeddings for speech scans, one clip's 4 windows of 3 s per pass, and with second_voice its speech in passes of 8 windows of 1.5 s (no more frames).
     vram_mb: 542
     model_mb: 350
     priority: batch

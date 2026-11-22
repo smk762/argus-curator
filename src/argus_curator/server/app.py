@@ -1208,6 +1208,7 @@ def create_app(
                 split=plan.split.get(c.rel_path),
                 speaker_id=speech_select.speaker_id(c),
                 consent_distance=hold.distances.get(c.rel_path) if hold else None,
+                second_voice_distance=hold.second_voice.get(c.rel_path) if hold else None,
             )
             for i, c in enumerate(plan.chosen, 1)
         ]
@@ -1219,6 +1220,7 @@ def create_app(
                 keep_reason=plan.keep_reason.get(c.rel_path) or "left-out",
                 speaker_id=speech_select.speaker_id(c),
                 consent_distance=hold.distances.get(c.rel_path) if hold else None,
+                second_voice_distance=hold.second_voice.get(c.rel_path) if hold else None,
             )
             for c in summary.clips
             if c.rel_path not in kept_rel

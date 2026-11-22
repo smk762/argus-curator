@@ -242,6 +242,20 @@ of face clustering.
 - **Memory only:** the embeddings stay in memory (`ScanSummary.embeddings`),
   held by the scan store per scan and dropped with it, as CLIP embeddings are.
   A centroid is a voiceprint, so none is stored.
+- **Second-voice windows** ([#217](https://github.com/smk762/argus-curator/issues/217)):
+  with `speech.second_voice: true` as well (it needs `speakers`), each clip's
+  speech is also embedded in short windows, for the
+  [second-voice check](#a-second-voice-in-a-clip) of a consented export. The
+  scan's VAD (`speech.vad`, energy or Silero) marks the speech, the silence
+  between it is dropped, and the speech is cut into windows of 1.5 s every
+  0.75 s (speech under 1.5 s is tiled up to one window). They run 8 windows
+  per pass, filled up by repeating the last pass's own windows, so every pass
+  has the same shape and no more frames than a clip's 4 x 3 s pass: it runs
+  under the same `speakers` lease and VRAM figure. A clip whose speech gives
+  no windows records why in `ClipResult.second_voice_error`. The windows are
+  voiceprints, so they are held exactly as the embeddings are
+  (`ScanSummary.voice_windows`, float16, in memory only, dropped with the scan
+  and with a moved clip). They cost about 0.5 KB per second of speech.
 
 ## Language labels
 
@@ -380,8 +394,9 @@ argus-curator scan corpus/ --modality speech --symlink-to blizzard-train \
 | `--min-score`, `--keep-similar`, `--max-keep`, `--run-stats` | as for images |
 | `--held-out` or `--held-out-fraction`, `--split-method`, `--split-seed`, `--split-part` | `split` (`group_by` is always `speaker`), `split_part` |
 | `--corpus` and `--license` | `speech.corpus`, `speech.license` |
-| `--voice-consent` and `--consent-delivery` | `speech.consent_record` (relative to the scanned folder, or absolute; needs `--speakers`), `speech.consent_delivery` |
+| `--voice-consent` and `--consent-delivery` | `speech.consent_record` (relative to the scanned folder, or absolute; needs `--speakers`, and turns `speech.second_voice` on for the scan), `speech.consent_delivery` |
 | `--voice-consent-max-distance` | `speech.consent_max_distance` ([consented voice binding](#consented-voice-binding); needs `--voice-consent`) |
+| `--second-voice-max-distance` | `speech.second_voice_max_distance` ([a second voice in a clip](#a-second-voice-in-a-clip); needs `--voice-consent`) |
 
 The flags are checked before a clip is read: no provenance, half of one, both
 kinds, an image filter (`--pose`, `--garment`, `--nsfw-threshold`,
@@ -474,9 +489,14 @@ face set binds images to the record's reference images (#133):
    joined: a clip in the subject's cluster but past the distance is left out
    as `consent:other-speaker`, and a clip with no embedding as
    `consent:no-embedding`.
-3. **For review.** The distance is reported as a plain number:
-   `consent_distance` in `curation_report.csv` and on each select row
-   (`SelectRow.consent_distance`). The centroid is a voiceprint, so it's built
+3. **A second voice.** A clip the distance keeps is then checked for a second
+   voice inside it, and left out as `consent:second-voice` when it holds one
+   ([below](#a-second-voice-in-a-clip)). The scan must have run with
+   `speech.second_voice` on, and its windows must still be held; otherwise
+   the export is refused (400). It never skips the check.
+4. **For review.** The distances are reported as plain numbers:
+   `consent_distance` and `second_voice_distance` in `curation_report.csv`
+   and on each select row (`SelectRow`). The centroid is a voiceprint, so it's built
    for the one check and never stored, served or written. The binding is
    remade at every select and export, so nothing about it outlives the scan.
    The speech manifest row is unchanged.
@@ -501,17 +521,112 @@ clips. Read `consent_distance` in the report before you raise the ceiling, and
 keep it well under the clustering's `speaker_threshold` (0.5), which is loose
 on purpose. Three voices are evidence of the scale, not a calibration.
 
-**What it doesn't catch: a second voice inside a clip.** A clip's embedding is
-the mean of 4 windows of 3 s. When the subject speaks most of a clip and
-someone else speaks a few seconds of it, the mean stays near the subject's
-voice and the clip is kept. The spread of those windows was measured as a
-signal and isn't reliable enough to ship. At a threshold no single-voice clip
-crossed, it caught a second voice holding about 30% or more of a 10 s clip, but
-missed most second voices under 2 s (an interjection, a voice in the
-background), and short clips' windows overlap. Refusing clips with a second
-voice (diarization, or finer windows each checked against the reference) is
-[#217](https://github.com/smk762/argus-curator/issues/217). Until then, keep
-the scanned folder to clips of the subject alone.
+## A second voice in a clip
+
+A clip's embedding is the mean of 4 windows of 3 s. When the subject speaks
+most of a clip and someone else speaks a few seconds of it (an interjection, a
+voice in the background), the mean stays near the subject's voice, and the
+binding above keeps the clip. A consented voice export therefore also checks
+every clip for a second voice
+([#217](https://github.com/smk762/argus-curator/issues/217)), and leaves out
+one that holds another voice as `consent:second-voice`.
+
+**How.** The scan embeds each clip's speech in windows of 1.5 s every 0.75 s
+([Speakers](#speakers), `speech.second_voice`). At select and at export, the
+record's reference recordings' own windows are averaged into a unit centroid,
+and each window of a clip is measured against it by cosine distance. The
+clip's `second_voice_distance` is its farthest window's. A clip past
+`speech.second_voice_max_distance` (default **0.40**) is left out. It compares
+each window to the **consent reference**, not to the clip's own mean, because
+in a consented set it's known whose voice the subject's is. The windows'
+centroid is used rather than the whole-clip centroid the binding uses: a
+1.5 s window reads farther from a whole clip's centroid than from other
+1.5 s windows, and matching them halved the false flags on clean clips (26% to
+13% at 0.40). The centroid is a voiceprint, so it's built for the one check
+and never held, stored or served. Only the distance is kept, as a plain number.
+
+**It never skips the check.** If the check can't run, the consented export is
+refused (400), never passed: a scan without `speech.second_voice` (or without
+`speakers`), a restart since the scan (the windows are held in memory only),
+or reference recordings with no windows of their own (the VAD found no speech
+in them). A clip with no windows (`second_voice_error`) is left out as
+`consent:no-voice-windows`. Outside a consented export there's no reference
+voice to measure against, so nothing is measured and the selection is
+unchanged.
+
+### Calibration (synthetic audio only)
+
+> **Synthetic.** Everything below was measured on synthetic voices: XTTS
+> takes, spliced and mixed in numpy. It hasn't yet been checked on real
+> recordings of two people. The A/B against real mixed recordings is
+> [#228](https://github.com/smk762/argus-curator/issues/228). Until it reports,
+> read the numbers as the scale of what the check does, not as a guarantee.
+
+Measured with the pinned ECAPA model on CPU and Silero VAD. There were five
+distinct synthetic voices, from 12 XTTS takes and 32 more synthetic
+recordings (clustered first to confirm they are five voices: same-voice files
+0.01-0.27 apart, different voices 0.39-0.97 apart). Each subject's reference
+was two 8 s cuts of one take. Every test clip came from **other takes**:
+
+- **Clean controls:** 60 subject-only clips per subject, 4, 6, 8, 10 or 15 s.
+- **Spliced:** a 6 or 10 s subject clip with each other voice cut in for 0.5,
+  1, 2 or 4 s, at 10%, 50% or 90% of the clip, loudness-matched.
+- **Overlapped:** an 8 s subject clip with each other voice mixed under it for
+  1, 2, 4 or 8 s, at 0, 6 or 12 dB below the subject.
+
+Two of the five voices vary so much between their takes that the binding
+already leaves out 85-100% of their clean clips (0.25 ceiling), so they can't
+serve as subjects for this check. The table is the other three voices as
+subjects, with all four others as the second voice (1020 clips built, 612 of
+them for these subjects). Each rate is over the clips the binding keeps, the ones only
+this check can catch:
+
+| Clips | n kept | flagged at 0.35 | **at 0.40** | at 0.45 |
+|---|---|---|---|---|
+| Clean subject clips (false flags) | 179 | 50% | **13%** | 6% |
+| Second voice spliced in, 0.5 s | 71 | 92% | **75%** | 54% |
+| spliced, 1 s | 71 | 100% | **92%** | 85% |
+| spliced, 2 s | 71 | 100% | **100%** | 97% |
+| spliced, 4 s | 61 | 100% | **100%** | 100% |
+| Overlapped 1 s, at 0 / 6 / 12 dB under | 12 each | 83 / 83 / 50% | **83 / 50 / 33%** | 67 / 25 / 17% |
+| Overlapped 2 s, at 0 / 6 / 12 dB under | 12 each | 100 / 100 / 83% | **92 / 83 / 67%** | 83 / 75 / 42% |
+| Overlapped 4 s, at 0 / 6 / 12 dB under | 8 / 11 / 11 | 100 / 100 / 100% | **100 / 100 / 91%** | 100 / 82 / 73% |
+| Overlapped 8 s, at 0 / 6 / 12 dB under | 1 / 5 / 12 | 100 / 100 / 100% | **100 / 100 / 100%** | 100 / 80 / 100% |
+
+(The clean max was 0.532, p95 0.459, median 0.350. A 4 s or 8 s overlap is
+often loud enough to move the whole clip's embedding, and the binding drops it
+first, so n kept falls there. Counting both, the binding and this check
+exclude 92-100% of the 4 s and 8 s mixtures at 0.40.)
+
+**The default, 0.40, errs toward excluding.** Leaving out a clip of the
+subject's is the safe error, and keeping a bystander's voice the harmful one.
+So the default flags about one clean clip in eight (13%), where 0.45 would
+halve that but miss more 0.5-1 s voices. 0.35 would catch nearly every 1 s
+splice, but drops half the subject's clean clips. False flags grow with a
+clip's length, because more windows give more chances for one to read far:
+0-11% at 6 s, 0-30% at 10 s, and up to 57% for one voice at 15 s. Long
+clips of the subject are the ones most often lost. Read
+`second_voice_distance` in the report before raising the ceiling.
+
+**What it reliably catches: a second voice speaking 2 s or more.** That
+caught every one of the 2 s and 4 s splices, with all four other voices. At
+1 s it caught 92% overall, but only 67% when the second voice was the one
+closest to the subject (0.45 apart). At 0.5 s it caught 75%, down to 42% for
+that closest voice. A voice mixed *under* the subject's is harder than one
+taking a turn: a 1 s voice 12 dB below the subject is caught a third of the
+time. The windowing matters as much as the threshold. Without the VAD, the
+false flags rose to 58% at 0.40, since silence makes windows read far. With
+1 s windows, 88% of clean clips were flagged. 2 s windows at their own
+matching threshold (0.35: 8% false flags) caught 55% at 0.5 s and 85% at 1 s,
+about what 1.5 s windows give at 0.45, so 1.5 s at 0.40 is the stricter of
+the two. Requiring two
+consecutive far windows (`SECOND_VOICE_RUN = 2`) cut false flags to 4% but
+halved the 0.5 s catch rate, so the default is one window. The energy VAD
+measured within a point or two of Silero.
+
+Until #228 reports on real recordings, keep the scanned folder to clips of
+the subject alone. The check is a backstop, not a licence to scan mixed
+recordings.
 
 ## The speech manifest
 

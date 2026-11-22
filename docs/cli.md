@@ -93,6 +93,7 @@ $ argus-curator scan [OPTIONS] {source}
 * `--voice-consent <str>`: Speech export: a real person&#x27;s voice consent record (argus-cortex ConsentRecord JSON), relative to the scanned folder or absolute, instead of --corpus (with --consent-delivery; needs --speakers)
 * `--consent-delivery <str>`: Speech export: the voice delivery --voice-consent must cover, e.g. neutral
 * `--voice-consent-max-distance <float>`: Speech export: keep a clip under --voice-consent only within this cosine distance of the record&#x27;s reference recordings&#x27; voice (default 0.25, strict; docs/speech.md)
+* `--second-voice-max-distance <float>`: Speech export: under --voice-consent, leave out a clip whose farthest 1.5 s of speech is past this cosine distance of the reference voice: a second voice (default 0.40, strict, synthetic calibration; docs/speech.md)
 * `--held-out <int>`: Speech export: hold out about this many clips, by whole speakers (or a fraction)
 * `--held-out-fraction <float>`: Speech export: hold out about this fraction of the clips, by whole speakers
 * `--split-method <str>`: Speech export: spread (held-out speakers evenly through the ranking) or random  [default: spread]

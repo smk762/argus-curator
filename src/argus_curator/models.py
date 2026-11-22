@@ -155,6 +155,13 @@ SPEECH_MANIFEST_VERSION = "1.0"
 # is the consenting voice. Measured with the pinned ECAPA model (docs/speech.md).
 VOICE_CONSENT_MAX_DISTANCE = 0.25
 
+# SpeechSelection.second_voice_max_distance's default (#217): the cosine
+# distance, a clip's farthest 1.5 s of speech to the centroid of the reference
+# recordings' own 1.5 s windows, past which a consented clip holds a second
+# voice. Calibrated on synthetic voices only (docs/speech.md, "A second voice
+# in a clip"); the A/B against real recordings is #228.
+SECOND_VOICE_MAX_DISTANCE = 0.40
+
 # Cap on ExportRequest.run_stats once serialised: it is opaque client JSON
 # written to disk verbatim, so a runaway payload must not fill the export root.
 RUN_STATS_MAX_BYTES = 5 * 1024 * 1024
@@ -1259,6 +1266,12 @@ class SpeechConfig(BaseModel):
     speakers: bool = False
     speaker_device: str = "auto"
     speaker_threshold: float = Field(0.5, gt=0.0, lt=2.0)
+    # The second-voice check's windows (#217): with speakers, each passing
+    # clip's speech (the VAD named by ``vad``) is also embedded in windows of
+    # 1.5 s every 0.75 s, held in memory beside its embedding
+    # (ScanSummary.voice_windows), never stored. A consented voice export
+    # (SpeechSelection.consent_record) needs them, and refuses without.
+    second_voice: bool = False
 
     # Spoken language ID (SpeechBrain VoxLingua107 ECAPA, ARGUS_CURATOR_LID_MODEL,
     # #208), run on each clip that passed: a clip whose corpus language label the
@@ -1287,6 +1300,8 @@ class SpeechConfig(BaseModel):
         low, high = self.min_chars_per_s, self.max_chars_per_s
         if low is not None and high is not None and low >= high:
             raise ValueError("min_chars_per_s must be below max_chars_per_s")
+        if self.second_voice and not self.speakers:
+            raise ValueError("second_voice embeds windows with the speaker model: turn speakers on")
         return self
 
 
@@ -1371,6 +1386,10 @@ class ClipResult(BaseModel):
     speaker_mismatch: bool = False
     # Why no speaker embedding was made for a clip that passed, else None.
     speaker_error: str | None = None
+    # SpeechConfig.second_voice (#217): why no second-voice windows were made
+    # for a clip that got a speaker embedding (the VAD found no speech in it,
+    # say), else None. Such a clip is left out of a consented voice export.
+    second_voice_error: str | None = None
 
     # SpeechConfig.language_id (#208): the model's top language (its own code,
     # ISO 639-1 mostly) and its probability, the probability it gives the corpus
@@ -1550,11 +1569,20 @@ class ScanSummary(BaseModel):
     # so it never reaches the store's JSON or a response. ScanStore holds it per
     # scan and drops it with the scan (#188).
     _embeddings: dict[str, Any] = PrivateAttr(default_factory=dict)
+    # A speech scan with SpeechConfig.second_voice (#217): each clip's
+    # ``(k, 192)`` window embeddings over its speech, by rel_path. Voiceprints,
+    # held exactly as ``embeddings`` are: memory only, dropped with the scan.
+    _voice_windows: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     @property
     def embeddings(self) -> dict[str, Any]:
         """The scan's in-memory semantic embeddings by ``rel_path`` (empty when none are held)."""
         return self._embeddings
+
+    @property
+    def voice_windows(self) -> dict[str, Any]:
+        """A speech scan's in-memory second-voice window embeddings by ``rel_path`` (empty when none are held)."""
+        return self._voice_windows
 
     @property
     def is_speech(self) -> bool:
@@ -1826,6 +1854,11 @@ class SpeechSelection(BaseModel):
     # another voice let in is the harmful error, a clip of the subject's
     # left out the safe one (docs/speech.md has the measurements).
     consent_max_distance: float = Field(VOICE_CONSENT_MAX_DISTANCE, gt=0.0, lt=2.0)
+    # Ceiling on a consented clip's second-voice distance (#217): the cosine
+    # distance from its farthest 1.5 s of speech to the same centroid. A clip
+    # past it holds another voice and is left out (``consent:second-voice``).
+    # Strict for the same reason as consent_max_distance.
+    second_voice_max_distance: float = Field(SECOND_VOICE_MAX_DISTANCE, gt=0.0, lt=2.0)
 
     @model_validator(mode="after")
     def _provenance(self) -> SpeechSelection:
@@ -2277,6 +2310,10 @@ class SelectRow(BaseModel):
     # record's reference voice, for review of the borderline ones; None
     # otherwise, or for a clip with no speaker embedding. Never the vector.
     consent_distance: float | None = None
+    # Under speech.consent_record (#217): the distance from the clip's
+    # farthest 1.5 s of speech to that voice, which a second voice raises;
+    # None otherwise, or for a clip with no second-voice windows.
+    second_voice_distance: float | None = None
 
 
 class SelectRequest(BaseModel):
