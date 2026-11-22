@@ -39,6 +39,10 @@ from typing import Any
 _SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
 
 _IGNORED = frozenset({"title", "description", "default", "examples"})
+# Keywords whose value is a list of subschemas, or one subschema: walked, so a
+# `$ref` inside them is resolved rather than compared as a string.
+_SCHEMA_LISTS = frozenset({"anyOf", "oneOf", "allOf", "prefixItems"})
+_SCHEMA_VALUES = frozenset({"items", "additionalProperties", "not", "if", "then", "else", "contains"})
 
 
 @dataclass(frozen=True)
@@ -134,10 +138,15 @@ def breaking_changes(old: dict[str, Any], new: dict[str, Any], row: str = "Manif
                 for value in n["enum"]:
                     if value not in o["enum"]:
                         problems.append(f"{here}: gained {value!r}")
-            elif key == "anyOf" and len(o[key]) == len(n[key]):
+            elif key in _SCHEMA_LISTS and isinstance(o[key], list) and isinstance(n[key], list):
+                if len(o[key]) != len(n[key]):
+                    problems.append(f"{here}: changed from {len(o[key])} to {len(n[key])} subschemas")
+                    continue
+                # Walked, not compared raw: an arm is often just a `$ref`, whose
+                # string stays the same while the def it names changes.
                 for i, (a, b) in enumerate(zip(o[key], n[key], strict=True)):
                     walk(a, b, f"{here}[{i}]")
-            elif key in ("items", "additionalProperties") and isinstance(o[key], dict):
+            elif key in _SCHEMA_VALUES and isinstance(o[key], dict):
                 walk(o[key], n[key], here)
             elif o[key] != n[key]:
                 problems.append(f"{here}: changed from {o[key]!r} to {n[key]!r}")

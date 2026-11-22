@@ -110,6 +110,33 @@ def test_a_shared_ref_inlined_by_the_new_schema_is_compared_at_every_use() -> No
     assert breaking_changes(old, new) == ["ManifestRow.b.amount.type: changed from 'number' to 'string'"]
 
 
+@pytest.mark.parametrize(
+    ("keyword", "wrap"),
+    [
+        ("oneOf", lambda ref: {"oneOf": [ref, {"type": "null"}]}),
+        ("allOf", lambda ref: {"allOf": [ref]}),
+        ("prefixItems", lambda ref: {"type": "array", "prefixItems": [ref]}),
+        ("not", lambda ref: {"not": ref}),
+    ],
+)
+def test_a_def_changed_behind_a_ref_under_any_combinator_is_breaking(keyword: str, wrap) -> None:
+    """The `$ref` string stays the same while the def it names loses a field: still a break."""
+
+    def row(money: dict) -> dict:
+        return {
+            "type": "object",
+            "properties": {"price": wrap({"$ref": "#/$defs/Money"})},
+            "required": ["price"],
+            "$defs": {"Money": money},
+        }
+
+    money = {"type": "object", "properties": {"amount": {"type": "number"}, "currency": {"type": "string"}}}
+    shrunk = {"type": "object", "properties": {"amount": {"type": "number"}}}
+    broken = breaking_changes(row(money), row(shrunk))
+    assert any(p.endswith("currency: field removed") and keyword in p for p in broken), broken
+    assert breaking_changes(row(money), row(copy.deepcopy(money))) == []
+
+
 def test_breaking_change_with_a_major_bump_only_asks_for_a_refresh(live: dict) -> None:
     new = copy.deepcopy(live)
     del new["schema"]["properties"]["score"]
