@@ -195,7 +195,7 @@ $ argus-curator serve [OPTIONS]
 **Options**:
 
 * `-p, --port <int>`: Port to listen on  [default: 8101]
-* `--host <str>`: Host to bind to  [default: 0.0.0.0]
+* `--host <str>`: Host to bind to (loopback by default; 0.0.0.0 exposes the write endpoints to the network)  [default: 127.0.0.1]
 * `--cors`: Enable CORS for the localhost dev frontend (:3000)
 * `--cors-origin <list[str]>`: Allowed CORS origin (repeatable; implies CORS; or CURATOR_CORS_ORIGINS)
 * `--cors-any`: Allow ANY origin, credential-less (public demos only; implies CORS)

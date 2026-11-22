@@ -7,6 +7,11 @@ pip install "argus-curator[server,faces]"
 argus-curator serve --cors --port 8101 --source-root /data/images --export-root /data/out
 ```
 
+It binds `127.0.0.1` unless `--host` says otherwise. `--host 0.0.0.0` (what the
+Docker image runs) puts the scan, export and delete endpoints on the network with
+no authentication: a request with no `Origin` (curl) passes the write guard, so
+expose it only on a network you trust.
+
 ## Roots, moves and deletes
 
 Request-supplied paths are treated as untrusted: scan folders resolve under

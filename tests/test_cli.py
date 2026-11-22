@@ -241,3 +241,50 @@ def test_semantic_dupes_without_embeddings_fails_before_scanning(dataset: Path) 
     result = runner.invoke(app, ["scan", str(dataset), "--semantic-dupes"])
     assert result.exit_code == 2, result.output
     assert "--embeddings" in result.output and "Scanning" not in result.output
+
+
+def test_serve_binds_loopback_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    import uvicorn
+
+    bound: list[str] = []
+    monkeypatch.setattr(uvicorn, "run", lambda app_, host, port: bound.append(host))
+    result = runner.invoke(app, ["serve"])
+    assert result.exit_code == 0, result.output
+    assert bound == ["127.0.0.1"]
+    assert "Warning" not in result.output
+
+
+def test_serve_warns_when_bound_to_the_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    import uvicorn
+
+    bound: list[str] = []
+    monkeypatch.setattr(uvicorn, "run", lambda app_, host, port: bound.append(host))
+    result = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
+    assert result.exit_code == 0, result.output
+    assert bound == ["0.0.0.0"]
+    assert "reachable from the network" in result.output
+
+
+@pytest.mark.parametrize("modality", ["image", "speech"])
+def test_two_export_destinations_are_refused_before_anything_moves(
+    dataset: Path, tmp_path: Path, modality: str
+) -> None:
+    before = sorted(p.relative_to(dataset) for p in dataset.rglob("*"))
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            str(dataset),
+            "--modality",
+            modality,
+            "--copy-to",
+            str(tmp_path / "copy"),
+            "--move-to",
+            str(tmp_path / "move"),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--copy-to and --move-to" in result.output
+    assert "Scanning" not in result.output
+    assert sorted(p.relative_to(dataset) for p in dataset.rglob("*")) == before
+    assert not (tmp_path / "move").exists()
