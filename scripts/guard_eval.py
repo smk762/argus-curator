@@ -478,10 +478,21 @@ def _http_json(url: str, body: dict | None = None, timeout: float = 10.0) -> Any
         return json.loads(response.read())
 
 
+def _ollama_tagged(name: str | None) -> str | None:
+    """*name* with Ollama's implied ``:latest`` when it names no tag (a registry port is not a tag)."""
+    if not name or ":" in name.rsplit("/", 1)[-1]:
+        return name
+    return f"{name}:latest"
+
+
 def ollama_digest(ollama_url: str, model: str, get: Callable[[str], Any] = _http_json) -> str | None:
-    """The digest Ollama's ``/api/tags`` lists for *model*, or ``None`` when it lists no such model."""
+    """The digest Ollama's ``/api/tags`` lists for *model*, or ``None`` when it lists no such model.
+
+    ``/api/tags`` always names a tag; *model* may leave it out, as Ollama itself allows.
+    """
+    wanted = _ollama_tagged(model)
     for entry in get(ollama_url.rstrip("/") + "/api/tags").get("models", []):
-        if model in (entry.get("name"), entry.get("model")):
+        if wanted in (_ollama_tagged(entry.get("name")), _ollama_tagged(entry.get("model"))):
             return entry.get("digest")
     return None
 
@@ -536,16 +547,18 @@ class VerdictCache:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.entries: dict[str, dict] = {}
-        if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                try:
-                    entry = json.loads(line)
-                except ValueError:
-                    continue  # a line cut short when a run died
-                if isinstance(entry, dict) and "key" in entry:
-                    self.entries[entry["key"]] = entry
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        for line in text.splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue  # a line cut short when a run died
+            if isinstance(entry, dict) and "key" in entry:
+                self.entries[entry["key"]] = entry
         path.parent.mkdir(parents=True, exist_ok=True)
         self._out = path.open("a", encoding="utf-8")
+        if text and not text.endswith("\n"):
+            self._out.write("\n")  # end a cut-short line so the next verdict starts its own
 
     def get(self, key: str) -> dict | None:
         return self.entries.get(key)
@@ -873,7 +886,11 @@ class Change:
     @property
     def beyond_noise(self) -> bool:
         """Both arms agreed with themselves on every pass, and disagree with each other."""
-        return self.baseline.outcome != "split" and self.other.outcome != "split"
+        return (
+            self.baseline.outcome != "split"
+            and self.other.outcome != "split"
+            and self.baseline.outcome != self.other.outcome
+        )
 
     @property
     def direction(self) -> str:
@@ -1100,7 +1117,9 @@ def summarise_cache_check(data: dict) -> str:
     elif mixed:
         lines.append(f"{data.get('fillers')} unrelated prompts between repeats evicted it.")
     deterministic = all(len(seqs) == 1 for seqs in by_state.values())
-    if len(sequences) == 1:
+    if not runs:
+        lines.append("No evaluations were recorded, so there is no conclusion about the cache.")
+    elif len(sequences) == 1:
         lines.append("Every evaluation scored the same: the cache did not change the answer here.")
     elif deterministic:
         lines.append(
