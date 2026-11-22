@@ -398,6 +398,19 @@ def test_a_transcriber_gives_cer_and_max_cer_rejects(tmp_path: Path) -> None:
     assert sorted(r.reject_reason or "" for r in rows) == ["", "cer"]
 
 
+def test_a_transcriber_without_a_gpu_slot_fails_the_scan_not_the_clips(tmp_path: Path) -> None:
+    from argus_cortex.gpu import GpuLeaseTimeout
+
+    _with_line(clip(tmp_path / "a.wav"))
+
+    class _NoSlot:
+        def transcribe(self, samples: np.ndarray, sample_rate: int, language: str | None = None) -> str:
+            raise GpuLeaseTimeout("busy")
+
+    with pytest.raises(GpuLeaseTimeout):
+        scan_speech_folder(tmp_path, cfg=SpeechConfig(max_cer=0.2), transcriber=_NoSlot())
+
+
 def test_max_cer_without_an_stt_engine_is_refused(tmp_path: Path) -> None:
     clip(tmp_path / "a.wav")
     with pytest.raises(ModelUnavailable, match="argus-echo#4"):

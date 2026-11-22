@@ -761,6 +761,8 @@ def scan_speech_folder(
                     raise ValueError("the clip could not be read again")
                 row.stt_transcript = transcriber.transcribe(decoded[0], decoded[1], row.language)
                 row.cer = round(cer(row.transcript or "", row.stt_transcript), 4)
+            except GPU_UNAVAILABLE:
+                raise  # no GPU slot is not a bad clip: fail the scan
             except Exception as exc:
                 logger.warning("speech_stt_failed", rel_path=row.rel_path, error=str(exc))
             if cfg.max_cer is not None:
