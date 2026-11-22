@@ -291,13 +291,16 @@ def decide(
             kept.append(c)
 
     # Per accent: a cap (the smallest accent's hours, with balance_accents),
-    # taken from the accent's speakers in turn.
+    # taken from the accent's speakers in turn. Clips with no accent label are
+    # capped like an accent but never set the balance: a few unlabelled clips
+    # would otherwise cut every real accent down to their hours.
     by_accent: dict[str, list[ClipResult]] = {}
     for c in kept:
         by_accent.setdefault(c.accent or "", []).append(c)
     caps = [speech.max_hours_per_accent * _SECONDS_PER_HOUR] if speech.max_hours_per_accent is not None else []
-    if speech.balance_accents and by_accent:
-        caps.append(min(sum(_seconds(c) for c in members) for members in by_accent.values()))
+    labelled = [members for accent, members in by_accent.items() if accent]
+    if speech.balance_accents and labelled:
+        caps.append(min(sum(_seconds(c) for c in members) for members in labelled))
     if caps:
         cap = min(caps)
         balanced: list[ClipResult] = []
