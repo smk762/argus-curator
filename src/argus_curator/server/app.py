@@ -284,14 +284,20 @@ class _MinorBlockList:
     ``/image`` and ``/thumb`` decide from the *resolved* target, never the raw
     query string, so ``./x.jpg``, ``sub/../x.jpg``, a symlink, or omitting
     ``scan_id`` all land on the same verdict. Every cached scan counts, not only
-    the one a request names. Each scan file is parsed once per mtime.
+    the one a request names. Each scan file is parsed once per version (its
+    mtime in ns, size and inode, so a re-save in the same coarse mtime tick still
+    counts as new).
+
+    It fails closed: a scan file that does not parse blocks every file it names,
+    and one that names nothing legibly (truncated, not JSON) blocks every file
+    until it is fixed or deleted. ``None`` in the cache stands for that.
     """
 
     def __init__(self, store: ScanStore, rule: Any) -> None:
         self._store = store
         self._rule = rule
         self._lock = threading.Lock()
-        self._by_file: dict[Path, tuple[float, frozenset[Path]]] = {}
+        self._by_file: dict[Path, tuple[tuple[int, int, int], frozenset[Path] | None]] = {}
 
     def _scan_paths(self, summary: ScanSummary) -> frozenset[Path]:
         blocked: set[Path] = set()
@@ -305,34 +311,78 @@ class _MinorBlockList:
                     continue
         return frozenset(blocked)
 
+    @staticmethod
+    def _named_paths(raw: str) -> frozenset[Path] | None:
+        """Every file an unparseable scan file names, whatever its verdict; ``None`` when it names none legibly."""
+        try:
+            data = json.loads(raw)
+            folder = data.get("folder")
+            blocked: set[Path] = set()
+            for row in data["results"]:
+                for raw_path in (
+                    row.get("abs_path"),
+                    row.get("rel_path") and folder and str(Path(folder) / row["rel_path"]),
+                ):
+                    if raw_path:
+                        blocked.add(Path(raw_path).resolve())
+        except Exception:
+            return None
+        return frozenset(blocked)
+
     def blocked(self, target: Path) -> bool:
         resolved = target.resolve()
         seen: set[Path] = set()
         for path in self._store.cache_dir.glob("*.json"):
             seen.add(path)
             try:
-                mtime = path.stat().st_mtime
+                st = path.stat()
             except OSError:  # removed meanwhile
                 continue
+            version = (st.st_mtime_ns, st.st_size, st.st_ino)
             with self._lock:
                 cached = self._by_file.get(path)
-            if cached is None or cached[0] != mtime:
+            if cached is None or cached[0] != version:
+                prior = cached[1] if cached is not None else frozenset()
                 # Parsed outside the lock: a large scan re-saved every few seconds
                 # while it runs must not hold up every other /thumb and /image.
                 try:
-                    summary = ScanSummary.model_validate_json(path.read_text(encoding="utf-8"))
-                    cached = (mtime, self._scan_paths(summary))
-                except Exception as exc:  # an unreadable cache file names no file to block
+                    raw = path.read_text(encoding="utf-8")
+                except FileNotFoundError:  # removed meanwhile
+                    continue
+                except OSError as exc:
                     logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
-                    cached = (mtime, frozenset())
+                    raw = ""
+                try:
+                    cached = (version, self._scan_paths(ScanSummary.model_validate_json(raw)))
+                except Exception as exc:
+                    # Fail closed: keep what it blocked before, plus every file it still names.
+                    logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
+                    named = self._named_paths(raw)
+                    cached = (version, None if named is None or prior is None else prior | named)
                 with self._lock:
                     self._by_file[path] = cached
-            if resolved in cached[1]:
+            if cached[1] is None or resolved in cached[1]:
                 return True
         with self._lock:
             for gone in set(self._by_file) - seen:
                 self._by_file.pop(gone, None)
         return False
+
+
+def _write_new(dest: Path, data: bytes) -> None:
+    """Write *data* to a file that must not exist yet.
+
+    ``O_EXCL`` makes the create atomic (a concurrent upload of the same name
+    raises ``FileExistsError``) and refuses any symlink at *dest*, dangling or not,
+    so the write can never land outside the folder through one.
+    """
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
 
 
 def _count_images(directory: Path, cap: int = _COUNT_CAP) -> int:
@@ -359,26 +409,27 @@ def _browse_folders(root: Path, rel: str) -> dict[str, Any]:
     direct_images = 0
     try:
         for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
-            if entry.is_dir() and not entry.name.startswith("."):
-                sub_rel = str(Path(rel) / entry.name) if rel else entry.name
-                try:
-                    subfolders = sum(1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith("."))
-                    abs_path = str(entry.resolve())
-                except OSError as exc:
-                    # One unreadable child (lost+found, a dead mount) must not hide its siblings.
-                    logger.warning("browse_folder_unreadable", rel_path=sub_rel, error=str(exc))
-                    continue
-                folders.append(
-                    {
-                        "name": entry.name,
-                        "rel_path": sub_rel,
-                        "abs_path": abs_path,
-                        "image_count": _count_images(entry),
-                        "subfolder_count": subfolders,
-                    }
-                )
-            elif entry.is_file() and entry.suffix.lower() in SUPPORTED_EXTS:
-                direct_images += 1
+            sub_rel = str(Path(rel) / entry.name) if rel else entry.name
+            # Everything touching the child inside the try: one unreadable child
+            # (lost+found, a dead or stale mount) must not hide its siblings.
+            try:
+                if entry.is_dir() and not entry.name.startswith("."):
+                    folders.append(
+                        {
+                            "name": entry.name,
+                            "rel_path": sub_rel,
+                            "abs_path": str(entry.resolve()),
+                            "image_count": _count_images(entry),
+                            "subfolder_count": sum(
+                                1 for c in entry.iterdir() if c.is_dir() and not c.name.startswith(".")
+                            ),
+                        }
+                    )
+                elif entry.is_file() and entry.suffix.lower() in SUPPORTED_EXTS:
+                    direct_images += 1
+            except OSError as exc:
+                logger.warning("browse_folder_unreadable", rel_path=sub_rel, error=str(exc))
+                continue
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"cannot read directory: {exc}") from exc
 
@@ -1456,7 +1507,8 @@ def create_app(
                 skipped.append(name)
                 continue
             dest = target / name
-            if dest.exists():
+            # is_symlink too: exists() follows a link, so a dangling one reads as free.
+            if dest.exists() or dest.is_symlink():
                 skipped.append(name)
                 continue
             try:
@@ -1466,8 +1518,10 @@ def create_app(
             except BadInput as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from None
             try:
-                await asyncio.to_thread(dest.write_bytes, data)
+                await asyncio.to_thread(_write_new, dest, data)
                 saved += 1
+            except FileExistsError:  # another upload, or a link, took the name meanwhile
+                skipped.append(name)
             except OSError as exc:
                 errors.append({"name": name, "detail": f"cannot save: {exc}"})
 

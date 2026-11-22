@@ -113,6 +113,27 @@ def test_one_unreadable_folder_does_not_hide_its_siblings(
     assert "personA" in names and "personB" not in names
 
 
+def test_a_stale_child_mount_does_not_hide_its_siblings(
+    dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    real_is_dir = Path.is_dir
+
+    def is_dir(self: Path, *args: object, **kwargs: object) -> bool:
+        # is_dir swallows ENOENT and the like, not ESTALE or EIO.
+        if self.name == "personB":
+            raise OSError(errno.ESTALE, "Stale file handle", str(self))
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    client = TestClient(create_app(cache_dir=str(tmp_path / "c2"), source_root=str(dataset)))
+    resp = client.get("/folders")
+    assert resp.status_code == 200
+    names = {f["name"] for f in resp.json()["folders"]}
+    assert "personA" in names and "personB" not in names
+
+
 def test_folders_requires_source_root(client: TestClient) -> None:
     assert client.get("/folders").status_code == 400
 
@@ -605,6 +626,55 @@ def test_image_block_holds_for_any_spelling_of_the_path(tmp_path: Path) -> None:
         assert client.get("/image", params=params).status_code == 403, params
 
 
+def test_image_block_fails_closed_on_a_scan_file_that_does_not_parse(tmp_path: Path) -> None:
+    import json
+
+    root, cache = _seed_delete_scan(tmp_path)
+    scan_file = cache / "scan.json"
+    data = json.loads(scan_file.read_text())
+    data["total"] = "not a number"  # another schema version, or a hand edit
+    scan_file.write_text(json.dumps(data))
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    # Every file it names stays blocked.
+    assert client.get("/image", params={"path": "minor.png"}).status_code == 403
+    assert client.get("/image", params={"path": "minor-b.png"}).status_code == 403
+
+
+def test_image_block_fails_closed_on_a_scan_file_that_names_nothing_legibly(tmp_path: Path) -> None:
+    root, cache = _seed_delete_scan(tmp_path)
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 200
+    (cache / "truncated.json").write_text('{"scan_id": "truncated", "results": [{"rel_pa')
+    # It could name any file, so none is served until it is fixed or deleted.
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 403
+    (cache / "truncated.json").unlink()
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 200
+
+
+def test_image_block_sees_a_re_save_within_one_mtime_tick(tmp_path: Path) -> None:
+    import os
+
+    from argus_curator.store import ScanStore
+
+    root, cache = _seed_delete_scan(tmp_path)
+    scan_file = cache / "scan.json"
+    tick = 1_700_000_000 * 1_000_000_000  # a whole second, as a coarse filesystem stores it
+    os.utime(scan_file, ns=(tick, tick))
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 200
+
+    store = ScanStore(cache)
+    summary = store.load("scan")
+    assert summary is not None
+    row = next(r for r in summary.results if r.rel_path == "adult.png")
+    row.primary_face_attributes.age_years = 10.0
+    row.faces[0].attributes.age_years = 10.0
+    store.save(summary)
+    os.utime(scan_file, ns=(tick, tick))  # re-saved in the same tick
+
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 403
+
+
 def test_thumb_of_an_under_18_exposed_frame_is_blurred_by_the_server(tmp_path: Path) -> None:
     import io
 
@@ -730,6 +800,38 @@ def test_upload_skips_existing_names(upload_setup: tuple[TestClient, Path]) -> N
     assert body["saved"] == 0
     assert body["skipped"] == ["a.png"]
     assert (existing / "a.png").read_bytes() == b"original"  # not overwritten
+
+
+def test_upload_never_writes_through_a_dangling_symlink(upload_setup: tuple[TestClient, Path]) -> None:
+    client, root = upload_setup
+    outside = root.parent / "outside.png"
+    (root / "uploads").mkdir()
+    (root / "uploads" / "a.png").symlink_to(outside)
+
+    resp = client.post("/upload", data={"folder": "uploads"}, files=[("files", ("a.png", _png_bytes(), "image/png"))])
+    assert resp.status_code == 200
+    assert resp.json()["skipped"] == ["a.png"]
+    assert not outside.exists()
+
+
+def test_upload_never_overwrites_a_file_saved_while_it_read(
+    upload_setup: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.server import app as app_mod
+
+    client, root = upload_setup
+    real_read_upload = app_mod.read_upload
+
+    async def read_upload(item, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        # A concurrent upload of the same name lands after the existence check.
+        (root / "uploads" / "a.png").write_bytes(b"first")
+        return await real_read_upload(item, *args, **kwargs)
+
+    monkeypatch.setattr(app_mod, "read_upload", read_upload)
+    resp = client.post("/upload", data={"folder": "uploads"}, files=[("files", ("a.png", _png_bytes(), "image/png"))])
+    assert resp.status_code == 200
+    assert resp.json()["skipped"] == ["a.png"]
+    assert (root / "uploads" / "a.png").read_bytes() == b"first"
 
 
 def test_thumb_path_traversal_blocked(contained: tuple[TestClient, Path]) -> None:
@@ -2107,6 +2209,44 @@ def test_deleting_a_scan_removes_a_half_written_save(tmp_path: Path) -> None:
 
     assert store.delete("s") is False  # no finished scan went
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_scan_deleted_mid_load_reads_as_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    store.save(_summary("s", "/data", total=1))
+    real_read = Path.read_text
+
+    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+        # A delete lands between the existence check and the read.
+        self.unlink(missing_ok=True)
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert store.load("s") is None
+
+
+def test_list_meta_skips_a_scan_deleted_mid_listing_and_a_non_object_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator.store import ScanStore
+
+    store = ScanStore(tmp_path)
+    store.save(_summary("kept", "/data", total=2))
+    store.save(_summary("gone", "/data", total=1))
+    (tmp_path / "list.json").write_text("[1, 2]")
+    (tmp_path / "bad_total.json").write_text('{"total": "many"}')
+    real_read = Path.read_text
+
+    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+        text = real_read(self, *args, **kwargs)
+        if self.stem == "gone":  # deleted between the read and the stat
+            self.unlink()
+        return text
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert [row["scan_id"] for row in store.list_meta()] == ["kept"]
 
 
 def test_overlapping_saves_of_one_scan_each_use_their_own_temp_file(

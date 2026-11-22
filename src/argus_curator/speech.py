@@ -442,12 +442,13 @@ def measure_clip(
             )
     no_vad = f"the {cfg.vad} VAD could not read it" if row.vad_error is not None else None
     if cfg.min_snr_db is not None and (row.snr_db is None or row.snr_db < cfg.min_snr_db):
-        failed.setdefault(
-            "snr",
-            f"{no_vad}, and min_snr_db is set"
-            if no_vad
-            else f"SNR {row.snr_db} dB is under min_snr_db {cfg.min_snr_db:g}",
-        )
+        if no_vad:
+            why = f"{no_vad}, and min_snr_db is set"
+        elif row.snr_db is None:
+            why = f"the {cfg.vad} VAD found no speech to measure an SNR on, and min_snr_db is set"
+        else:
+            why = f"SNR {row.snr_db} dB is under min_snr_db {cfg.min_snr_db:g}"
+        failed.setdefault("snr", why)
     if cfg.min_speech_ratio is not None:
         if row.speech_ratio is None:
             failed.setdefault("speech_ratio", f"{no_vad or 'no speech ratio'}, and min_speech_ratio is set")
@@ -761,6 +762,8 @@ def scan_speech_folder(
                     raise ValueError("the clip could not be read again")
                 row.stt_transcript = transcriber.transcribe(decoded[0], decoded[1], row.language)
                 row.cer = round(cer(row.transcript or "", row.stt_transcript), 4)
+            except GPU_UNAVAILABLE:
+                raise  # no GPU slot is not a bad clip: fail the scan
             except Exception as exc:
                 logger.warning("speech_stt_failed", rel_path=row.rel_path, error=str(exc))
             if cfg.max_cer is not None:

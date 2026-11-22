@@ -31,6 +31,7 @@ from argus_curator.models import (
     ImageResult,
     ManifestRow,
     PoseConfig,
+    PoseSummary,
     ScanConfig,
     ScanRequest,
     TargetProfile,
@@ -411,6 +412,23 @@ def test_a_garbled_stats_answer_never_fails_the_scan(puppet: FakePuppet) -> None
     assert summary.results[0].pose_cluster is None and summary.results[0].pose_labels is not None
 
 
+def test_a_stats_item_whose_image_is_not_a_string_is_skipped() -> None:
+    """A list or object for "image" is unhashable: it must be skipped like any
+    other malformed row, not raise TypeError out of the stats step."""
+    row = ImageResult(rel_path="a.png", abs_path="/d/a.png", passed=True, pose_check="ok")
+    pose = PoseSummary()
+    answer = _stats(
+        [
+            {"image": ["a.png"], "usable": True, "cluster": 0},
+            {"image": {"a": 1}, "usable": True, "cluster": 0},
+            {"image": "a.png", "usable": True, "cluster": 0, "labels": STANDING},
+        ],
+        [{"id": 0, "size": 1, "share": 1.0, "medoid": "a.png"}],
+    )
+    bodypose.apply_stats([row], pose, answer)
+    assert row.pose_cluster == 0 and row.pose_check == "ok"
+
+
 # --- what persists ----------------------------------------------------------
 
 
@@ -569,6 +587,19 @@ def test_a_503_is_retried_after_its_retry_after(server: str) -> None:
     assert len(_Puppet.requests) == 3
     assert client.stats(b'{"results": []}')["puppet_version"] == "1.1"
     assert _Puppet.requests[-1]["path"] == "/stats" and _Puppet.requests[-1]["priority"] == "batch"
+
+
+@pytest.mark.parametrize("header", ["nan", "NaN", "-nan"])
+def test_a_nan_retry_after_waits_the_default_not_nan(header: str) -> None:
+    """float() takes "nan", and the clamp passes NaN through: time.sleep(nan) raises."""
+    import email.message
+    import urllib.error
+
+    headers = email.message.Message()
+    headers["Retry-After"] = header
+    exc = bodypose.PoseCheckFailed("busy")
+    exc.__cause__ = urllib.error.HTTPError("http://puppet/pose", 503, "busy", headers, None)
+    assert bodypose._retry_after(exc) == 1.0
 
 
 def test_retries_are_bounded(server: str) -> None:

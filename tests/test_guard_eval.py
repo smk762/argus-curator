@@ -365,6 +365,15 @@ def test_a_cache_line_cut_short_is_skipped(tmp_path: Path) -> None:
     assert set(guard_eval.VerdictCache(path).entries) == {"a"}
 
 
+def test_a_verdict_appended_after_a_cut_short_line_starts_its_own(tmp_path: Path) -> None:
+    path = tmp_path / "v.jsonl"
+    path.write_text('{"key": "a", "safe": true}\n{"key": "b", "sa')
+    cache = guard_eval.VerdictCache(path)
+    cache.put("c", {"safe": False})
+    cache.close()
+    assert set(guard_eval.VerdictCache(path).entries) == {"a", "c"}
+
+
 def test_a_cache_needs_a_digest(tmp_path: Path, fake_client: type[_FakeClient]) -> None:
     cache = guard_eval.VerdictCache(tmp_path / "v.jsonl")
     with pytest.raises(guard_eval.RunStopped, match="needs the model digest"):
@@ -408,6 +417,11 @@ def test_digest_sources() -> None:
     tags = {"models": [{"name": "singguard:4b", "model": "singguard:4b", "digest": "abc"}]}
     assert guard_eval.ollama_digest("http://o:11434/", "singguard:4b", lambda url: tags) == "abc"
     assert guard_eval.ollama_digest("http://o:11434", "other", lambda url: tags) is None
+    latest = {"models": [{"name": "llama-guard3:latest", "model": "llama-guard3:latest", "digest": "def"}]}
+    assert guard_eval.ollama_digest("http://o", "llama-guard3", lambda url: latest) == "def"
+    assert guard_eval.ollama_digest("http://o", "llama-guard3:8b", lambda url: latest) is None
+    registry = {"models": [{"name": "reg:5000/guard:latest", "model": "reg:5000/guard:latest", "digest": "r"}]}
+    assert guard_eval.ollama_digest("http://o", "reg:5000/guard", lambda url: registry) == "r"
     health = {"model": "inclusionAI/SingGuard-4b", "revision": "4e08"}
     assert guard_eval.health_digest("http://g", lambda url: health) == "inclusionAI/SingGuard-4b@4e08"
     assert guard_eval.health_digest("http://g", lambda url: {"status": "ok"}) is None
@@ -665,6 +679,13 @@ def test_changes_between_arms_are_weighed_against_each_frames_noise() -> None:
     assert found["steady"].direction == "worse"
 
 
+def test_two_arms_that_agree_are_no_change_beyond_noise() -> None:
+    def frame(arm: str) -> guard_eval.Frame:
+        return guard_eval.Frame(arm, "c", "safe", "", "text", "pass", verdicts=[(1, False), (2, False)])
+
+    assert not guard_eval.Change("c", frame("adult"), frame("cand")).beyond_noise
+
+
 def test_a_candidate_that_passes_a_hard_frame_its_parent_flagged_fails() -> None:
     cand = {"scored_as": "adult"}
     rows = (
@@ -893,3 +914,10 @@ def test_answers_that_follow_the_cache_state_are_called_out() -> None:
     assert "depends on how much of the prompt was cached" in text
     data["cold"][1] = run(0, -0.01)
     assert "noise the cache doesn't explain" in guard_eval.summarise_cache_check(data)
+
+
+def test_a_cache_check_with_no_evaluations_draws_no_conclusion() -> None:
+    data = {"model": "m", "image": False, "fillers": 2, "back-to-back": [], "interleaved": [], "cold": []}
+    text = guard_eval.summarise_cache_check(data)
+    assert "No evaluations were recorded" in text
+    assert "depends on how much of the prompt was cached" not in text
