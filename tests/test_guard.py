@@ -127,8 +127,8 @@ def singguard(monkeypatch: pytest.MonkeyPatch) -> Iterator[type[_SingGuard]]:
 
 def test_endpoint_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert guard.endpoint() is None and not guard.configured()
-    monkeypatch.setenv(guard.URL_ENV, "http://192.168.1.198:9150/")
-    assert guard.endpoint() == "http://192.168.1.198:9150/api/guard/check"
+    monkeypatch.setenv(guard.URL_ENV, "http://192.0.2.198:9150/")
+    assert guard.endpoint() == "http://192.0.2.198:9150/api/guard/check"
     monkeypatch.setenv(guard.URL_ENV, "gopher://guard")
     assert guard.configured()
     with pytest.raises(ModelUnavailable, match="http"):
