@@ -561,17 +561,21 @@ def test_a_nudenet_failure_stops_face_detection_at_its_next_image(
     from argus_curator.models import NsfwConfig
 
     faces_started = threading.Event()
+    faces_exited = threading.Event()
     reached: list[int] = []
 
     def fake_faces(results, items, cfg, progress=None, on_done=None):
         faces_started.set()
-        row = next(r for r in results if r.passed)
-        for i in range(500):  # far more images than the scan has time for
-            reached.append(i)
-            if on_done is not None:
-                on_done(row, i + 1, 500)
-            threading.Event().wait(0.01)
-        return faces_mod.DetectedFaces([], [], [])
+        try:
+            row = next(r for r in results if r.passed)
+            for i in range(500):  # far more images than the scan has time for
+                reached.append(i)
+                if on_done is not None:
+                    on_done(row, i + 1, 500)
+                threading.Event().wait(0.01)
+            return faces_mod.DetectedFaces([], [], [])
+        finally:
+            faces_exited.set()
 
     def fake_nsfw(results, items, cfg, progress=None, on_done=None):
         assert faces_started.wait(5)
@@ -583,6 +587,9 @@ def test_a_nudenet_failure_stops_face_detection_at_its_next_image(
 
     with pytest.raises(RuntimeError, match="NudeNet answered 500"):
         scan_folder(dataset, faces_cfg=FaceConfig(enabled=True), nsfw_cfg=NsfwConfig())
+    # Stopped, not merely unfinished: a worker left running in the background would
+    # still be early in its loop here, and keep going after the scan has failed.
+    assert faces_exited.is_set()
     assert len(reached) < 500
 
 

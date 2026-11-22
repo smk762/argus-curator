@@ -166,7 +166,10 @@ def test_a_scan_asking_for_semantic_duplicates_without_embeddings_is_refused() -
     with pytest.raises(ValidationError, match="needs the scan's embeddings"):
         ScanRequest(folder="", config={"semantic_duplicates": True})
     assert ScanRequest(folder="", config={"semantic_duplicates": True}, embeddings={"enabled": True})
-    with pytest.raises(ValidationError, match="semantic_duplicates"):
+    # The speech refusal, not the missing-embeddings one (whose message also names semantic_duplicates).
+    with pytest.raises(
+        ValidationError, match=r"a speech scan runs no image checks: turn off config\.semantic_duplicates"
+    ):
         ScanRequest(
             folder="",
             target_profile={"modality": "speech"},
