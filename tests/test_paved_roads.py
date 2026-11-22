@@ -248,7 +248,7 @@ PUBLIC_LENS = "https://lens.example.com/caption"
     [
         ("", PUBLIC_LENS, "93.184.215.14"),  # nothing configured: a public host is not enough
         ("lens:8100", PUBLIC_LENS, "93.184.215.14"),  # a public host that isn't the configured lens
-        ("lens:8100", "http://nas:8100/caption", "192.168.1.20"),  # an unconfigured LAN host
+        ("lens:8100", "http://nas:8100/caption", "192.168.200.20"),  # an unconfigured LAN host
         ("lens:8100", "http://lens:9000/caption", "10.0.0.5"),  # the lens host on another port
     ],
 )
