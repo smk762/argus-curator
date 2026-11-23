@@ -37,7 +37,7 @@ dependencies = [
     # shared across the suite. Its base install is pydantic-only. The <0.13 cap is
     # deliberate: argus-cortex is pre-1.0, where a minor bump carries no
     # compatibility guarantee.
-    "argus-cortex>=0.13,<0.14",
+    "argus-cortex>=0.14,<0.15",
 ]
 
 [project.optional-dependencies]
@@ -58,13 +58,13 @@ server = [
     "certifi>=2026.10.19",
     # [remote,yaml]: the argus-iris broker client and gpu-tenant.yaml. /health builds the
     # GPU coordinator, so a CPU server with ARGUS_GPU_COORDINATOR=broker needs them too.
-    "argus-cortex[server,remote,yaml]>=0.13,<0.14",
+    "argus-cortex[server,remote,yaml]>=0.14,<0.15",
 ]
 cli = ["typer>=0.12", "rich>=13.0"]
 gpu = [
     # NVML, for the shared GPU lease's free-VRAM wait (argus_cortex.gpu); httpx and
     # PyYAML for the argus-iris broker client and gpu-tenant.yaml (argus_cortex.gpu_broker).
-    "argus-cortex[gpu,remote,yaml]>=0.13,<0.14",
+    "argus-cortex[gpu,remote,yaml]>=0.14,<0.15",
     "insightface>=2.1,<3",
     # insightface's face alignment calls SimilarityTransform.estimate, which
     # scikit-image removes in 2.2.
@@ -123,7 +123,7 @@ lid-convert = [
 # Speech scans (#186): WAV/FLAC decoding through argus_cortex.limits.open_audio
 # (soundfile, which bundles libsndfile), and onnxruntime for the optional DNSMOS
 # score (`argus-curator dnsmos-fetch`). Everything else is numpy.
-speech = ["argus-cortex[audio]>=0.13,<0.14", "onnxruntime>=1.16"]
+speech = ["argus-cortex[audio]>=0.14,<0.15", "onnxruntime>=1.16"]
 # Composed from the extras above rather than hand-duplicating them, so a new
 # member of `server`/`cli`/`faces` cannot silently go missing from `all`.
 all = ["argus-curator[server,cli,faces,speech]"]
@@ -136,7 +136,7 @@ dev = [
     "httpx>=0.27",
     "httpx2>=2.7",
     "certifi>=2026.10.19",
-    "argus-cortex[audio]>=0.13,<0.14",
+    "argus-cortex[audio]>=0.14,<0.15",
 ]
 
 [project.scripts]

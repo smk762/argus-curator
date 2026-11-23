@@ -1884,21 +1884,14 @@ def schema(
     Run without flags to (re)write the committed schema; run with --check in CI
     to fail if the models have drifted from the committed artifact.
     """
+    from argus_cortex.wire import sync_schema
+
     from argus_curator.models import render_wire_schema
 
-    rendered = render_wire_schema()
-
-    if check:
-        existing = output.read_text(encoding="utf-8") if output.exists() else ""
-        if existing != rendered:
-            typer.echo(f"{output} is stale — run `argus-curator schema` and commit the result.", err=True)
-            raise typer.Exit(1)
-        typer.echo(f"{output} is up to date.")
-        return
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(rendered, encoding="utf-8")
-    typer.echo(f"Wrote wire schema -> {output}")
+    result = sync_schema(render_wire_schema(), output, check=check, command="argus-curator schema")
+    typer.echo(result.message, err=not result.ok)
+    if not result.ok:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
