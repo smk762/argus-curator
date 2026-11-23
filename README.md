@@ -185,7 +185,7 @@ narrows that to exposure on the young person's box; see
 - [Policy check](docs/policy-check.md): SingGuard verdicts, policies and context
 - [Prefilter](docs/prefilter.md): drop images before the slow checks
 - [Crops](docs/crops.md): watermarks and borders, given or detected
-- [Speech scans](docs/speech.md): voice clips and transcripts: duration, clipping, silence, SNR, speech ratio, speaking rate, DNSMOS, near-duplicates; speaker clustering, hours per speaker and accent, a speaker-disjoint split, and `speech_manifest.jsonl` with corpus, licence or consent on every clip
+- [Speech scans](docs/speech.md): voice clips and transcripts: duration, clipping, silence, SNR, speech ratio, speaking rate, DNSMOS, near-duplicates; speaker clustering, hours per speaker and accent, a speaker-disjoint split, and `speech_manifest.jsonl` with corpus, licence or consent on every clip. Consumers join the relative export paths and treat the `<stem>.txt` as authoritative; a checked-in [sample export](samples/speech-export/) is there to test against.
 
 **Export and handoff**
 
