@@ -196,10 +196,10 @@ The export response carries the same mappings as `exported_paths` and
 | 2.1 | 0.2.1 | Adds `exported_abs_path`. Fixes `abs_path` under `move`, which named the deleted source; it is now the destination. |
 | 2.2 | 0.14.0 | Adds `crop`. |
 | 2.3 | 0.15.0 | Adds `primary_face` and `set_age`. |
-| 2.4 | unreleased | Adds `split`. |
-| 2.5 | unreleased | Adds `target_profile.modality`, always `image` (argus-cortex 0.12). |
-| 2.6 | unreleased | Adds `consent_release_sha256`, `consent_record_sha256` and `provenance` (consented face sets, #133); `provenance.subject` is the subject ref `consent:<release_sha256>`, never a name. |
-| 2.7 | unreleased | Adds `pose_labels` and `pose_cluster` (argus-puppet's body pose). |
+| 2.4 | 0.19.0 | Adds `split`. |
+| 2.5 | 0.19.0 | Adds `target_profile.modality`, always `image` (argus-cortex 0.12). |
+| 2.6 | 0.19.0 | Adds `consent_release_sha256`, `consent_record_sha256` and `provenance` (consented face sets, #133); `provenance.subject` is the subject ref `consent:<release_sha256>`, never a name. |
+| 2.7 | 0.20.0 | Adds `pose_labels` and `pose_cluster` (argus-puppet's body pose). |
 
 2.0 is a new major because a 1.x consumer that derives destinations from
 `rel_path`, or trusts every row to name a file on disk, misreads a 2.x manifest.

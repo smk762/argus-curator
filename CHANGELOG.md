@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-23
+
+**For downstream callers (argus-lens, argus-forge, argus-proof, argus-mint, and
+anything that drives `POST /export` or `argus-curator serve`).** One behaviour
+change, and nothing else breaks:
+
+- **`serve` binds `127.0.0.1` by default.** A request without an `Origin` still
+  passes the write guard, so the old `0.0.0.0` default exposed scan, export and
+  delete to the LAN. Pass `--host 0.0.0.0` (the Dockerfile does) when you mean
+  to listen on all interfaces. It warns on a non-loopback bind.
+- **`MANIFEST_VERSION` stays 2.7 and `SPEECH_MANIFEST_VERSION` stays 1.0.**
+  Neither row shape changed. Speech consumers get clearer docs and a checked-in
+  sample export (#233); the wire schema is regenerated via
+  `argus_cortex.wire.sync_schema` (#236).
+- argus-cortex stays `>=0.13,<0.14`.
+
 ### Added
 
 - **Speech manifest docs for consumers (#233).** `docs/speech.md` says to open
@@ -17,21 +33,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   train + held-out export (empty WAV headers, no real voices) for consumers to
   test against.
 
+### Changed
+
+- **`schema` / `schema --check` use `argus_cortex.wire.sync_schema` (#236).**
+  Same check as before; the committed `schema/curator-wire.schema.json` stays
+  the source of truth for CI.
+- Hashing goes through `argus_cortex.hashing.sha256_hex` where a local helper
+  used to live.
+
 ### Fixed
 
-- An export with a named `selection` and a `face_source` now drops images
-  argus-quarry marks `likeness_consent: false`, as a filtered export does. A
-  consented `face_source` with a named selection is refused at export too, not
-  only by `ExportRequest` validation.
-- `POST /faces` refuses a multipart body with no `Content-Length` (a chunked
-  upload) with 411 instead of parsing it, which spooled a file of any size to
-  disk past the upload cap.
-- A copy or move whose source is itself a symlink, landing on that same entry,
-  no longer unlinks the source before transferring it.
-- The manifest compatibility check follows `$ref` chains and compares the
-  keywords beside a `$ref`, so a breaking change there is no longer missed.
-- `guard_eval.py`'s prompt-cache summary no longer reports a cache miss when
-  there was at most one back-to-back run.
+Nightly ai-code-auditor packs on `dev` (#234, #237), plus small follow-ups:
+
+- **Serve / CLI.** `serve` defaults to loopback (above). `scan` exits 2 when
+  more than one of `--copy-to` / `--move-to` / `--symlink-to` is given. A
+  `--face-reference` counts as in-scan only on the image's exact rel path.
+- **Export.** Move mode unlinks a stale symlink at the destination before
+  moving. Manifest and transcript sidecars are written atomically
+  (`O_EXCL|O_NOFOLLOW` temp, then `os.replace`). A failed seed copy leaves no
+  partial sidecar. CSV report cells that look like a spreadsheet formula get a
+  leading `'`. A named `selection` with `face_source` now applies the
+  face-source gate (argus-quarry's `likeness_consent: false`), and a consented
+  `face_source` with a named list is refused at export even without request
+  validation. A copy or move whose source is itself a symlink, landing on that
+  same entry, no longer unlinks the source.
+- **Server / store.** The under-18 blocklist fails closed on an unparseable
+  scan file (while that file sits in the cache, `/image` is 403 and `/thumb`
+  blurs everything until it is fixed or purged), and keys its cache on
+  `st_mtime_ns`, size and inode. One unreadable child no longer fails
+  `/folders`. `/upload` creates each file with `O_EXCL|O_NOFOLLOW`.
+  `POST /faces` refuses a chunked multipart body with no `Content-Length`
+  (411) instead of spooling it uncapped. `ScanStore.load` and `list_meta`
+  survive a concurrent delete.
+- **Models.** `max_workers` is 1–64; `weight_*` fields are ≥ 0;
+  `diversity_weight` is 0–1. The wire schema is regenerated.
+- **Guard / guard_eval.** Untagged Ollama names compare as `:latest`.
+  `beyond_noise` needs the two arms to disagree. An append after a cut-short
+  cache line starts on a new line. An empty or single-run back-to-back cache
+  check draws no false "miss" conclusion. A missing cortex policy text fails
+  when that policy is requested, not on import.
+- **Vision.** Body visible fraction is measured from the mask (dark pixels no
+  longer count as masked). A NaN puppet `Retry-After` falls back to the
+  default. A stats item whose `image` isn't a string is skipped.
+- **Speech.** The Silero guard mask keeps the input's length. The hash-check
+  cache also keys on device, inode and ctime. A GPU-lease failure in the CER
+  phase fails the scan instead of rejecting every clip. An unmeasured SNR
+  names the missing speech frames. Unlabelled clips no longer set the
+  `balance_accents` cap.
+- **Tests.** Manifest compatibility follows `$ref` chains and keywords beside
+  a `$ref`, and walks `oneOf` / `allOf` / `prefixItems` / `not` / `if` / `then`
+  / `else` / `contains`. Assertions that could never fail now can. Tests no
+  longer hard-code LAN addresses (#235).
 
 ## [0.21.0] - 2026-11-21
 
@@ -1600,7 +1652,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/smk762/argus-curator/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/smk762/argus-curator/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/smk762/argus-curator/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/smk762/argus-curator/compare/v0.18.0...v0.19.0
