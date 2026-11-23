@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Requires argus-cortex `>=0.15,<0.16`** (was `>=0.14,<0.15`), for the zero-config
+GPU broker client (argus-cortex#204, argus-iris#47).
+
+### Changed
+
+- **`ARGUS_GPU_BROKER_URL` and `ARGUS_GPU_BROKER_TOKEN` are all the broker
+  needs.** The URL alone selects argus-iris, and the tenant and its kinds come
+  from `gpu-tenant.yaml`, which the image has at `/app/gpu-tenant.yaml` where
+  cortex looks for it. `ARGUS_GPU_TENANT_MANIFEST` and `ARGUS_GPU_TENANT` are
+  gone from compose and `.env.example`. An explicit `ARGUS_GPU_COORDINATOR`
+  still wins, so a host `.env` that sets `lease` must drop it to use the broker.
+- **The server registers with iris at startup** (`argus_cortex.gpu.aregistered`
+  in its lifespan), keeps it registered, and signs off at shutdown, so the
+  broker knows curator's kinds before its first lease. It never holds up
+  startup. The CLI still registers with its first lease.
+- **docker-compose.yaml no longer defaults `ARGUS_GPU_COORDINATOR` to `lease`**:
+  that default would win over a broker URL. `.env.example` still sets `lease`;
+  a host `.env` with neither it nor a broker URL now gates nothing.
+
 ## [0.22.0] - 2026-11-23
 
 **For downstream callers (argus-lens, argus-forge, argus-proof, argus-mint, and

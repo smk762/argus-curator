@@ -50,6 +50,13 @@ _CONFIG_ENV = (
     "ARGUS_CURATOR_PUPPET_MAX_JSON_BYTES",
     # The under-18 rule; tests pick a mode explicitly where it matters.
     "ARGUS_CURATOR_MINOR_EXPOSED",
+    # The GPU coordinator: a broker URL alone selects argus-iris (cortex 0.15), and
+    # the server would register with it at startup.
+    "ARGUS_GPU_COORDINATOR",
+    "ARGUS_GPU_BROKER_URL",
+    "ARGUS_GPU_BROKER_TOKEN",
+    "ARGUS_GPU_TENANT",
+    "ARGUS_GPU_TENANT_MANIFEST",
 )
 
 
@@ -69,6 +76,9 @@ def hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempP
     from argus_curator import runtime
 
     monkeypatch.setattr(runtime, "MODEL_DIR", tmp_path_factory.mktemp("models"))
+    # Built once per process from the environment; each test builds its own.
+    monkeypatch.setattr(runtime, "_coordinator", None)
+    monkeypatch.setattr(runtime, "_capped_cache", {})
 
 
 def _noise_image(size: int = 768, seed: int = 0) -> Image.Image:

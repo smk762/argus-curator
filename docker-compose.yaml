@@ -50,19 +50,19 @@ services:
       - ARGUS_CURATOR_MINOR_EXPOSED=${ARGUS_CURATOR_MINOR_EXPOSED:-frame}
       # Uncomment to permit destructive mode="move" exports.
       # - CURATOR_ALLOW_MOVE=1
-      # Share the GPU with other argus services (argus-lens) one job at a time,
-      # each starting only once the card has room (argus_cortex.gpu). Every
-      # service on the host must mount the same host directory (ARGUS_GPU_LOCK_DIR,
-      # below) and name the same lock file in it. ARGUS_GPU_COORDINATOR=none in
-      # .env turns it off. A CPU build (CURATOR_GPU=0) never takes the lease.
-      - ARGUS_GPU_COORDINATOR=${ARGUS_GPU_COORDINATOR:-lease}
+      # The GPU (argus_cortex.gpu, docs/gpu.md). ARGUS_GPU_BROKER_URL and
+      # ARGUS_GPU_BROKER_TOKEN alone ask argus-iris for each lease, registering
+      # /app/gpu-tenant.yaml at startup, and fall back to the host lease below
+      # while iris cannot be reached. Without a broker, ARGUS_GPU_COORDINATOR=lease
+      # (.env.example's) shares the GPU with other argus services one job at a
+      # time; every service on the host must mount the same host directory
+      # (ARGUS_GPU_LOCK_DIR, below) and name the same lock file in it. Unset, with
+      # no broker URL, gates nothing. A CPU build (CURATOR_GPU=0) never takes a lease.
+      - ARGUS_GPU_COORDINATOR=${ARGUS_GPU_COORDINATOR-}
       - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
       - ARGUS_GPU_LEASE_TIMEOUT_S=${ARGUS_GPU_LEASE_TIMEOUT_S:-300}
-      # ARGUS_GPU_COORDINATOR=broker asks argus-iris instead (docs/gpu.md),
-      # falling back to the lease above while iris cannot be reached.
       - ARGUS_GPU_BROKER_URL=${ARGUS_GPU_BROKER_URL-}
       - ARGUS_GPU_BROKER_TOKEN=${ARGUS_GPU_BROKER_TOKEN-}
-      - ARGUS_GPU_TENANT_MANIFEST=${ARGUS_GPU_TENANT_MANIFEST:-/app/gpu-tenant.yaml}
       - ARGUS_GPU_BROKER_FALLBACK=${ARGUS_GPU_BROKER_FALLBACK:-lease}
       # DNS names a browser UI reaches curator by (comma-separated), whose
       # same-host writes the write-guard allows. IPs and localhost need none.
