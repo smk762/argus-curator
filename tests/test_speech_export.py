@@ -972,8 +972,11 @@ def test_second_voice_windows_are_held_in_memory_and_purged_with_the_scan(
     assert window.ndim == 2 and window.shape[1] == speakers.EMBEDDING_DIM and window.dtype == np.float16
     store = ScanStore(tmp_path / "cache")
     store.save(summary)
-    on_disk = (tmp_path / "cache" / f"{summary.scan_id}.json").read_text(encoding="utf-8")
-    assert str(float(window[0, 0]))[:6] not in on_disk
+    assert {p.name for p in (tmp_path / "cache").iterdir()} == {f"{summary.scan_id}.json"}
+    on_disk = json.loads((tmp_path / "cache" / f"{summary.scan_id}.json").read_text(encoding="utf-8"))
+    assert "voice_windows" not in on_disk and "embeddings" not in on_disk
+    # A fresh store reads only the disk: nothing of the windows comes back.
+    assert ScanStore(tmp_path / "cache").held_voice_windows(summary.scan_id) == {}
     loaded = store.load(summary.scan_id)
     assert loaded is not None and set(loaded.voice_windows) == set(summary.voice_windows)
     # A dropped clip's windows go with it, and all of them with the scan.
@@ -1051,6 +1054,9 @@ def test_second_voice_windows_run_in_fixed_shape_passes_under_the_lease(
         expected = speakers.segment_features(x, 16000, None)
         assert windows.shape == (len(expected), speakers.EMBEDDING_DIM) and windows.dtype == np.float16
         assert len(shapes) == -(-len(expected) // speakers.SEGMENT_BATCH)
+        # Row i is window i: no reordering across passes, and the padded tail of the last pass is dropped.
+        ratio = windows[:, 1].astype(np.float32) / windows[:, 0].astype(np.float32)
+        np.testing.assert_allclose(ratio, expected[:, 0, 0], rtol=1e-2, atol=1e-2)
     # A pass holds no more frames than a clip's embedding pass, so the speakers VRAM figure covers it.
     assert speakers.SEGMENT_BATCH * speakers.SEGMENT_FRAMES <= speakers.WINDOWS * speakers.WINDOW_FRAMES
 

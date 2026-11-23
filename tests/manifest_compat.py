@@ -93,11 +93,24 @@ def breaking_changes(old: dict[str, Any], new: dict[str, Any], row: str = "Manif
     seen: set[tuple[str, str]] = set()
 
     def resolve(node: Any, defs: dict[str, Any]) -> tuple[Any, str | None]:
-        ref = node.get("$ref") if isinstance(node, dict) else None
-        if ref is None:
-            return node, None
-        name = ref.rsplit("/", 1)[-1]
-        return defs.get(name, {}), name
+        """*node* with every `$ref` followed, its sibling keywords kept, and a key naming the chain.
+
+        A def may itself be a `$ref` (an alias), and a referencing node may carry
+        constraints beside its `$ref` (a `const`, an `enum`, a `maxLength`): both
+        are compared. The key holds the siblings, so one def used with different
+        constraints is still walked at each use.
+        """
+        names: list[str] = []
+        chain: list[str] = []
+        while isinstance(node, dict) and "$ref" in node:
+            name = node["$ref"].rsplit("/", 1)[-1]
+            if name in names:
+                break  # a cycle of aliases names no schema
+            siblings = {k: v for k, v in node.items() if k != "$ref"}
+            names.append(name)
+            chain.append(json.dumps([name, siblings], sort_keys=True))
+            node = {**defs.get(name, {}), **siblings}
+        return node, "/".join(chain) if chain else None
 
     def walk(o: Any, n: Any, path: str) -> None:
         o, o_ref = resolve(o, old_defs)

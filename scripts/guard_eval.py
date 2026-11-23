@@ -1108,8 +1108,10 @@ def summarise_cache_check(data: dict) -> str:
         lines.append("Back-to-back repeats reuse the prompt cache.")
     elif any(map(_hit, later)):
         lines.append("Back-to-back repeats sometimes reuse the prompt cache.")
-    else:
+    elif later:
         lines.append("Back-to-back repeats did not reuse the prompt cache.")
+    elif runs:
+        lines.append("Not enough back-to-back runs to judge cache reuse.")
     if mixed and all(map(_hit, mixed)):
         lines.append(f"{data.get('fillers')} unrelated prompts between repeats did not evict it.")
     elif any(map(_hit, mixed)):

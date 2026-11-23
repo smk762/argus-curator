@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
+import pytest
+
 from argus_curator import scan_folder
-from argus_curator.export import _plan_dest_paths, export_selection
+from argus_curator.export import _plan_dest_paths, _transfer_one, export_selection
 from argus_curator.models import MANIFEST_VERSION, ExportRequest, ImageResult
 from argus_curator.selection import decide_selection
 
@@ -192,6 +195,23 @@ def test_symlink_export_into_the_source_folder_never_deletes_the_source(dataset:
     export_selection(summary, req.model_copy(update={"dest": str(dest)}))
     again = export_selection(summary, req.model_copy(update={"dest": str(dest)}))
     assert again.copied >= 1
+
+
+@pytest.mark.parametrize("mode", ["copy", "move"])
+def test_a_linked_source_transferred_onto_itself_is_never_deleted(tmp_path: Path, mode: str) -> None:
+    """A source that is itself a link, reached as dst through a parent symlink, keeps its link."""
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "real.png").write_bytes(b"png")
+    link = src_dir / "link.png"
+    link.symlink_to("real.png")
+    (tmp_path / "dest").symlink_to(src_dir)
+    if mode == "copy":
+        with pytest.raises(shutil.SameFileError):
+            _transfer_one(link, tmp_path / "dest" / "link.png", mode)
+    else:
+        _transfer_one(link, tmp_path / "dest" / "link.png", mode)
+    assert link.is_symlink() and link.read_bytes() == b"png"
 
 
 # ---------------------------------------------------------------------------

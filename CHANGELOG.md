@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An export with a named `selection` and a `face_source` now drops images
+  argus-quarry marks `likeness_consent: false`, as a filtered export does. A
+  consented `face_source` with a named selection is refused at export too, not
+  only by `ExportRequest` validation.
+- `POST /faces` refuses a multipart body with no `Content-Length` (a chunked
+  upload) with 411 instead of parsing it, which spooled a file of any size to
+  disk past the upload cap.
+- A copy or move whose source is itself a symlink, landing on that same entry,
+  no longer unlinks the source before transferring it.
+- The manifest compatibility check follows `$ref` chains and compares the
+  keywords beside a `$ref`, so a breaking change there is no longer missed.
+- `guard_eval.py`'s prompt-cache summary no longer reports a cache miss when
+  there was at most one back-to-back run.
+
 ## [0.21.0] - 2026-11-21
 
 **For downstream callers (argus-lens, argus-forge, argus-proof, argus-mint, and
