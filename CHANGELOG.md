@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Speech manifest docs for consumers (#233).** `docs/speech.md` says to open
+  clips by joining `exported_path` / `transcript_path` onto the consumer's view
+  of the export folder (absolute paths are curator's filesystem, useless behind
+  a container mount), and that a trainer's `<stem>.txt` wins if it is edited
+  after export. [`samples/speech-export/`](samples/speech-export/) is a checked-in
+  train + held-out export (empty WAV headers, no real voices) for consumers to
+  test against.
+
 ### Fixed
 
 - An export with a named `selection` and a `face_source` now drops images
