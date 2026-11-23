@@ -10,18 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.22.0] - 2026-11-23
 
 **For downstream callers (argus-lens, argus-forge, argus-proof, argus-mint, and
-anything that drives `POST /export` or `argus-curator serve`).** One behaviour
-change, and nothing else breaks:
+anything that drives `POST /export` or `argus-curator serve`).** Two behaviour
+changes, and nothing else breaks:
 
 - **`serve` binds `127.0.0.1` by default.** A request without an `Origin` still
   passes the write guard, so the old `0.0.0.0` default exposed scan, export and
   delete to the LAN. Pass `--host 0.0.0.0` (the Dockerfile does) when you mean
   to listen on all interfaces. It warns on a non-loopback bind.
+- **Requires argus-cortex `>=0.14,<0.15`** (was `>=0.13,<0.14`). `schema` uses
+  `argus_cortex.wire.sync_schema`, and consent hashing uses
+  `argus_cortex.hashing.sha256_hex`.
 - **`MANIFEST_VERSION` stays 2.7 and `SPEECH_MANIFEST_VERSION` stays 1.0.**
   Neither row shape changed. Speech consumers get clearer docs and a checked-in
   sample export (#233); the wire schema is regenerated via
   `argus_cortex.wire.sync_schema` (#236).
-- argus-cortex stays `>=0.13,<0.14`.
 
 ### Added
 
@@ -49,10 +51,13 @@ Nightly ai-code-auditor packs on `dev` (#234, #237), plus small follow-ups:
   more than one of `--copy-to` / `--move-to` / `--symlink-to` is given. A
   `--face-reference` counts as in-scan only on the image's exact rel path.
 - **Export.** Move mode unlinks a stale symlink at the destination before
-  moving. Manifest and transcript sidecars are written atomically
-  (`O_EXCL|O_NOFOLLOW` temp, then `os.replace`). A failed seed copy leaves no
-  partial sidecar. CSV report cells that look like a spreadsheet formula get a
-  leading `'`. A named `selection` with `face_source` now applies the
+  moving. Manifests (image and speech), transcript sidecars, CSV reports,
+  `run_stats.json` and pseudonymised `<stem>.json` sidecars are written
+  atomically (`O_EXCL|O_NOFOLLOW` temp, then `os.replace`), so a symlink at
+  the destination or at the temp name is never followed. A failed seed copy
+  leaves no partial sidecar. CSV report cells that look like a spreadsheet
+  formula get a leading `'`, including a formula that sits behind whitespace.
+  The speech report gets the same treatment. A named `selection` with `face_source` now applies the
   face-source gate (argus-quarry's `likeness_consent: false`), and a consented
   `face_source` with a named list is refused at export even without request
   validation. A copy or move whose source is itself a symlink, landing on that
@@ -60,7 +65,9 @@ Nightly ai-code-auditor packs on `dev` (#234, #237), plus small follow-ups:
 - **Server / store.** The under-18 blocklist fails closed on an unparseable
   scan file (while that file sits in the cache, `/image` is 403 and `/thumb`
   blurs everything until it is fixed or purged), and keys its cache on
-  `st_mtime_ns`, size and inode. One unreadable child no longer fails
+  device, inode, size, `st_mtime_ns` and `st_ctime_ns`. A read error fails
+  that request closed and is not cached, so it does not stick after the file
+  is readable again. One unreadable child no longer fails
   `/folders`. `/upload` creates each file with `O_EXCL|O_NOFOLLOW`.
   `POST /faces` refuses a chunked multipart body with no `Content-Length`
   (411) instead of spooling it uncapped. `ScanStore.load` and `list_meta`

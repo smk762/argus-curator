@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
 import os
 import secrets
@@ -207,7 +208,7 @@ def _transfer_one(src: Path, dst: Path, mode: ExportMode) -> None:
         shutil.copy2(src, dst)
 
 
-def _write_text_atomically(path: Path, text: str) -> None:
+def _write_text_atomically(path: Path, text: str, *, newline: str | None = None) -> None:
     """Write *text* to *path* through a fresh temp file and a rename; a failure leaves *path* as it was.
 
     The temp file gets a random name opened ``O_EXCL | O_NOFOLLOW``, so a link
@@ -218,7 +219,8 @@ def _write_text_atomically(path: Path, text: str) -> None:
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # newline="" keeps a CSV's \r\n from being translated again on Windows.
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as fh:
             fh.write(text)
         os.replace(tmp, path)
     except BaseException:
@@ -259,16 +261,11 @@ def _write_pseudonymised_sidecar(side: Path, target: Path, provenance: Provenanc
         if provenance is None:
             raise ValueError("its sidecar names a provenance the consent hold does not cover")
         data["provenance"] = provenance.model_dump(mode="json")
-    target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and not target.is_symlink() and os.path.samefile(target, side):
         raise shutil.SameFileError(f"{target} is the source sidecar")
-    tmp = target.with_name(f".{target.name}.tmp")
-    try:
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        # os.replace swaps a link left at *target* for the file, never writing through it.
-        os.replace(tmp, target)
-    finally:
-        tmp.unlink(missing_ok=True)
+    # A predictable temp name is a link someone can plant; the atomic writer
+    # refuses to follow one, and replaces a link at *target* rather than writing through it.
+    _write_text_atomically(target, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 def _carry_sidecars(
@@ -418,8 +415,15 @@ _FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r")
 
 
 def _text_cell(value: str) -> str:
-    """*value* (a path or label from outside) made safe to open in a spreadsheet: a formula lead gets a quote."""
-    return f"'{value}" if value.startswith(_FORMULA_LEADS) else value
+    """*value* (a path or label from outside) made safe to open in a spreadsheet.
+
+    A formula lead (``= + - @``, tab, CR) gets a quote, including one that sits
+    behind whitespace a spreadsheet strips before it decides the cell is a formula.
+    """
+    lead = value.lstrip(" \t\r\n")
+    if value[:1] in _FORMULA_LEADS or lead[:1] in _FORMULA_LEADS:
+        return f"'{value}"
+    return value
 
 
 def _face_columns(face: FaceDetection | None) -> dict[str, object]:
@@ -535,9 +539,12 @@ def write_report(
         "age_body",
     )
     ordered = sorted(results, key=lambda r: (r.similar_group, -r.score))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
+    # Built in memory, then replaced: open("w") would follow a symlink at *path*
+    # and truncate whatever it points at, and a row that raises would leave a
+    # half-written report where the last one was.
+    buf = io.StringIO(newline="")
+    with buf:
+        w = csv.DictWriter(buf, fieldnames=fieldnames)
         w.writeheader()
         for r in ordered:
             w.writerow(
@@ -603,6 +610,8 @@ def write_report(
                     "abs_path": _text_cell(r.abs_path),
                 }
             )
+        text = buf.getvalue()
+    _write_text_atomically(path, text, newline="")
 
 
 def _region(face: FaceDetection, width: int, height: int, names: dict[str, str]) -> XmpRegion:
@@ -963,8 +972,7 @@ def export_selection(
     if req.run_stats is not None and (transferred or req.write_manifest):
         target = dest_root / RUN_STATS_NAME
         try:
-            dest_root.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(req.run_stats, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            _write_text_atomically(target, json.dumps(req.run_stats, indent=2, ensure_ascii=False) + "\n")
             run_stats_path = target
         except OSError as exc:
             logger.warning("run_stats_write_failed", path=str(target), error=str(exc))

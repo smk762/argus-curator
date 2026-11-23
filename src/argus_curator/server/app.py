@@ -284,20 +284,23 @@ class _MinorBlockList:
     ``/image`` and ``/thumb`` decide from the *resolved* target, never the raw
     query string, so ``./x.jpg``, ``sub/../x.jpg``, a symlink, or omitting
     ``scan_id`` all land on the same verdict. Every cached scan counts, not only
-    the one a request names. Each scan file is parsed once per version (its
-    mtime in ns, size and inode, so a re-save in the same coarse mtime tick still
-    counts as new).
+    the one a request names. Each scan file is parsed once per version (device,
+    inode, size, mtime in ns and ctime in ns). An atomic re-save changes the
+    inode; an in-place rewrite of the same length whose mtime is then set back
+    still changes ctime, so neither can keep a stale verdict.
 
     It fails closed: a scan file that does not parse blocks every file it names,
     and one that names nothing legibly (truncated, not JSON) blocks every file
-    until it is fixed or deleted. ``None`` in the cache stands for that.
+    until it is fixed or deleted. ``None`` in the cache stands for that. A read
+    that fails is not cached: pinning that version would block every file until
+    something else touched the scan file.
     """
 
     def __init__(self, store: ScanStore, rule: Any) -> None:
         self._store = store
         self._rule = rule
         self._lock = threading.Lock()
-        self._by_file: dict[Path, tuple[tuple[int, int, int], frozenset[Path] | None]] = {}
+        self._by_file: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[Path] | None]] = {}
 
     def _scan_paths(self, summary: ScanSummary) -> frozenset[Path]:
         blocked: set[Path] = set()
@@ -338,7 +341,7 @@ class _MinorBlockList:
                 st = path.stat()
             except OSError:  # removed meanwhile
                 continue
-            version = (st.st_mtime_ns, st.st_size, st.st_ino)
+            version = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
             with self._lock:
                 cached = self._by_file.get(path)
             if cached is None or cached[0] != version:
@@ -350,8 +353,10 @@ class _MinorBlockList:
                 except FileNotFoundError:  # removed meanwhile
                     continue
                 except OSError as exc:
+                    # Not cached: the version above is the file we failed to read,
+                    # and pinning it would block every image until something else touched it.
                     logger.warning("minor_blocklist_scan_unreadable", file=path.name, error=str(exc))
-                    raw = ""
+                    return True
                 try:
                     cached = (version, self._scan_paths(ScanSummary.model_validate_json(raw)))
                 except Exception as exc:

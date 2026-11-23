@@ -542,12 +542,25 @@ def test_a_manifest_row_that_raises_leaves_the_last_manifest_whole(tmp_path: Pat
 def test_the_report_neutralises_formula_cells(tmp_path: Path) -> None:
     import csv
 
-    img = _image(tmp_path / "src" / "=HYPERLINK(1).png", rel="=HYPERLINK(1).png")
+    img = _image(tmp_path / "src" / " =HYPERLINK(1).png", rel=" =HYPERLINK(1).png")
     img.duplicate_of = "+cmd.png"
     report = tmp_path / "report.csv"
     export_mod.write_report([img], {}, set(), {img.rel_path: "@x.png"}, report)
     row = next(csv.DictReader(report.open(encoding="utf-8")))
-    assert row["rel_path"] == "'=HYPERLINK(1).png"
+    assert row["rel_path"] == "' =HYPERLINK(1).png"  # a spreadsheet strips the leading space
     assert row["duplicate_of"] == "'+cmd.png"
     assert row["exported_path"] == "'@x.png"
     assert row["abs_path"] == img.abs_path  # an absolute path leads with "/", left as it is
+
+
+def test_the_report_replaces_a_symlink_instead_of_truncating_its_target(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.csv"
+    victim.write_text("keep me")
+    img = _image(tmp_path / "src" / "a.png")
+    report = tmp_path / "out" / "curation_report.csv"
+    report.parent.mkdir()
+    report.symlink_to(victim)
+    export_mod.write_report([img], {}, set(), {}, report)
+    assert victim.read_text() == "keep me"
+    assert report.is_file() and not report.is_symlink()
+    assert "a.png" in report.read_text(encoding="utf-8")

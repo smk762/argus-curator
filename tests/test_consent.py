@@ -389,6 +389,28 @@ def test_consent_subject_name_appears_nowhere_in_the_export(
     assert not (dest / "a0.json").is_symlink()
 
 
+def test_a_pseudonymised_sidecar_never_writes_through_a_planted_temp_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    side = tmp_path / "x.json"
+    side.write_text(json.dumps({"producer": "argus-mask"}))
+    victim = tmp_path / "victim.json"
+    victim.write_text("keep me")
+    target = tmp_path / "out" / "x.json"
+    target.parent.mkdir()
+    # The old temp name was predictable; a link there must not receive the sidecar.
+    (target.parent / f".{target.name}.tmp").symlink_to(victim)
+    monkeypatch.setattr("argus_curator.export.secrets.token_hex", lambda _n: "ab" * 8)
+    planted = target.parent / f".{target.name}.{'ab' * 8}.tmp"
+    planted.symlink_to(victim)
+
+    with pytest.raises(FileExistsError):
+        _write_pseudonymised_sidecar(side, target, None)
+
+    assert victim.read_text() == "keep me"
+    assert not target.exists()
+
+
 def test_a_carried_sidecar_the_hold_does_not_cover_is_not_carried(tmp_path: Path) -> None:
     side = tmp_path / "x.json"
     side.write_text(json.dumps({"provenance": {"subject": "Jo Example"}}))

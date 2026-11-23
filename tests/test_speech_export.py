@@ -1246,6 +1246,46 @@ def test_real_speaker_model_embeds_a_clip() -> None:  # pragma: no cover - needs
     assert a.shape == (speakers.EMBEDDING_DIM,) and float(a @ b) > 0.99
 
 
+def test_a_speech_manifest_replaces_a_symlink_and_keeps_the_previous_file_when_a_row_raises(
+    tmp_path: Path,
+) -> None:
+    from argus_curator.speech_export import write_manifest
+
+    victim = tmp_path / "victim.jsonl"
+    victim.write_text("keep me\n")
+    path = tmp_path / "out" / "speech_manifest.jsonl"
+    path.parent.mkdir()
+    path.symlink_to(victim)
+    write_manifest([], path)
+    assert victim.read_text() == "keep me\n"
+    assert path.is_file() and not path.is_symlink() and path.read_text(encoding="utf-8") == ""
+
+    path.write_text('{"ok": true}\n', encoding="utf-8")
+
+    class _Boom:
+        def model_dump_json(self) -> str:
+            raise KeyError("nope")
+
+    with pytest.raises(KeyError):
+        write_manifest([_Boom()], path)  # type: ignore[list-item]
+    assert path.read_text(encoding="utf-8") == '{"ok": true}\n'
+
+
+def test_the_speech_report_neutralises_formula_cells(tmp_path: Path) -> None:
+    import csv
+
+    from argus_curator.models import ClipResult
+    from argus_curator.speech_export import write_report
+
+    clip = ClipResult(rel_path=" =HYPERLINK(1).wav", abs_path="/tmp/x.wav", duplicate_of="+cmd.wav", accent="@x")
+    report = tmp_path / "curation_report.csv"
+    write_report([clip], {}, {}, {}, report)
+    row = next(csv.DictReader(report.open(encoding="utf-8")))
+    assert row["rel_path"] == "' =HYPERLINK(1).wav"
+    assert row["duplicate_of"] == "'+cmd.wav"
+    assert row["accent"] == "'@x"
+
+
 def test_a_transcript_never_writes_through_a_link_planted_at_its_temp_name(tmp_path: Path) -> None:
     from argus_curator import speech_export
 

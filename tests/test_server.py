@@ -675,6 +675,50 @@ def test_image_block_sees_a_re_save_within_one_mtime_tick(tmp_path: Path) -> Non
     assert client.get("/image", params={"path": "adult.png"}).status_code == 403
 
 
+def test_image_block_sees_a_same_size_edit_whose_mtime_was_restored(tmp_path: Path) -> None:
+    """An in-place rewrite keeps the inode, and utime puts the mtime back; ctime still moves."""
+    import os
+
+    root, cache = _seed_delete_scan(tmp_path)
+    scan_file = cache / "scan.json"
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 200
+
+    before = scan_file.stat()
+    raw = scan_file.read_bytes()
+    edited = raw.replace(b"30.0", b"10.0", 1)
+    assert edited != raw and len(edited) == len(raw)
+    scan_file.write_bytes(edited)  # same inode
+    os.utime(scan_file, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = scan_file.stat()
+    assert (after.st_ino, after.st_size, after.st_mtime_ns) == (before.st_ino, before.st_size, before.st_mtime_ns)
+
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 403
+
+
+def test_image_block_retries_a_scan_file_it_could_not_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transient read error fails closed for that request and does not pin the version."""
+    import os
+
+    root, cache = _seed_delete_scan(tmp_path)
+    scan_file = cache / "scan.json"
+    client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 200
+
+    os.utime(scan_file, None)  # a new version, so the next request has to read it
+    real_read_text = Path.read_text
+
+    def unreadable(self: Path, *args: object, **kwargs: object) -> str:
+        if self == scan_file:
+            raise OSError("stale handle")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 403
+    monkeypatch.undo()
+    assert client.get("/image", params={"path": "adult.png"}).status_code == 200
+
+
 def test_thumb_of_an_under_18_exposed_frame_is_blurred_by_the_server(tmp_path: Path) -> None:
     import io
 

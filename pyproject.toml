@@ -34,7 +34,7 @@ dependencies = [
     "pydantic>=2.7",
     "structlog>=24.0",
     # The NudeNet / SingGuard clients and their result types (argus_cortex.moderation),
-    # shared across the suite. Its base install is pydantic-only. The <0.13 cap is
+    # shared across the suite. Its base install is pydantic-only. The <0.15 cap is
     # deliberate: argus-cortex is pre-1.0, where a minor bump carries no
     # compatibility guarantee.
     "argus-cortex>=0.14,<0.15",

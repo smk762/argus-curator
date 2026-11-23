@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -45,6 +46,7 @@ from argus_curator.export import (
     RUN_STATS_NAME,
     ProgressFn,
     _plan_dest_paths,
+    _text_cell,
     _transfer_one,
     _write_text_atomically,
 )
@@ -245,11 +247,12 @@ def _write_transcript(path: Path, text: str) -> None:
 
 
 def write_manifest(rows: list[SpeechManifestRow], path: Path) -> None:
-    """One JSON object per line, one line per exported clip."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fh:
-        for row in rows:
-            fh.write(row.model_dump_json() + "\n")
+    """One JSON object per line, one line per exported clip.
+
+    Every row is rendered before the file is touched, and the write replaces a
+    symlink at *path* instead of following it.
+    """
+    _write_text_atomically(path, "".join(row.model_dump_json() + "\n" for row in rows))
 
 
 def write_report(
@@ -294,38 +297,40 @@ def write_report(
         "is_duplicate",
         "duplicate_of",
     ]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=fields)
+    buf = io.StringIO(newline="")
+    with buf:
+        w = csv.DictWriter(buf, fieldnames=fields)
         w.writeheader()
         for c in sorted(clips, key=lambda c: (speaker_id(c) or "", -c.score, c.rel_path)):
             w.writerow(
                 {
-                    "rel_path": c.rel_path,
+                    "rel_path": _text_cell(c.rel_path),
                     "score": round(c.score, 4),
                     "keep": keep_reason.get(c.rel_path, "") == "" and c.rel_path in exported,
-                    "keep_reason": keep_reason.get(c.rel_path, ""),
-                    "exported_path": exported.get(c.rel_path, ""),
+                    "keep_reason": _text_cell(keep_reason.get(c.rel_path, "")),
+                    "exported_path": _text_cell(exported.get(c.rel_path, "")),
                     "split": split.get(c.rel_path, ""),
-                    "speaker_id": speaker_id(c) or "",
+                    "speaker_id": _text_cell(speaker_id(c) or ""),
                     "speaker_cluster": c.speaker_cluster or "",
                     "speaker_mismatch": c.speaker_mismatch,
                     "consent_distance": consent_distance.get(c.rel_path, ""),
                     "second_voice_distance": second_voice_distance.get(c.rel_path, ""),
-                    "accent": c.accent or "",
-                    "language": c.language or "",
-                    "language_predicted": c.language_predicted or "",
+                    "accent": _text_cell(c.accent or ""),
+                    "language": _text_cell(c.language or ""),
+                    "language_predicted": _text_cell(c.language_predicted or ""),
                     "language_confidence": "" if c.language_confidence is None else c.language_confidence,
                     "language_mismatch": c.language_mismatch,
-                    "gender": c.gender or "",
-                    "age": c.age or "",
+                    "gender": _text_cell(c.gender or ""),
+                    "age": _text_cell(c.age or ""),
                     "duration_s": "" if c.duration_s is None else round(c.duration_s, 3),
                     "passed": c.passed,
-                    "reject_reason": c.reject_reason or "",
+                    "reject_reason": _text_cell(c.reject_reason or ""),
                     "is_duplicate": c.is_duplicate,
-                    "duplicate_of": c.duplicate_of or "",
+                    "duplicate_of": _text_cell(c.duplicate_of or ""),
                 }
             )
+        text = buf.getvalue()
+    _write_text_atomically(path, text, newline="")
 
 
 def export_speech(
@@ -473,8 +478,7 @@ def export_speech(
     if req.run_stats is not None and (transferred or req.write_manifest):
         target = dest_root / RUN_STATS_NAME
         try:
-            dest_root.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(req.run_stats, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            _write_text_atomically(target, json.dumps(req.run_stats, indent=2, ensure_ascii=False) + "\n")
             run_stats_path = target
         except OSError as exc:
             logger.warning("run_stats_write_failed", path=str(target), error=str(exc))
