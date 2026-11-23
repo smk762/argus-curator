@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**For operators.** One dependency bump. Existing configuration keeps working:
+every variable curator read before still wins.
+
+- **Requires argus-cortex `>=0.16,<0.17`** (was `>=0.15,<0.16`), for the suite
+  settings file, peer URLs and the service health contract
+  (argus-cortex#212, argus-cortex#209).
+- **`MANIFEST_VERSION` 2.7 → 2.8 and `SPEECH_MANIFEST_VERSION` 1.0 → 1.1**,
+  both additive. No field of curator's own changed: a row's `provenance` is
+  cortex's `Provenance`, which gained the optional `lookalike` block and the
+  derived `demo_ready` in 0.16. A reader that validates `provenance` with
+  cortex's model needs argus-cortex 0.16 or later (earlier releases refuse the
+  unknown `demo_ready`); readers that branch on the major are unaffected.
+
+### Added
+
+- **Suite-wide detector URLs.** Each server curator calls is found with
+  `argus_cortex.peers`: curator's own variable first, then the suite-wide one.
+  `ARGUS_CURATOR_NUDENET_URL` then `ARGUS_NUDENET_URL`, and likewise
+  `ARGUS_ERAX_URL`, `ARGUS_WATERMARK_URL`, `ARGUS_SINGGUARD_URL` and
+  `ARGUS_PUPPET_URL`. Each is read from the environment, then from the suite
+  file (`~/.config/argus/suite.env`, mode 600; `/etc/argus/suite.env` in a
+  container). Nothing set anywhere is still "not configured": an opt-out check
+  is off, and a scan that requires it is refused. A suite-wide URL turns that
+  check on for every scan, as curator's own variable does. See
+  [docs/nudity.md](docs/nudity.md#one-name-for-the-whole-suite).
+- **`off` in curator's own variable** (`ARGUS_CURATOR_NUDENET_URL=off`) turns a
+  suite-wide server off for curator. An empty value now falls through to the
+  suite-wide name; with none set it means what it did.
+- **Discovery labels** on the compose service (`argus.peer: curator`,
+  `argus.service`, `argus.health`, `argus.port`), which argus-iris's agents read
+  to list curator in the suite directory, and `ARGUS_PEER=curator`, which
+  `/health` reports as `peer`.
+
+### Changed
+
+- **`GET /health` is argus-cortex's `ServiceHealth`.** Every field it served
+  before is still there with the same name and meaning (`status`, `service`,
+  `version`, `manifest_version`, `faces`, `gpu_coordinator`, ...). New beside
+  them: `service_version`, `started_at`, `wire` (`manifest_version`,
+  `speech_manifest_version`), `capabilities`, `checks` (empty: curator probes
+  no detector server here), `read_only`, `build` and `peer`. `GET
+  /health?checks=0` answers the same. The response carries `Cache-Control:
+  no-store`, and the route is no longer listed in the OpenAPI document.
+- **A malformed server URL is never echoed.** The CLI's and the library's error
+  named the variable and the value (`got '...'`); it now names the variable
+  only, as the server's 400 already did. When the malformed value is the
+  suite-wide variable's, the message names that one.
+- `.env.example` no longer sets `ARGUS_GPU_COORDINATOR=lease` (it is there
+  commented out, for a host with no broker) and drops
+  `ARGUS_GPU_BROKER_FALLBACK`: the broker's URL and token are enough, and an
+  explicit coordinator would win over a broker URL in the suite file. A `.env`
+  already copied from it is unaffected.
+- `docker-compose.yaml` documents the suite-file mount as a commented-out line:
+  compose has no optional bind mount, and the container runs as root, so the
+  file must be root-owned to be read.
+
 ## [0.23.0] - 2026-11-23
 
 **For operators running curator against argus-iris.** One dependency bump and a

@@ -141,14 +141,19 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # 2.7: rows carry pose_labels (the primary person's stance / arms / facing from
 # argus-puppet) and pose_cluster (the scan-level body-pose cluster), both null
 # when the pose stage did not run or could not say. Additive.
-MANIFEST_VERSION = "2.7"
+# 2.8: a row's provenance is argus-cortex 0.16's Provenance, which adds the
+# optional lookalike block (who, at, how, found) and the derived demo_ready.
+# No field of curator's own changed. Additive.
+MANIFEST_VERSION = "2.8"
 
 # Version of a speech export's manifest (#187), its own row shape
 # (SpeechManifestRow) in its own file (speech_manifest.jsonl). It moves
 # independently of MANIFEST_VERSION and of the package version, under the same
 # rule: the major for a breaking row change, the minor for an additive one
 # (schema/speech-manifest-row.snapshot.json, `make manifest-snapshot`).
-SPEECH_MANIFEST_VERSION = "1.0"
+# 1.1: a row's provenance is argus-cortex 0.16's Provenance (optional
+# lookalike, derived demo_ready), as in the image manifest's 2.8. Additive.
+SPEECH_MANIFEST_VERSION = "1.1"
 
 # SpeechSelection.consent_max_distance's default (#209): the cosine distance,
 # speaker embedding to the reference recordings' centroid, under which a clip

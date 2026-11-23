@@ -1,5 +1,5 @@
 {
-  "manifest_version": "2.7",
+  "manifest_version": "2.8",
   "schema": {
     "$defs": {
       "BodyPoseLabels": {
@@ -174,6 +174,47 @@
         "title": "Generator",
         "type": "object"
       },
+      "LookAlike": {
+        "additionalProperties": false,
+        "description": "A look-alike check for a face shown publicly (argus-mask#176): who looked, when, how, and what they found.\n\nCleared faces may be served without one; a demo or a published recording needs one. Until this field\nexisted the same facts lived in ``notes`` (splat-01 \u2026 splat-03).",
+        "properties": {
+          "at": {
+            "description": "the day of the check, UTC calendar date",
+            "format": "date",
+            "title": "At",
+            "type": "string"
+          },
+          "found": {
+            "description": "what they found",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Found",
+            "type": "string"
+          },
+          "how": {
+            "description": "how they checked (tool, what was searched)",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "How",
+            "type": "string"
+          },
+          "who": {
+            "description": "who checked",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Who",
+            "type": "string"
+          }
+        },
+        "required": [
+          "who",
+          "at",
+          "how",
+          "found"
+        ],
+        "title": "LookAlike",
+        "type": "object"
+      },
       "ManifestFace": {
         "description": "The primary face of a manifest row (manifest 2.3).",
         "properties": {
@@ -325,12 +366,18 @@
       },
       "Provenance": {
         "additionalProperties": false,
-        "description": "Where a source came from. Required wherever the suite serves or trains on a likeness.\n\n- ``personal``: the user's own use; needs only ``source``; not cleared to show or share.\n- ``stock``: a published asset under its licence. ``synthetic``: generated, with no real person\n  or owned character going in.\n- ``consented``: a real person's likeness (or an owned character) under a signed release, bound\n  by the release's sha256 (never the document) and its subject: the name as the release gives\n  it, or the opaque ref ``consent:<release_sha256>``, which names no one.\n- ``curated``: reserved; not cleared.\n\nUnknown fields are refused, so a misspelt field cannot be dropped in silence (argus-mask#64).\n``licence`` is read as ``license``, and the derived ``cleared`` a dumped record carries is\ndropped and recomputed, never believed.",
+        "description": "Where a source came from. Required wherever the suite serves or trains on a likeness.\n\n- ``personal``: the user's own use; needs only ``source``; not cleared to show or share.\n- ``stock``: a published asset under its licence. ``synthetic``: generated, with no real person\n  or owned character going in.\n- ``consented``: a real person's likeness (or an owned character) under a signed release, bound\n  by the release's sha256 (never the document) and its subject: the name as the release gives\n  it, or the opaque ref ``consent:<release_sha256>``, which names no one.\n- ``curated``: reserved; not cleared.\n\nUnknown fields are refused, so a misspelt field cannot be dropped in silence (argus-mask#64).\n``licence`` is read as ``license``, and the derived ``cleared`` / ``demo_ready`` a dumped record\ncarries are dropped and recomputed, never believed.",
         "properties": {
           "cleared": {
             "description": "Whether the source may be shown beyond the user's own screens: a demo, a release, anything public.",
             "readOnly": true,
             "title": "Cleared",
+            "type": "boolean"
+          },
+          "demo_ready": {
+            "description": "Whether a cleared face may go in the hosted demo: needs a recorded look-alike check (argus-mask#176).",
+            "readOnly": true,
+            "title": "Demo Ready",
             "type": "boolean"
           },
           "generator": {
@@ -359,6 +406,17 @@
             "default": "",
             "title": "License",
             "type": "string"
+          },
+          "lookalike": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/LookAlike"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "notes": {
             "default": "",
@@ -392,7 +450,8 @@
         "required": [
           "kind",
           "source",
-          "cleared"
+          "cleared",
+          "demo_ready"
         ],
         "title": "Provenance",
         "type": "object"
@@ -535,7 +594,7 @@
         "type": "string"
       },
       "manifest_version": {
-        "default": "2.7",
+        "default": "2.8",
         "title": "Manifest Version",
         "type": "string"
       },

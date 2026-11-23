@@ -150,7 +150,8 @@ class EraxClient:
         return to_erax_result(prediction[0])
 
 
-SERVICE = RemoteService(URL_ENV, TIMEOUT_ENV, WORKERS_ENV, EraxClient, DEFAULT_TIMEOUT, DEFAULT_WORKERS)
+PEER = "erax"
+SERVICE = RemoteService(PEER, URL_ENV, TIMEOUT_ENV, WORKERS_ENV, EraxClient, DEFAULT_TIMEOUT, DEFAULT_WORKERS)
 
 
 def client() -> EraxClient | None:

@@ -19,6 +19,32 @@ ARGUS_CURATOR_ERAX_TIMEOUT=30
 ARGUS_CURATOR_ERAX_WORKERS=4
 ```
 
+### One name for the whole suite
+
+Every server curator calls has a suite-wide variable too, so a host that runs several Argus services
+configures each server once (argus-cortex's `peers`):
+
+| Server | Curator's own variable | Suite-wide |
+|---|---|---|
+| NudeNet | `ARGUS_CURATOR_NUDENET_URL` | `ARGUS_NUDENET_URL` |
+| EraX | `ARGUS_CURATOR_ERAX_URL` | `ARGUS_ERAX_URL` |
+| Watermark detector | `ARGUS_CURATOR_WATERMARK_URL` | `ARGUS_WATERMARK_URL` |
+| SingGuard | `ARGUS_CURATOR_SINGGUARD_URL` | `ARGUS_SINGGUARD_URL` |
+| argus-puppet | `ARGUS_CURATOR_PUPPET_URL` | `ARGUS_PUPPET_URL` |
+
+Curator's own variable wins, then the suite-wide one. Each is read from the process environment, then from the
+suite file (`~/.config/argus/suite.env`, mode 600, created by `python -m argus_cortex.settings --init`; in a
+container, `/etc/argus/suite.env`). The file is ignored, with a warning, unless it belongs to the user curator runs
+as (or root) and nobody else can write or read it.
+
+- An empty value is unset and falls through to the next name. `off` in curator's own variable turns a
+  suite-wide server off for curator.
+- Nothing set anywhere is "not configured", as before: an opt-out check is off, and a scan that requires it is
+  refused with 400.
+- A value that is not an absolute `http(s)` URL is never "not configured". The scan is refused with 400, naming the
+  variable and never its value.
+- A suite-wide URL turns that check on for every curator scan, like curator's own variable does.
+
 Use the suite's shared server, [argus-retina](https://github.com/smk762/argus-retina)'s
 `ghcr.io/smk762/argus-retina-nudenet` (NudeNet's **640m** model; EraX on :8131).
 `docker compose up` here starts that same image as the bundled `nudenet`

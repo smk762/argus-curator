@@ -634,7 +634,7 @@ recordings.
 
 `speech_manifest.jsonl` is its own file with its own row shape and version,
 never mixed with image rows: `SpeechManifestRow`, version
-`SPEECH_MANIFEST_VERSION` **1.0** (`GET /health`'s
+`SPEECH_MANIFEST_VERSION` **1.1** (`GET /health`'s
 `speech_manifest_version`, and every `ExportResult`). It moves independently
 of the image `MANIFEST_VERSION` under the same rule (the major for a breaking
 change, the minor for an additive one), checked against
@@ -643,7 +643,7 @@ key is always present; a field with no value is `null`.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `speech_manifest_version` | string | `"1.0"`. Refuse a major you don't know. |
+| `speech_manifest_version` | string | `"1.1"` (1.1: `provenance` is argus-cortex 0.16's, with the optional `lookalike` and the derived `demo_ready`). Refuse a major you don't know. |
 | `modality` | string | always `speech` |
 | `rel_path` | string | the clip's path in the scanned folder |
 | `abs_path` | string | where the clip can be read (under `move`, the destination) |

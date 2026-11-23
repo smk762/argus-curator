@@ -12,7 +12,7 @@ report or the manifest.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ARGUS_CURATOR_PUPPET_URL` | unset (stage off) | The puppet server's origin, e.g. `http://<PUPPET_HOST>:8220` |
+| `ARGUS_CURATOR_PUPPET_URL` | unset (stage off) | The puppet server's origin, e.g. `http://<PUPPET_HOST>:8220`. Unset, the suite-wide `ARGUS_PUPPET_URL` is read ([one name for the whole suite](nudity.md#one-name-for-the-whole-suite)); `off` here keeps the stage off whatever that says |
 | `ARGUS_CURATOR_PUPPET_TIMEOUT` | 60 | Seconds per `POST /pose`; `POST /stats` gets five times this |
 | `ARGUS_CURATOR_PUPPET_WORKERS` | 2 | Images in flight at once (puppet admits `ARGUS_PUPPET_POSE_CONCURRENCY`, default 2) |
 | `ARGUS_CURATOR_PUPPET_MAX_SET` | 5000 | Largest scan clustered; match puppet's `ARGUS_PUPPET_MAX_SET_RESULTS` |

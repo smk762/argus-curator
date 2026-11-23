@@ -1,5 +1,5 @@
 {
-  "manifest_version": "1.0",
+  "manifest_version": "1.1",
   "schema": {
     "$defs": {
       "Generator": {
@@ -48,14 +48,61 @@
         "title": "Generator",
         "type": "object"
       },
+      "LookAlike": {
+        "additionalProperties": false,
+        "description": "A look-alike check for a face shown publicly (argus-mask#176): who looked, when, how, and what they found.\n\nCleared faces may be served without one; a demo or a published recording needs one. Until this field\nexisted the same facts lived in ``notes`` (splat-01 \u2026 splat-03).",
+        "properties": {
+          "at": {
+            "description": "the day of the check, UTC calendar date",
+            "format": "date",
+            "title": "At",
+            "type": "string"
+          },
+          "found": {
+            "description": "what they found",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Found",
+            "type": "string"
+          },
+          "how": {
+            "description": "how they checked (tool, what was searched)",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "How",
+            "type": "string"
+          },
+          "who": {
+            "description": "who checked",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Who",
+            "type": "string"
+          }
+        },
+        "required": [
+          "who",
+          "at",
+          "how",
+          "found"
+        ],
+        "title": "LookAlike",
+        "type": "object"
+      },
       "Provenance": {
         "additionalProperties": false,
-        "description": "Where a source came from. Required wherever the suite serves or trains on a likeness.\n\n- ``personal``: the user's own use; needs only ``source``; not cleared to show or share.\n- ``stock``: a published asset under its licence. ``synthetic``: generated, with no real person\n  or owned character going in.\n- ``consented``: a real person's likeness (or an owned character) under a signed release, bound\n  by the release's sha256 (never the document) and the subject as the release names them.\n- ``curated``: reserved; not cleared.\n\nUnknown fields are refused, so a misspelt field cannot be dropped in silence (argus-mask#64).\n``licence`` is read as ``license``, and the derived ``cleared`` a dumped record carries is\ndropped and recomputed, never believed.",
+        "description": "Where a source came from. Required wherever the suite serves or trains on a likeness.\n\n- ``personal``: the user's own use; needs only ``source``; not cleared to show or share.\n- ``stock``: a published asset under its licence. ``synthetic``: generated, with no real person\n  or owned character going in.\n- ``consented``: a real person's likeness (or an owned character) under a signed release, bound\n  by the release's sha256 (never the document) and its subject: the name as the release gives\n  it, or the opaque ref ``consent:<release_sha256>``, which names no one.\n- ``curated``: reserved; not cleared.\n\nUnknown fields are refused, so a misspelt field cannot be dropped in silence (argus-mask#64).\n``licence`` is read as ``license``, and the derived ``cleared`` / ``demo_ready`` a dumped record\ncarries are dropped and recomputed, never believed.",
         "properties": {
           "cleared": {
             "description": "Whether the source may be shown beyond the user's own screens: a demo, a release, anything public.",
             "readOnly": true,
             "title": "Cleared",
+            "type": "boolean"
+          },
+          "demo_ready": {
+            "description": "Whether a cleared face may go in the hosted demo: needs a recorded look-alike check (argus-mask#176).",
+            "readOnly": true,
+            "title": "Demo Ready",
             "type": "boolean"
           },
           "generator": {
@@ -84,6 +131,17 @@
             "default": "",
             "title": "License",
             "type": "string"
+          },
+          "lookalike": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/LookAlike"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "notes": {
             "default": "",
@@ -117,7 +175,8 @@
         "required": [
           "kind",
           "source",
-          "cleared"
+          "cleared",
+          "demo_ready"
         ],
         "title": "Provenance",
         "type": "object"
@@ -180,7 +239,7 @@
         "type": "object"
       }
     },
-    "description": "One line of a speech export's ``speech_manifest.jsonl`` (#187; ``speech_export.write_manifest``).\n\nIts own shape and version (:data:`SPEECH_MANIFEST_VERSION`), never mixed\nwith image rows: a consumer reads ``speech_manifest_version`` and refuses a\nmajor it does not know. Rows exist only for clips whose transfer and\ntranscript sidecar both succeeded.\n\nPaths follow :class:`ManifestRow`: ``exported_path`` and\n``exported_abs_path`` are the de-collided files on disk, ``abs_path`` is\nwhere the clip can be read (the destination under ``mode=\"move\"``), and\n``transcript_path`` / ``transcript_abs_path`` name the ``<stem>.txt``\nbeside the exported clip holding ``transcript``.\n\n``speaker_id`` is the corpus's speaker label when it has one, else the\nspeaker cluster; ``speaker_label`` and ``speaker_cluster`` are the two\nreadings. A split keeps every speaker (label and cluster alike) in one\npart. ``accent``, ``language``, ``gender`` and ``age`` are the corpus's\nlabels verbatim; ``age`` is null when the corpus gives none, and is never\nestimated. ``corpus``, ``license`` and ``provenance`` say where every clip\ncame from; a clip used under a consent record also names its hashes.",
+    "description": "One line of a speech export's ``speech_manifest.jsonl`` (#187; ``speech_export.write_manifest``).\n\nIts own shape and version (:data:`SPEECH_MANIFEST_VERSION`), never mixed\nwith image rows: a consumer reads ``speech_manifest_version`` and refuses a\nmajor it does not know. Rows exist only for clips whose transfer and\ntranscript sidecar both succeeded.\n\nPaths follow :class:`ManifestRow`: ``exported_path`` and\n``exported_abs_path`` are the de-collided files on disk, ``abs_path`` is\nwhere the clip can be read (the destination under ``mode=\"move\"``), and\n``transcript_path`` / ``transcript_abs_path`` name the ``<stem>.txt``\nbeside the exported clip holding ``transcript``.\n\n``speaker_id`` is the corpus's speaker label when it has one, else the\nspeaker cluster; ``speaker_label`` and ``speaker_cluster`` are each on its\nown. A split keeps every speaker (label and cluster alike) in one\npart. ``accent``, ``language``, ``gender`` and ``age`` are the corpus's\nlabels verbatim; ``age`` is null when the corpus gives none, and is never\nestimated. ``corpus``, ``license`` and ``provenance`` say where every clip\ncame from; a clip used under a consent record also names its hashes.",
     "properties": {
       "abs_path": {
         "title": "Abs Path",
@@ -349,7 +408,7 @@
         "type": "boolean"
       },
       "speech_manifest_version": {
-        "default": "1.0",
+        "default": "1.1",
         "title": "Speech Manifest Version",
         "type": "string"
       },

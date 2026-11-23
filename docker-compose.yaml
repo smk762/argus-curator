@@ -8,7 +8,16 @@ services:
         GPU: ${CURATOR_GPU:-1}
     ports:
       - "${CURATOR_PORT:-8101}:8101"
+    # How the suite finds this service (argus-cortex's discovery labels): argus-iris's
+    # node agents read them and list curator in the suite directory as peer "curator".
+    labels:
+      argus.peer: curator
+      argus.service: argus-curator
+      argus.health: /health
+      argus.port: "8101"
     environment:
+      # The peer label above, reported back in GET /health.
+      - ARGUS_PEER=curator
       - CURATOR_SOURCE_PATH=/data/images
       - CURATOR_EXPORT_PATH=/data/out
       - CURATOR_CACHE_DIR=/root/.cache/argus_curator/scans
@@ -22,11 +31,19 @@ services:
       - ARGUS_CURATOR_PLACES365_MODEL=/root/.cache/argus_curator/models/places365_resnet18.onnx
       # Fashionpedia garment detector (see `argus-curator garments-convert`).
       - ARGUS_CURATOR_GARMENTS_MODEL=/root/.cache/argus_curator/models/yolos_fashionpedia.onnx
+      # The detector servers. Each URL is curator's own variable here, else the
+      # suite-wide ARGUS_<PEER>_URL (ARGUS_NUDENET_URL, ARGUS_ERAX_URL,
+      # ARGUS_WATERMARK_URL, ARGUS_SINGGUARD_URL, ARGUS_PUPPET_URL) from the suite
+      # file mounted below, so one server is configured once for the whole suite.
+      # An empty value here falls through to the suite-wide name; `off` turns that
+      # server off for curator whatever the suite file says.
+      #
       # NudeNet nudity check, on by default (opt-out). Unset: the nudenet service
       # below. Point it at a shared argus-retina server in .env (e.g.
       # http://<LAN_HOST>:8130) and run `docker compose up -d argus-curator` to
       # leave the bundled one stopped, or set it empty (ARGUS_CURATOR_NUDENET_URL=)
-      # to switch the check off.
+      # to switch the check off (with a suite-wide ARGUS_NUDENET_URL, set it to
+      # `off` instead: empty then means the suite-wide server).
       - ARGUS_CURATOR_NUDENET_URL=${ARGUS_CURATOR_NUDENET_URL-http://nudenet:8080}
       # EraX-NSFW, a second nudity opinion that fills in where NudeNet finds no
       # exposure (argus-retina's argus-retina-erax, e.g. http://<LAN_HOST>:8131).
@@ -51,13 +68,14 @@ services:
       # Uncomment to permit destructive mode="move" exports.
       # - CURATOR_ALLOW_MOVE=1
       # The GPU (argus_cortex.gpu, docs/gpu.md). ARGUS_GPU_BROKER_URL and
-      # ARGUS_GPU_BROKER_TOKEN alone ask argus-iris for each lease, registering
-      # /app/gpu-tenant.yaml at startup, and fall back to the host lease below
-      # while iris cannot be reached. Without a broker, ARGUS_GPU_COORDINATOR=lease
-      # (.env.example's) shares the GPU with other argus services one job at a
-      # time; every service on the host must mount the same host directory
-      # (ARGUS_GPU_LOCK_DIR, below) and name the same lock file in it. Unset, with
-      # no broker URL, gates nothing. A CPU build (CURATOR_GPU=0) never takes a lease.
+      # ARGUS_GPU_BROKER_TOKEN alone (here, or in the suite file) ask argus-iris
+      # for each lease, registering /app/gpu-tenant.yaml at startup, and fall back
+      # to the host lease below while iris cannot be reached. Without a broker,
+      # ARGUS_GPU_COORDINATOR=lease in .env shares the GPU with other argus
+      # services one job at a time; every service on the host must mount the same
+      # host directory (ARGUS_GPU_LOCK_DIR, below) and name the same lock file in
+      # it. Unset, with no broker URL, gates nothing. A CPU build (CURATOR_GPU=0)
+      # never takes a lease.
       - ARGUS_GPU_COORDINATOR=${ARGUS_GPU_COORDINATOR-}
       - ARGUS_GPU_LEASE_PATH=/run/argus-gpu/argus-gpu.lock
       - ARGUS_GPU_LEASE_TIMEOUT_S=${ARGUS_GPU_LEASE_TIMEOUT_S:-300}
@@ -83,6 +101,15 @@ services:
       - ~/.insightface:/root/.insightface
       # The host-wide GPU lease's lock directory, shared by every argus service.
       - ${ARGUS_GPU_LOCK_DIR:-/tmp/argus-gpu}:/run/argus-gpu
+      # The suite file: what every Argus service on this host shares (the broker
+      # URL and token, the suite-wide detector URLs), read after the environment
+      # above (argus_cortex.settings). Compose has no optional bind mount (a
+      # missing source is created as a directory), so uncomment this on a host
+      # that has the file. This container runs as root, so the file must be
+      # root-owned and not writable by anyone else (for example a root-owned
+      # copy at /etc/argus/suite.env, mode 600); a file owned by your own user is
+      # ignored with a warning.
+      # - /etc/argus/suite.env:/etc/argus/suite.env:ro
     deploy:
       resources:
         reservations:
