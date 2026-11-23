@@ -8,6 +8,13 @@ Each server is configured by environment only, never by a request: a
 request-supplied URL would let any API caller make this server send images
 wherever they liked. Each check is opt-out: on whenever its URL is set, unless
 a scan says otherwise.
+
+A server's URL is found with :func:`argus_cortex.peers.peer_url`: curator's own
+variable (``ARGUS_CURATOR_NUDENET_URL``) first, then the suite-wide one for that
+peer (``ARGUS_NUDENET_URL``), each from the process environment and then the
+suite file. ``off`` in curator's own variable turns a suite-wide server off for
+curator. A value that is not an absolute http(s) URL is never "not configured":
+it counts as set and fails the scan, naming the variable and never the value.
 """
 
 from __future__ import annotations
@@ -19,7 +26,9 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 import structlog
+from argus_cortex import settings as suite_settings
 from argus_cortex.moderation import ModerationConfigError
+from argus_cortex.peers import PeerRefused, peer_env, peer_url
 
 from argus_curator.models import ImageResult
 from argus_curator.runtime import ModelUnavailable, ScanCancelled
@@ -51,6 +60,36 @@ def float_env(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
+def url_env_in_use(peer: str, url_env: str) -> str:
+    """The variable *peer*'s URL is read from: *url_env* (curator's own) when it holds a value or nothing names
+    the peer, else the suite-wide ``ARGUS_<PEER>_URL``. For messages: it is the one to fix."""
+    suite_env = peer_env(peer)
+    if suite_settings.get(url_env) is None and suite_settings.get(suite_env) is not None:
+        return suite_env
+    return url_env
+
+
+def peer_base(peer: str, url_env: str) -> str | None:
+    """*peer*'s base URL (*url_env*, then the suite-wide variable), or ``None`` when it is not configured.
+
+    A malformed value raises :class:`ModelUnavailable` naming the variable, never the value (a URL can hold a
+    credential). It is never read as "not configured": a typo must not turn a check off.
+    """
+    try:
+        return peer_url(peer, url_env)
+    except PeerRefused as exc:
+        raise ModelUnavailable(str(exc)) from None
+
+
+def peer_set(peer: str, url_env: str) -> bool:
+    """A URL is set for *peer*. A malformed one still counts, so that it fails
+    the scan loudly instead of silently switching the check off."""
+    try:
+        return peer_url(peer, url_env) is not None
+    except PeerRefused:
+        return True
+
+
 C = TypeVar("C")
 
 
@@ -59,9 +98,11 @@ class RemoteService(Generic[C]):
     """One remote server's environment configuration and the client built from it.
 
     *make_client* takes ``(base_url, timeout)`` and raises
-    :class:`ModerationConfigError` on a malformed URL.
+    :class:`ModerationConfigError` on a malformed URL. *peer* is the server's
+    suite-wide name (``nudenet``): *url_env* wins, then ``ARGUS_<PEER>_URL``.
     """
 
+    peer: str
     url_env: str
     timeout_env: str
     workers_env: str
@@ -71,18 +112,22 @@ class RemoteService(Generic[C]):
 
     def client(self) -> C | None:
         """A client for the configured server, or ``None`` when its URL is not set."""
-        base = env_value(self.url_env)
+        base = peer_base(self.peer, self.url_env)
         if base is None:
             return None
         try:
             return self.make_client(base, float_env(self.timeout_env, self.default_timeout))
-        except ModerationConfigError as exc:
-            raise ModelUnavailable(f"{self.url_env} must be an http(s) URL, got {base!r}") from exc
+        except ModerationConfigError:
+            raise ModelUnavailable(f"{self.env_in_use()} must be an http(s) URL") from None
 
     def configured(self) -> bool:
         """The URL is set. A malformed one still counts, so that it fails the
         scan loudly instead of silently switching the check off."""
-        return env_set(self.url_env)
+        return peer_set(self.peer, self.url_env)
+
+    def env_in_use(self) -> str:
+        """The variable the URL is read from (see :func:`url_env_in_use`)."""
+        return url_env_in_use(self.peer, self.url_env)
 
     def workers(self) -> int:
         return int(float_env(self.workers_env, self.default_workers))

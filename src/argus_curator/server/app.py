@@ -42,6 +42,7 @@ try:
     from argus_cortex.limits import BadInput, TooLarge, read_body, read_upload
     from argus_cortex.net import UrlRefused, check_url
     from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
+    from argus_cortex.service import install_health
     from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
     from fastapi.responses import FileResponse, Response, StreamingResponse
 except ImportError as exc:  # pragma: no cover
@@ -714,12 +715,10 @@ def create_app(
             )
         return folder
 
-    @app.get("/health")
-    async def health() -> dict[str, Any]:
+    async def health_fields() -> dict[str, Any]:
+        """Curator's own ``/health`` fields, beside cortex's ``ServiceHealth`` ones (``status``, ``service``,
+        ``version``, ``started_at``, ``wire``, ...). Clients read these by name: keep every one."""
         return {
-            "status": "ok",
-            "service": "argus-curator",
-            "version": __version__,
             # The *manifest* contract version, which moves independently of the
             # package version above. Clients branch on this to refuse an unknown
             # major, instead of sniffing which fields an ExportResult happens to
@@ -773,6 +772,17 @@ def create_app(
             # The host-wide GPU lease curator takes on CUDA: "none", "lease" or "broker".
             "gpu_coordinator": gpu_coordinator().name,
         }
+
+    # GET /health is cortex's ServiceHealth (one shape for the suite, argus-iris's directory reads it) with
+    # curator's fields beside it. No dependency checks: curator never probed its detector servers here
+    # (GET /detectors says which are configured), so status is "ok" whenever it answers, as before.
+    install_health(
+        app,
+        service="argus-curator",
+        version=__version__,
+        wire={"manifest_version": MANIFEST_VERSION, "speech_manifest_version": SPEECH_MANIFEST_VERSION},
+        extra=health_fields,
+    )
 
     @app.get("/detectors")
     async def detectors() -> dict[str, bool | list[str] | str | None]:
@@ -901,7 +911,8 @@ def create_app(
             if url is None:
                 state = "is not a valid http(s) URL" if watermarks_mod.configured() else "is not set"
                 raise HTTPException(
-                    status_code=400, detail=f"watermark detection requested but {watermarks_mod.URL_ENV} {state}"
+                    status_code=400,
+                    detail=f"watermark detection requested but {watermarks_mod.SERVICE.env_in_use()} {state}",
                 )
         wanted = (
             (req.faces.fairface, fairface_available, "FairFace", "ARGUS_CURATOR_FAIRFACE_MODEL", "fairface-convert"),
@@ -941,7 +952,7 @@ def create_app(
                 state = "is not a valid http(s) URL" if nsfw_mod.configured() else "is not set"
                 raise HTTPException(
                     status_code=400,
-                    detail=f"NudeNet check requested but {nsfw_mod.URL_ENV} {state}",
+                    detail=f"NudeNet check requested but {nsfw_mod.SERVICE.env_in_use()} {state}",
                 )
             # EraX runs as NudeNet's fill-in; a malformed URL would only fail
             # the scan after the whole NudeNet pass.
@@ -951,7 +962,7 @@ def create_app(
                 except ModelUnavailable as exc:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"EraX fill-in configured but {erax_mod.URL_ENV} is not a valid http(s) URL",
+                        detail=f"EraX fill-in configured but {erax_mod.SERVICE.env_in_use()} is not a valid http(s) URL",
                     ) from exc
         if bodypose_mod.resolve_enabled(req.pose):
             try:
@@ -960,7 +971,9 @@ def create_app(
                 pose_client = None
             if pose_client is None:
                 state = "is not a valid http(s) URL" if bodypose_mod.configured() else "is not set"
-                raise HTTPException(status_code=400, detail=f"body pose requested but {bodypose_mod.URL_ENV} {state}")
+                raise HTTPException(
+                    status_code=400, detail=f"body pose requested but {bodypose_mod.SERVICE.env_in_use()} {state}"
+                )
         if guard_mod.resolve_enabled(req.guard):
             try:
                 url = guard_mod.endpoint()
@@ -970,7 +983,7 @@ def create_app(
                 state = "is not a valid http(s) URL" if guard_mod.configured() else "is not set"
                 raise HTTPException(
                     status_code=400,
-                    detail=f"SingGuard check requested but {guard_mod.URL_ENV} {state}",
+                    detail=f"SingGuard check requested but {guard_mod.env_in_use()} {state}",
                 )
             try:
                 allowed = guard_mod.allowed_thinking()

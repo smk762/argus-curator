@@ -59,7 +59,7 @@ no port), or its writes get 403.
 
 | Route | Description |
 |---|---|
-| `GET  /health` | Liveness. `faces` is true when `POST /faces` can run (InsightFace and MiVOLO). `minor_exposed` is the under-18 rule in use, `frame` or `overlap` (`ARGUS_CURATOR_MINOR_EXPOSED`). |
+| `GET  /health` | Liveness, as argus-cortex's `ServiceHealth` (`service`, `version`, `status`, `started_at`, `wire` with `manifest_version` and `speech_manifest_version`, `service_version`, `peer`, …) with curator's own fields beside it. `status` is `ok` whenever it answers: curator probes no detector server here (`GET /detectors` says which are configured). `GET /health?checks=0` is the same body, for container healthchecks and other services' probes. `faces` is true when `POST /faces` can run (InsightFace and MiVOLO). `minor_exposed` is the under-18 rule in use, `frame` or `overlap` (`ARGUS_CURATOR_MINOR_EXPOSED`). |
 | `GET  /detectors` | `{ torch, cuda, clip, insightface, onnxruntime, fairface, mivolo, bodies, places365, garments, nudenet, erax, watermark, singguard, puppet, speech, dnsmos, speaker_model, … }` |
 | `POST /faces` | One image in memory (raw bytes or multipart), at most `CURATOR_MAX_UPLOAD_MB` (else 413). `{ source: mivolo, faces: [{ age_estimate_years, bbox }] }`. Writes nothing. |
 | `GET  /guard/policies` | Each SingGuard policy a scan can name: `{ singguard, policies: [{ name, recorded, source, text, error }] }` |
