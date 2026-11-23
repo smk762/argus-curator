@@ -31,7 +31,7 @@ would only run on CPU anyway). InsightFace's pack download happens before the
 load lease, so a cold start does not hold the GPU while weights hit the disk.
 
 - `ARGUS_GPU_COORDINATOR=lease` turns it on. `none`, the library default
-  without a broker URL, gates nothing; `.env.example` has it commented out. Every argus process on the
+  without a broker URL, gates nothing; `.env.example` sets `lease`. Every argus process on the
   host must name the same `ARGUS_GPU_LEASE_PATH` on a shared directory.
   Containers have their own `/tmp`, so compose mounts `ARGUS_GPU_LOCK_DIR`
   (`/tmp/argus-gpu` on the host) at `/run/argus-gpu` and uses

@@ -32,15 +32,24 @@ every variable curator read before still wins.
   is off, and a scan that requires it is refused. A suite-wide URL turns that
   check on for every scan, as curator's own variable does. See
   [docs/nudity.md](docs/nudity.md#one-name-for-the-whole-suite).
-- **`off` in curator's own variable** (`ARGUS_CURATOR_NUDENET_URL=off`) turns a
-  suite-wide server off for curator. An empty value now falls through to the
-  suite-wide name; with none set it means what it did.
+- **A suite-wide `ARGUS_ERAX_URL` turns EraX on** as NudeNet's fill-in for
+  every curator scan that runs NudeNet, which moves the recorded exposed
+  scores where NudeNet found no exposure. Set `ARGUS_CURATOR_ERAX_URL=off` to
+  keep curator on NudeNet alone.
 - **Discovery labels** on the compose service (`argus.peer: curator`,
   `argus.service`, `argus.health`, `argus.port`), which argus-iris's agents read
   to list curator in the suite directory, and `ARGUS_PEER=curator`, which
   `/health` reports as `peer`.
 
 ### Changed
+
+- **An empty `ARGUS_CURATOR_*_URL` no longer always means "off".** Compose
+  documented "set it empty (`ARGUS_CURATOR_NUDENET_URL=`) to switch the check
+  off". An empty value now falls through to the suite-wide name
+  (`ARGUS_NUDENET_URL`, and likewise for EraX, the watermark detector, SingGuard
+  and puppet), so on a host that sets one the check stays on. Set curator's
+  variable to `off` to switch a check off whatever the suite says. With no
+  suite-wide variable set, empty still switches the check off, as before.
 
 - **`GET /health` is argus-cortex's `ServiceHealth`.** Every field it served
   before is still there with the same name and meaning (`status`, `service`,
@@ -54,11 +63,10 @@ every variable curator read before still wins.
   named the variable and the value (`got '...'`); it now names the variable
   only, as the server's 400 already did. When the malformed value is the
   suite-wide variable's, the message names that one.
-- `.env.example` no longer sets `ARGUS_GPU_COORDINATOR=lease` (it is there
-  commented out, for a host with no broker) and drops
-  `ARGUS_GPU_BROKER_FALLBACK`: the broker's URL and token are enough, and an
-  explicit coordinator would win over a broker URL in the suite file. A `.env`
-  already copied from it is unaffected.
+- `.env.example` drops `ARGUS_GPU_BROKER_FALLBACK` (`lease` is cortex's
+  default). It still sets `ARGUS_GPU_COORDINATOR=lease`, the host lock for a
+  host with no broker: comment that line out to use argus-iris, since an
+  explicit coordinator wins over a broker URL, the suite file's included.
 - `docker-compose.yaml` documents the suite-file mount as a commented-out line:
   compose has no optional bind mount, and the container runs as root, so the
   file must be root-owned to be read.
