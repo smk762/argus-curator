@@ -166,8 +166,23 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_s
     return dests
 
 
+def _same_entry(a: Path, b: Path) -> bool:
+    """Whether *a* and *b* name one directory entry, a link itself rather than its target."""
+    try:
+        return os.path.samestat(os.lstat(a), os.lstat(b))
+    except OSError:
+        return False
+
+
 def _transfer_one(src: Path, dst: Path, mode: ExportMode) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
+    # A source that is itself a link may be dst (dest == source folder, or a parent
+    # symlink): unlinking dst would delete it. Left alone, copy2 refuses it as the
+    # same file and move renames it onto itself.
+    if mode != "symlink" and dst.is_symlink() and _same_entry(src, dst):
+        if mode == "copy":
+            raise shutil.SameFileError(f"{dst} is the source file")
+        return
     if mode == "move":
         if dst.is_symlink():
             # A link left by an earlier symlink export: across filesystems shutil.move
@@ -813,10 +828,18 @@ def export_selection(
 
     if req.selection is not None:
         wanted = set(req.selection)
+        fs = req.face_source
+        if fs is not None and fs.consent:
+            # ExportRequest refuses this pairing; one built without validation must not skip the consent gate.
+            raise ConsentRefused("a consented face set is chosen by face_source, not by a named selection")
+        # argus-quarry's likeness_consent: false, read from disk now, holds over a named list too.
+        gate = face_source_gate(req, summary)
+        refused = gate.excluded if gate is not None else {}
 
         # A named list overrides neither the under-18 exposed rejection nor any reject.
         keep_reason = {
-            r.rel_path: hard_exclusion(r) or ("" if r.rel_path in wanted else "not-selected") for r in results
+            r.rel_path: hard_exclusion(r) or refused.get(r.rel_path) or ("" if r.rel_path in wanted else "not-selected")
+            for r in results
         }
         selected = [r for r in results if keep_reason[r.rel_path] == ""]
     else:

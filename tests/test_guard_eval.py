@@ -916,6 +916,14 @@ def test_answers_that_follow_the_cache_state_are_called_out() -> None:
     assert "noise the cache doesn't explain" in guard_eval.summarise_cache_check(data)
 
 
+def test_one_back_to_back_run_is_not_read_as_a_cache_miss() -> None:
+    run = {"prompt": 100, "cached": 0, "answer": "a", "logprobs": [-0.1]}
+    data = {"model": "m", "image": False, "fillers": 2, "back-to-back": [run], "interleaved": [], "cold": [run]}
+    text = guard_eval.summarise_cache_check(data)
+    assert "did not reuse the prompt cache" not in text
+    assert "Not enough back-to-back runs to judge cache reuse." in text
+
+
 def test_a_cache_check_with_no_evaluations_draws_no_conclusion() -> None:
     data = {"model": "m", "image": False, "fillers": 2, "back-to-back": [], "interleaved": [], "cold": []}
     text = guard_eval.summarise_cache_check(data)

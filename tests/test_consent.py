@@ -525,6 +525,25 @@ def test_any_face_source_export_refuses_a_quarry_image(faces_stub: dict, consent
     assert "a0.png" not in result.selected_rel_paths and "a1.png" in result.selected_rel_paths
 
 
+def test_a_named_selection_with_face_source_refuses_a_quarry_image(
+    faces_stub: dict, consent_set: Path, tmp_path: Path
+) -> None:
+    summary = scan_folder(consent_set, faces_cfg=FaceConfig(mivolo=True, reference_paths=["ref.png"]))
+    (consent_set / "a0.json").write_text(json.dumps({"producer": "argus-quarry", "likeness_consent": False}))
+    req = ExportRequest(
+        dest=str(tmp_path / "out"), selection=["a0.png", "a1.png"], face_source=FaceSourceFilter(), min_score=0.0
+    )
+    assert export_selection(summary, req).selected_rel_paths == ["a1.png"]
+
+
+def test_a_named_selection_never_skips_the_consent_gate(faces_stub: dict, consent_set: Path, tmp_path: Path) -> None:
+    summary = _scan(consent_set)
+    req = _req(tmp_path / "out").model_copy(update={"selection": ["a0.png"]})  # validation skipped
+    with pytest.raises(ConsentRefused, match="named selection"):
+        export_selection(summary, req)
+    assert not (tmp_path / "out").exists()
+
+
 def test_a_sidecar_outside_the_folder_is_refused(faces_stub: dict, consent_set: Path, tmp_path: Path) -> None:
     outside = tmp_path / "elsewhere.json"
     outside.write_text(json.dumps({"likeness_consent": True}))

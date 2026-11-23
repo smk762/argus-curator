@@ -110,6 +110,35 @@ def test_a_shared_ref_inlined_by_the_new_schema_is_compared_at_every_use() -> No
     assert breaking_changes(old, new) == ["ManifestRow.b.amount.type: changed from 'number' to 'string'"]
 
 
+def test_a_constraint_beside_a_ref_is_compared() -> None:
+    """Pydantic puts keywords next to a `$ref`; a new `const` there narrows what a row may carry."""
+
+    def row(price: dict) -> dict:
+        return {"type": "object", "properties": {"price": price}, "$defs": {"Money": {"type": "number"}}}
+
+    old = row({"$ref": "#/$defs/Money", "description": "the price"})
+    new = row({"$ref": "#/$defs/Money", "description": "the price", "const": 0})
+    assert breaking_changes(old, new) == ["ManifestRow.price.const: added"]
+    assert breaking_changes(old, row({"$ref": "#/$defs/Money", "description": "now documented"})) == []
+
+
+def test_a_def_changed_behind_an_alias_is_breaking() -> None:
+    """A def that is itself a `$ref` is followed to the schema it names."""
+
+    def row(target: dict) -> dict:
+        return {
+            "type": "object",
+            "properties": {"price": {"$ref": "#/$defs/Price"}},
+            "$defs": {"Price": {"$ref": "#/$defs/Money"}, "Money": target},
+        }
+
+    assert breaking_changes(row({"type": "number"}), row({"type": "string"})) == [
+        "ManifestRow.price.type: changed from 'number' to 'string'"
+    ]
+    cycle = {"type": "object", "properties": {"x": {"$ref": "#/$defs/A"}}, "$defs": {"A": {"$ref": "#/$defs/A"}}}
+    assert breaking_changes(cycle, copy.deepcopy(cycle)) == []
+
+
 @pytest.mark.parametrize(
     ("keyword", "wrap"),
     [
