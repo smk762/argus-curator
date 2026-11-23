@@ -793,10 +793,13 @@ def create_app(
             content_type = (request.headers.get("content-type") or "").lower()
             if content_type.startswith("multipart/"):
                 # Refused by its declared length before parsing; the file is then read up to the cap.
+                # Without a declared length (chunked) the parser would spool a file of any size to disk.
                 declared = (request.headers.get("content-length") or "").strip()
-                if declared and not (declared.isascii() and declared.isdigit()):
+                if not declared:
+                    raise HTTPException(status_code=411, detail="a multipart image needs a Content-Length")
+                if not (declared.isascii() and declared.isdigit()):
                     raise BadInput("Content-Length is not a number")
-                if declared and int(declared) > cap + _MULTIPART_OVERHEAD:
+                if int(declared) > cap + _MULTIPART_OVERHEAD:
                     raise TooLarge("image", cap)
                 # The context manager closes the parsed parts (and any spooled temp file).
                 async with request.form() as form:

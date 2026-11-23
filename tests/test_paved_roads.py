@@ -100,6 +100,24 @@ def test_faces_multipart_over_the_upload_cap_is_413(capped: tuple[TestClient, Pa
     assert resp.status_code == 413
 
 
+def test_faces_multipart_without_a_content_length_is_refused_unparsed(
+    capped: tuple[TestClient, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("argus_curator.server.app.faces_available", lambda: True)
+    monkeypatch.setattr("argus_curator.server.app.mivolo_available", lambda: True)
+    parsed: list[bool] = []
+    monkeypatch.setattr("starlette.requests.Request.form", lambda *a, **k: parsed.append(True))
+    client, _ = capped
+    part = b'--x\r\nContent-Disposition: form-data; name="image"; filename="a.png"\r\n\r\n'
+    body = part + _png_bytes(pad=2048) + b"\r\n--x--\r\n"
+
+    def chunks():  # noqa: ANN202
+        yield body  # a generator body goes chunked, with no Content-Length
+
+    resp = client.post("/faces", content=chunks(), headers={"content-type": "multipart/form-data; boundary=x"})
+    assert resp.status_code == 411 and not parsed
+
+
 @pytest.mark.parametrize("value", ["0", "-5", "lots", "inf", "nan"])
 def test_a_bad_upload_cap_refuses_to_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
     monkeypatch.setenv("CURATOR_MAX_UPLOAD_MB", value)
