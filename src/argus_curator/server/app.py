@@ -28,6 +28,7 @@ import os
 import queue
 import threading
 import uuid
+from collections.abc import AsyncIterator
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ try:
     # behind its own [server] extra, so a stale cortex fails here too and must get the
     # same actionable message rather than a bare ModuleNotFoundError naming a package
     # the user never installed directly.
+    from argus_cortex.gpu import aregistered
     from argus_cortex.limits import BadInput, TooLarge, read_body, read_upload
     from argus_cortex.net import UrlRefused, check_url
     from argus_cortex.server import WriteGuard, cross_site_refuse, env_flag
@@ -593,10 +595,20 @@ def create_app(
     *trusted_hosts* (``CURATOR_TRUSTED_HOSTS``) names the DNS names a same-host
     browser write may come through; an IP literal or ``localhost`` needs none.
     """
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # With ARGUS_GPU_BROKER_URL set, curator is argus-iris's tenant from startup, not
+        # from its first lease, and signs off at shutdown. Never blocks or fails startup;
+        # a no-op for the local coordinators.
+        async with aregistered(gpu_coordinator()):
+            yield
+
     app = FastAPI(
         title="Argus Curator",
         description="LoRA-native dataset curation: score, dedup, face-cluster, export.",
         version=__version__,
+        lifespan=lifespan,
     )
 
     if cors_origins is None:
@@ -758,7 +770,7 @@ def create_app(
             # speech_manifest.jsonl rows at this version.
             "speech_export": True,
             "speech_manifest_version": SPEECH_MANIFEST_VERSION,
-            # The host-wide GPU lease curator takes on CUDA: "none" or "lease" (ARGUS_GPU_COORDINATOR).
+            # The host-wide GPU lease curator takes on CUDA: "none", "lease" or "broker".
             "gpu_coordinator": gpu_coordinator().name,
         }
 

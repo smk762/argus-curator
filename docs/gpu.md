@@ -30,8 +30,8 @@ CPU, or when `device="cuda"` but onnxruntime has no CUDA provider (sessions
 would only run on CPU anyway). InsightFace's pack download happens before the
 load lease, so a cold start does not hold the GPU while weights hit the disk.
 
-- `ARGUS_GPU_COORDINATOR=lease` turns it on. `none`, the library default,
-  gates nothing; `docker-compose.yaml` sets `lease`. Every argus process on the
+- `ARGUS_GPU_COORDINATOR=lease` turns it on. `none`, the library default
+  without a broker URL, gates nothing; `.env.example` sets `lease`. Every argus process on the
   host must name the same `ARGUS_GPU_LEASE_PATH` on a shared directory.
   Containers have their own `/tmp`, so compose mounts `ARGUS_GPU_LOCK_DIR`
   (`/tmp/argus-gpu` on the host) at `/run/argus-gpu` and uses
@@ -77,19 +77,24 @@ Without it nothing is reported.
 
 [argus-iris](https://github.com/smk762/argus-iris) is the suite's GPU lease
 broker. It decides whether a GPU job may start now, on which node, and what
-must be unloaded first. It never runs the work. With
-`ARGUS_GPU_COORDINATOR=broker`, curator asks iris for each lease instead of
-taking the host lock (argus-cortex's `BrokerCoordinator`, from cortex 0.6):
+must be unloaded first. It never runs the work. With `ARGUS_GPU_BROKER_URL`
+set, curator asks iris for each lease instead of taking the host lock
+(argus-cortex's `BrokerCoordinator`; zero-config from cortex 0.15):
 
 | Variable | Value |
 |---|---|
-| `ARGUS_GPU_COORDINATOR` | `broker` |
 | `ARGUS_GPU_BROKER_URL` | `http://<GPU_HOST>:8120` |
 | `ARGUS_GPU_BROKER_TOKEN` | the suite's shared caller token. Put it in the host's `.env`, never in a repo. |
-| `ARGUS_GPU_TENANT_MANIFEST` | `/app/gpu-tenant.yaml` in the image (compose's default), or set `ARGUS_GPU_TENANT=argus-curator` instead |
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none` |
 
-[`gpu-tenant.yaml`](../gpu-tenant.yaml) declares curator's kinds of GPU work:
+The URL and the token are all it takes. Leave `ARGUS_GPU_COORDINATOR` unset
+(an explicit `lease` or `none` wins over the URL). The tenant and its kinds come
+from [`gpu-tenant.yaml`](../gpu-tenant.yaml), which the image has at
+`/app/gpu-tenant.yaml`, where cortex looks for it. The server registers it with
+iris at startup, keeps it registered, and signs off at shutdown; registration
+never holds up startup. The CLI registers with its first lease.
+
+The manifest declares curator's kinds of GPU work:
 `faces`, `scenes`, `garments`, `embeddings`, and for [speech scans](speech.md) `mos` (DNSMOS) and
 `speakers` (the ECAPA-TDNN speaker embeddings), with each one's footprint from
 `runtime.VRAM_MB` (`vram_mb` is the load ask plus one image's (or one speech pass's) run ask,

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-23
+
+**For operators running curator against argus-iris.** One dependency bump and a
+simpler broker setup; nothing else breaks for callers of `/scan` or `/export`.
+
+- **Requires argus-cortex `>=0.15,<0.16`** (was `>=0.14,<0.15`), for the
+  zero-config GPU broker client (argus-cortex#204, argus-iris#47).
+- **`MANIFEST_VERSION` stays 2.7 and `SPEECH_MANIFEST_VERSION` stays 1.0.**
+
+### Changed
+
+- **`ARGUS_GPU_BROKER_URL` and `ARGUS_GPU_BROKER_TOKEN` are all the broker
+  needs (#241).** The URL alone selects argus-iris, and the tenant and its kinds
+  come from `gpu-tenant.yaml`, which the image has at `/app/gpu-tenant.yaml`
+  where cortex looks for it. `ARGUS_GPU_TENANT_MANIFEST` and `ARGUS_GPU_TENANT`
+  are gone from compose and `.env.example`. An explicit `ARGUS_GPU_COORDINATOR`
+  still wins, so a host `.env` that sets `lease` must drop it to use the broker.
+- **The server registers with iris at startup** (`argus_cortex.gpu.aregistered`
+  in its lifespan), keeps it registered, and signs off at shutdown, so the
+  broker knows curator's kinds before its first lease. It never holds up
+  startup. The CLI still registers with its first lease.
+- **docker-compose.yaml no longer defaults `ARGUS_GPU_COORDINATOR` to `lease`**:
+  that default would win over a broker URL. `.env.example` still sets `lease`;
+  a host `.env` with neither it nor a broker URL now gates nothing.
+
 ## [0.22.0] - 2026-11-23
 
 **For downstream callers (argus-lens, argus-forge, argus-proof, argus-mint, and
@@ -1659,7 +1684,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/smk762/argus-curator/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/smk762/argus-curator/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/smk762/argus-curator/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/smk762/argus-curator/compare/v0.19.0...v0.20.0

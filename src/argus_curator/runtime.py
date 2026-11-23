@@ -283,7 +283,7 @@ def gpu_lease(
     Every argus process on the host shares the lease (``ARGUS_GPU_LEASE_PATH`` on
     a shared volume), and it waits for ``VRAM_MB[model][phase]`` free across the
     card, so ComfyUI or Ollama on the same GPU are counted. With
-    ``ARGUS_GPU_COORDINATOR=broker`` the lease comes from argus-iris instead, as
+    ``ARGUS_GPU_BROKER_URL`` set the lease comes from argus-iris instead, as
     the work kind *model* that ``gpu-tenant.yaml`` declares. *wait_s* caps the
     wait below the configured timeout, for a caller someone is waiting on (``POST
     /faces``), and asks the broker for ``interactive`` priority; a scan takes the
