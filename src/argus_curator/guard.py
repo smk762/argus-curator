@@ -67,11 +67,12 @@ DEFAULT_WORKERS = 2
 # their texts: argus-cortex's, shared with argus-darkroom. Adult variants
 # besides "adult" are under evaluation against "adult" (scripts/guard_eval.py);
 # keep them out of UIs until one is chosen. Built from cortex so a new name
-# such as "adult-cinematic" is offered as soon as cortex ships it.
+# such as "adult-cinematic" is offered as soon as cortex ships it. A name
+# cortex gives no text (version skew) is refused when a scan names it, not at import.
 _POLICY_TEXT: dict[str, str] = {name: text for name in POLICIES if (text := cortex_policy_text(name))}
-ADULT_POLICY = _POLICY_TEXT["adult"]
-ADULT_GRANULAR_POLICY = _POLICY_TEXT["adult-granular"]
-ADULT_CAUTIOUS_POLICY = _POLICY_TEXT["adult-cautious"]
+ADULT_POLICY = _POLICY_TEXT.get("adult")
+ADULT_GRANULAR_POLICY = _POLICY_TEXT.get("adult-granular")
+ADULT_CAUTIOUS_POLICY = _POLICY_TEXT.get("adult-cautious")
 ADULT_CINEMATIC_POLICY = _POLICY_TEXT.get("adult-cinematic")
 
 
@@ -158,6 +159,8 @@ def policy(name: GuardPolicy = "default") -> tuple[str, str | None]:
     """
     if name in _POLICY_TEXT:
         return name, _POLICY_TEXT[name]
+    if name != "default":
+        raise ModelUnavailable(f"policy {name!r} has no text in the installed argus-cortex; upgrade argus-cortex")
     path = os.environ.get(POLICY_FILE_ENV, "").strip()
     if not path:
         return "default", None
@@ -183,7 +186,13 @@ def describe_policies() -> list[dict[str, str | None]]:
     """
     described: list[dict[str, str | None]] = []
     for name in POLICIES:
-        source = "builtin" if name in _POLICY_TEXT else "file" if env_value(POLICY_FILE_ENV) else "singguard"
+        source = (
+            "builtin"
+            if name in _POLICY_TEXT or name != "default"
+            else "file"
+            if env_value(POLICY_FILE_ENV)
+            else "singguard"
+        )
         try:
             recorded, text = policy(name)
         except ModelUnavailable as exc:  # names the env var, never the path

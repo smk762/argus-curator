@@ -67,7 +67,7 @@ MIN_SPEECH_WINDOWS = 8  # 256 ms
 # read clean clips ~20 dB low (docs/speech.md, "Silero VAD").
 NOISE_GUARD_FRAMES = 5
 
-_verified: dict[tuple[str, int, float], bool] = {}
+_verified: dict[tuple[str, int, int, int, int, int], bool] = {}
 _verified_lock = threading.Lock()
 
 
@@ -92,14 +92,18 @@ def problem() -> str | None:
 
 
 def _verify(path: Path) -> None:
-    """Refuse a model that is not the pinned file. Hashed once per (path, size, mtime)."""
+    """Refuse a model that is not the pinned file. Hashed once per (path, device, inode, size, mtime, ctime).
+
+    The inode and ctime are in the key because mtime can be set back from
+    userspace: a same-size swap with its mtime restored still changes them.
+    """
     try:
         stat = path.stat()
     except OSError as exc:
         raise ModelUnavailable(
             f"Silero VAD model not found. Fetch it with `argus-curator vad-fetch` or set {MODEL_ENV}."
         ) from exc
-    key = (str(path), stat.st_size, stat.st_mtime)
+    key = (str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
     with _verified_lock:
         if _verified.get(key):
             return
@@ -181,7 +185,9 @@ def guarded(frames: np.ndarray, guard: int = NOISE_GUARD_FRAMES) -> np.ndarray:
     """*frames* grown by *guard* frames either side of each True run."""
     if guard <= 0 or not frames.any():
         return frames.copy()
-    return np.convolve(frames, np.ones(2 * guard + 1), "same") > 0
+    # "full" then sliced: "same" returns max(len(frames), kernel) samples, longer
+    # than *frames* when the clip is shorter than the kernel.
+    return np.convolve(frames, np.ones(2 * guard + 1), "full")[guard : guard + len(frames)] > 0
 
 
 def fetch_model(dest: Path | None = None) -> Path:

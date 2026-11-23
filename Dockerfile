@@ -45,4 +45,4 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     fi
 
 EXPOSE 8101
-CMD ["argus-curator", "serve", "--port", "8101", "--cors"]
+CMD ["argus-curator", "serve", "--host", "0.0.0.0", "--port", "8101", "--cors"]

@@ -480,3 +480,87 @@ def test_move_leaves_a_shared_sidecar_for_an_image_not_selected(tmp_path: Path) 
     )
     assert (dest / Path(first.rel_path).with_suffix(".txt").name).read_text() == "shared caption"
     assert Path(second.abs_path).exists() and side.read_text() == "shared caption"
+
+
+def test_a_seed_copy_that_fails_leaves_no_partial_sidecar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src, dst = tmp_path / "src.png", tmp_path / "dst.png"
+    src.write_bytes(b"src")
+    dst.write_bytes(b"dst")
+    write_xmp(src, XmpData(keywords=["lens"]))  # the seed
+
+    def half_copied(seed: Path, target: Path) -> None:
+        Path(target).write_text("<x:xmpmeta")  # truncated
+        raise OSError("disk full")
+
+    monkeypatch.setattr(export_mod.shutil, "copyfile", half_copied)
+    with pytest.raises(OSError, match="disk full"):
+        export_mod._write_export_sidecar(src, dst, XmpData(content_rating="safe"))
+    assert not sidecar_path(dst).exists()
+
+
+def test_a_move_across_filesystems_never_writes_through_a_stale_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """shutil.move falls back to copy2 on EXDEV; through a link left at dst that overwrote the link's target."""
+    import errno
+    import os
+
+    other = tmp_path / "library" / "other.png"
+    other.parent.mkdir()
+    other.write_bytes(b"another original")
+    src = tmp_path / "src" / "photo.png"
+    src.parent.mkdir()
+    src.write_bytes(b"the moved image")
+    dst = tmp_path / "out" / "photo.png"
+    dst.parent.mkdir()
+    dst.symlink_to(other)  # an earlier symlink export's
+
+    def cross_device(a: object, b: object) -> None:
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(os, "rename", cross_device)
+    export_mod._transfer_one(src, dst, "move")
+    assert other.read_bytes() == b"another original"
+    assert not dst.is_symlink() and dst.read_bytes() == b"the moved image"
+    assert not src.exists()
+
+
+def test_a_manifest_row_that_raises_leaves_the_last_manifest_whole(tmp_path: Path) -> None:
+    imgs = [_image(tmp_path / "src" / f"{n}.png") for n in ("a", "b")]
+    summary = _summary(tmp_path, imgs)
+    path = tmp_path / "out" / MANIFEST_NAME
+    paths = {r.rel_path: r.rel_path for r in imgs}
+    export_mod.write_manifest(imgs, summary, path, paths)
+    before = path.read_text()
+    assert len(before.splitlines()) == 2
+    with pytest.raises(KeyError):
+        export_mod.write_manifest(imgs, summary, path, {"a.png": "a.png"})  # b.png's lookup raises
+    assert path.read_text() == before
+    assert [p.name for p in path.parent.iterdir()] == [MANIFEST_NAME]  # no temp file left
+
+
+def test_the_report_neutralises_formula_cells(tmp_path: Path) -> None:
+    import csv
+
+    img = _image(tmp_path / "src" / " =HYPERLINK(1).png", rel=" =HYPERLINK(1).png")
+    img.duplicate_of = "+cmd.png"
+    report = tmp_path / "report.csv"
+    export_mod.write_report([img], {}, set(), {img.rel_path: "@x.png"}, report)
+    row = next(csv.DictReader(report.open(encoding="utf-8")))
+    assert row["rel_path"] == "' =HYPERLINK(1).png"  # a spreadsheet strips the leading space
+    assert row["duplicate_of"] == "'+cmd.png"
+    assert row["exported_path"] == "'@x.png"
+    assert row["abs_path"] == img.abs_path  # an absolute path leads with "/", left as it is
+
+
+def test_the_report_replaces_a_symlink_instead_of_truncating_its_target(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.csv"
+    victim.write_text("keep me")
+    img = _image(tmp_path / "src" / "a.png")
+    report = tmp_path / "out" / "curation_report.csv"
+    report.parent.mkdir()
+    report.symlink_to(victim)
+    export_mod.write_report([img], {}, set(), {}, report)
+    assert victim.read_text() == "keep me"
+    assert report.is_file() and not report.is_symlink()
+    assert "a.png" in report.read_text(encoding="utf-8")

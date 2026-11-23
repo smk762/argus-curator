@@ -583,3 +583,17 @@ def test_cli_reads_a_reference_from_outside_the_folder(tmp_path: Path) -> None:
     assert _outside_references(folder, [str(folder / "a.png")]) == [folder / "a.png"]  # an absolute path is a file
     with pytest.raises(typer.Exit):
         _outside_references(folder, [str(tmp_path / "missing.png")])
+
+
+def test_cli_reads_a_dotdot_reference_as_a_file_not_a_rel_path(tmp_path: Path) -> None:
+    """A ref through ".." matches no scanned rel path, so it is read like an outside reference."""
+    from argus_curator.cli import _outside_references
+
+    folder = tmp_path / "set"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(_png())
+    (tmp_path / "consent").mkdir()
+    (tmp_path / "consent" / "portrait.png").write_bytes(_png())
+    assert _outside_references(folder, ["../consent/portrait.png"]) == [folder / "../consent/portrait.png"]
+    # Even one that comes back into the folder is not the rel path a scan records.
+    assert _outside_references(folder, ["../set/a.png"]) == [folder / "../set/a.png"]

@@ -524,6 +524,37 @@ def test_a_negative_normalisation_ceiling_is_refused(field: str) -> None:
     assert getattr(ScanConfig(**{field: 0}), field) == 0  # 0 turns the term off
 
 
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("weight_sharpness", -0.1),
+        ("weight_resolution", -0.1),
+        ("weight_artifact", -0.1),
+        ("weight_subject", -0.1),
+        ("diversity_weight", -0.1),
+        ("diversity_weight", 1.1),
+    ],
+)
+def test_a_weight_that_would_invert_the_ranking_is_refused(field: str, bad: float) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=field):
+        ScanConfig(**{field: bad})
+    assert getattr(ScanConfig(**{field: 0.0}), field) == 0.0
+
+
+@pytest.mark.parametrize("workers", [0, -1, 10_000])
+def test_max_workers_out_of_range_is_refused(workers: int) -> None:
+    from pydantic import ValidationError
+
+    from argus_curator.models import MAX_WORKERS, SpeechConfig
+
+    for model in (ScanConfig, SpeechConfig):
+        with pytest.raises(ValidationError, match="max_workers"):
+            model(max_workers=workers)
+        assert model(max_workers=MAX_WORKERS).max_workers == MAX_WORKERS
+
+
 def test_artifact_score_of_a_strip_averages_only_the_axis_it_measured() -> None:
     from argus_curator.scanner import _artifact_score
 
@@ -561,17 +592,21 @@ def test_a_nudenet_failure_stops_face_detection_at_its_next_image(
     from argus_curator.models import NsfwConfig
 
     faces_started = threading.Event()
+    faces_exited = threading.Event()
     reached: list[int] = []
 
     def fake_faces(results, items, cfg, progress=None, on_done=None):
         faces_started.set()
-        row = next(r for r in results if r.passed)
-        for i in range(500):  # far more images than the scan has time for
-            reached.append(i)
-            if on_done is not None:
-                on_done(row, i + 1, 500)
-            threading.Event().wait(0.01)
-        return faces_mod.DetectedFaces([], [], [])
+        try:
+            row = next(r for r in results if r.passed)
+            for i in range(500):  # far more images than the scan has time for
+                reached.append(i)
+                if on_done is not None:
+                    on_done(row, i + 1, 500)
+                threading.Event().wait(0.01)
+            return faces_mod.DetectedFaces([], [], [])
+        finally:
+            faces_exited.set()
 
     def fake_nsfw(results, items, cfg, progress=None, on_done=None):
         assert faces_started.wait(5)
@@ -583,6 +618,9 @@ def test_a_nudenet_failure_stops_face_detection_at_its_next_image(
 
     with pytest.raises(RuntimeError, match="NudeNet answered 500"):
         scan_folder(dataset, faces_cfg=FaceConfig(enabled=True), nsfw_cfg=NsfwConfig())
+    # Stopped, not merely unfinished: a worker left running in the background would
+    # still be early in its loop here, and keep going after the scan has failed.
+    assert faces_exited.is_set()
     assert len(reached) < 500
 
 

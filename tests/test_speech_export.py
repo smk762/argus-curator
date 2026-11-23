@@ -25,6 +25,7 @@ from argus_curator.export import export_selection
 from argus_curator.models import (
     SECOND_VOICE_MAX_DISTANCE,
     VOICE_CONSENT_MAX_DISTANCE,
+    ClipResult,
     ExportRequest,
     ScanSummary,
     SpeechConfig,
@@ -366,6 +367,22 @@ def test_hours_caps_and_accent_balance(tmp_path: Path) -> None:
     assert not floor.chosen and set(floor.keep_reason.values()) == {"speaker-under-min-hours"}
 
 
+def test_unlabelled_accents_never_set_the_accent_balance() -> None:
+    def row(name: str, accent: str | None) -> ClipResult:
+        return ClipResult(
+            rel_path=name, abs_path=f"/x/{name}", passed=True, score=0.9, transcript="hi",
+            duration_s=1.0, speaker=name, accent=accent,
+        )  # fmt: skip
+
+    clips = [row(f"br{i}", "br") for i in range(4)] + [row(f"pt{i}", "pt") for i in range(3)] + [row("u0", None)]
+    plan = speech_select.plan_speech_selection(
+        clips, ExportRequest(dest=".", speech={**CORPUS, "balance_accents": True})
+    )
+    # The cap is pt's three clips, not the one unlabelled clip's.
+    kept = [c.accent for c in plan.chosen]
+    assert (kept.count("br"), kept.count("pt"), kept.count(None)) == (3, 3, 1)
+
+
 def test_max_keep_takes_speakers_in_turn(tmp_path: Path) -> None:
     summary = _scan(_corpus(tmp_path))
     req = ExportRequest(dest=".", speech=CORPUS, max_keep=9)
@@ -400,7 +417,8 @@ def test_export_writes_each_clip_its_transcript_and_a_speech_manifest_row(tmp_pa
         "female",
     )
     assert row.age is None  # the corpus gave none: unknown, never estimated
-    assert (row.duration_s, row.sample_rate, row.channels) == (summary.clips[0].duration_s, 16000, 1)
+    listed = next(c for c in summary.clips if c.rel_path == "clips/s3_0.wav")
+    assert row.duration_s and (row.duration_s, row.sample_rate, row.channels) == (listed.duration_s, 16000, 1)
     assert (row.corpus, row.license) == ("Common Voice pt", "CC0-1.0")
     assert row.provenance.kind == "stock" and row.provenance.license == "CC0-1.0"
     assert row.target_profile.modality == "speech" and row.target_profile.target_category == "accent"
@@ -766,8 +784,33 @@ def test_a_voice_binding_keeps_plain_distances_and_never_the_voiceprint(
     summary = _consented_scan(tmp_path / "src", {"clips/s1_0.wav": 0.6})
     hold = voice_consent_gate(summary, SpeechSelection(**CONSENT))
     assert hold is not None
-    for value in vars(hold).values():
-        assert not isinstance(value, np.ndarray)
+    # The exact shape held: any added field (a centroid by another name) fails here.
+    assert set(vars(hold)) == {
+        "release_sha256",
+        "record_sha256",
+        "provenance",
+        "max_distance",
+        "references",
+        "distances",
+        "excluded",
+        "second_voice_max_distance",
+        "second_voice",
+    }
+
+    def no_vector(node: object, where: str) -> None:
+        # Recursive, and not only ndarrays: a centroid kept as ``.tolist()`` or nested is still a voiceprint.
+        assert not isinstance(node, np.ndarray | np.generic), where
+        if isinstance(node, dict):
+            for key, value in node.items():
+                no_vector(value, f"{where}[{key!r}]")
+        elif isinstance(node, list | tuple):
+            assert not any(isinstance(v, float) for v in node), f"{where} is a float sequence"
+            for i, value in enumerate(node):
+                no_vector(value, f"{where}[{i}]")
+
+    for name, value in vars(hold).items():
+        no_vector(value.model_dump() if name == "provenance" else value, name)
+    assert all(type(r) is str for r in hold.references)
     assert all(type(d) is float for d in hold.distances.values())
     assert hold.second_voice and all(type(d) is float for d in hold.second_voice.values())
 
@@ -929,8 +972,11 @@ def test_second_voice_windows_are_held_in_memory_and_purged_with_the_scan(
     assert window.ndim == 2 and window.shape[1] == speakers.EMBEDDING_DIM and window.dtype == np.float16
     store = ScanStore(tmp_path / "cache")
     store.save(summary)
-    on_disk = (tmp_path / "cache" / f"{summary.scan_id}.json").read_text(encoding="utf-8")
-    assert str(float(window[0, 0]))[:6] not in on_disk
+    assert {p.name for p in (tmp_path / "cache").iterdir()} == {f"{summary.scan_id}.json"}
+    on_disk = json.loads((tmp_path / "cache" / f"{summary.scan_id}.json").read_text(encoding="utf-8"))
+    assert "voice_windows" not in on_disk and "embeddings" not in on_disk
+    # A fresh store reads only the disk: nothing of the windows comes back.
+    assert ScanStore(tmp_path / "cache").held_voice_windows(summary.scan_id) == {}
     loaded = store.load(summary.scan_id)
     assert loaded is not None and set(loaded.voice_windows) == set(summary.voice_windows)
     # A dropped clip's windows go with it, and all of them with the scan.
@@ -1008,6 +1054,9 @@ def test_second_voice_windows_run_in_fixed_shape_passes_under_the_lease(
         expected = speakers.segment_features(x, 16000, None)
         assert windows.shape == (len(expected), speakers.EMBEDDING_DIM) and windows.dtype == np.float16
         assert len(shapes) == -(-len(expected) // speakers.SEGMENT_BATCH)
+        # Row i is window i: no reordering across passes, and the padded tail of the last pass is dropped.
+        ratio = windows[:, 1].astype(np.float32) / windows[:, 0].astype(np.float32)
+        np.testing.assert_allclose(ratio, expected[:, 0, 0], rtol=1e-2, atol=1e-2)
     # A pass holds no more frames than a clip's embedding pass, so the speakers VRAM figure covers it.
     assert speakers.SEGMENT_BATCH * speakers.SEGMENT_FRAMES <= speakers.WINDOWS * speakers.WINDOW_FRAMES
 
@@ -1101,8 +1150,12 @@ def test_speech_move_needs_the_gate_and_drops_the_moved_clips(tmp_path: Path, fa
     scan = {"folder": "", "target_profile": {"modality": "speech"}}
     closed = TestClient(create_app(cache_dir=str(tmp_path / "c1"), source_root=str(source), export_root=str(exports)))
     scan_id = closed.post("/scan/folder", json=scan).json()["scan_id"]
+    before = sorted(p.name for p in (source / "clips").iterdir())
+    assert len(before) == 2 * CLIPS_PER_SPEAKER
     resp = closed.post("/export", json={**body, "scan_id": scan_id})
-    assert resp.status_code == 403 and all((source / "clips").iterdir())
+    assert resp.status_code == 403
+    assert sorted(p.name for p in (source / "clips").iterdir()) == before  # the refused move moved nothing
+    assert not any(exports.iterdir())
     app = create_app(cache_dir=str(tmp_path / "c2"), source_root=str(source), export_root=str(exports), allow_move=True)
     client = TestClient(app)
     scan_id = client.post("/scan/folder", json=scan).json()["scan_id"]
@@ -1191,3 +1244,58 @@ def test_real_speaker_model_embeds_a_clip() -> None:  # pragma: no cover - needs
     a = speakers.embed(session, voice(3.0, seed=1), 16000, "cpu")
     b = speakers.embed(session, voice(3.0, seed=1), 16000, "cpu")
     assert a.shape == (speakers.EMBEDDING_DIM,) and float(a @ b) > 0.99
+
+
+def test_a_speech_manifest_replaces_a_symlink_and_keeps_the_previous_file_when_a_row_raises(
+    tmp_path: Path,
+) -> None:
+    from argus_curator.speech_export import write_manifest
+
+    victim = tmp_path / "victim.jsonl"
+    victim.write_text("keep me\n")
+    path = tmp_path / "out" / "speech_manifest.jsonl"
+    path.parent.mkdir()
+    path.symlink_to(victim)
+    write_manifest([], path)
+    assert victim.read_text() == "keep me\n"
+    assert path.is_file() and not path.is_symlink() and path.read_text(encoding="utf-8") == ""
+
+    path.write_text('{"ok": true}\n', encoding="utf-8")
+
+    class _Boom:
+        def model_dump_json(self) -> str:
+            raise KeyError("nope")
+
+    with pytest.raises(KeyError):
+        write_manifest([_Boom()], path)  # type: ignore[list-item]
+    assert path.read_text(encoding="utf-8") == '{"ok": true}\n'
+
+
+def test_the_speech_report_neutralises_formula_cells(tmp_path: Path) -> None:
+    import csv
+
+    from argus_curator.models import ClipResult
+    from argus_curator.speech_export import write_report
+
+    clip = ClipResult(rel_path=" =HYPERLINK(1).wav", abs_path="/tmp/x.wav", duplicate_of="+cmd.wav", accent="@x")
+    report = tmp_path / "curation_report.csv"
+    write_report([clip], {}, {}, {}, report)
+    row = next(csv.DictReader(report.open(encoding="utf-8")))
+    assert row["rel_path"] == "' =HYPERLINK(1).wav"
+    assert row["duplicate_of"] == "'+cmd.wav"
+    assert row["accent"] == "'@x"
+
+
+def test_a_transcript_never_writes_through_a_link_planted_at_its_temp_name(tmp_path: Path) -> None:
+    from argus_curator import speech_export
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    out = tmp_path / "out"
+    out.mkdir()
+    target = out / "clip.txt"
+    # The temp name a writer could predict: the old one was .<name>.<pid>.tmp.
+    (out / f".{target.name}.{os.getpid()}.tmp").symlink_to(victim)
+    speech_export._write_transcript(target, "a line")
+    assert victim.read_text() == "keep me"
+    assert target.read_text(encoding="utf-8") == "a line\n" and not target.is_symlink()

@@ -110,6 +110,63 @@ def test_a_shared_ref_inlined_by_the_new_schema_is_compared_at_every_use() -> No
     assert breaking_changes(old, new) == ["ManifestRow.b.amount.type: changed from 'number' to 'string'"]
 
 
+def test_a_constraint_beside_a_ref_is_compared() -> None:
+    """Pydantic puts keywords next to a `$ref`; a new `const` there narrows what a row may carry."""
+
+    def row(price: dict) -> dict:
+        return {"type": "object", "properties": {"price": price}, "$defs": {"Money": {"type": "number"}}}
+
+    old = row({"$ref": "#/$defs/Money", "description": "the price"})
+    new = row({"$ref": "#/$defs/Money", "description": "the price", "const": 0})
+    assert breaking_changes(old, new) == ["ManifestRow.price.const: added"]
+    assert breaking_changes(old, row({"$ref": "#/$defs/Money", "description": "now documented"})) == []
+
+
+def test_a_def_changed_behind_an_alias_is_breaking() -> None:
+    """A def that is itself a `$ref` is followed to the schema it names."""
+
+    def row(target: dict) -> dict:
+        return {
+            "type": "object",
+            "properties": {"price": {"$ref": "#/$defs/Price"}},
+            "$defs": {"Price": {"$ref": "#/$defs/Money"}, "Money": target},
+        }
+
+    assert breaking_changes(row({"type": "number"}), row({"type": "string"})) == [
+        "ManifestRow.price.type: changed from 'number' to 'string'"
+    ]
+    cycle = {"type": "object", "properties": {"x": {"$ref": "#/$defs/A"}}, "$defs": {"A": {"$ref": "#/$defs/A"}}}
+    assert breaking_changes(cycle, copy.deepcopy(cycle)) == []
+
+
+@pytest.mark.parametrize(
+    ("keyword", "wrap"),
+    [
+        ("oneOf", lambda ref: {"oneOf": [ref, {"type": "null"}]}),
+        ("allOf", lambda ref: {"allOf": [ref]}),
+        ("prefixItems", lambda ref: {"type": "array", "prefixItems": [ref]}),
+        ("not", lambda ref: {"not": ref}),
+    ],
+    ids=["oneOf", "allOf", "prefixItems", "not"],
+)
+def test_a_def_changed_behind_a_ref_under_any_combinator_is_breaking(keyword: str, wrap) -> None:
+    """The `$ref` string stays the same while the def it names loses a field: still a break."""
+
+    def row(money: dict) -> dict:
+        return {
+            "type": "object",
+            "properties": {"price": wrap({"$ref": "#/$defs/Money"})},
+            "required": ["price"],
+            "$defs": {"Money": money},
+        }
+
+    money = {"type": "object", "properties": {"amount": {"type": "number"}, "currency": {"type": "string"}}}
+    shrunk = {"type": "object", "properties": {"amount": {"type": "number"}}}
+    broken = breaking_changes(row(money), row(shrunk))
+    assert any(p.endswith("currency: field removed") and keyword in p for p in broken), broken
+    assert breaking_changes(row(money), row(copy.deepcopy(money))) == []
+
+
 def test_breaking_change_with_a_major_bump_only_asks_for_a_refresh(live: dict) -> None:
     new = copy.deepcopy(live)
     del new["schema"]["properties"]["score"]

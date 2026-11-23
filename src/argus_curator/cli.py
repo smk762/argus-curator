@@ -98,12 +98,22 @@ def _outside_references(source: Path, refs: list[str]) -> list[Path] | None:
     them files, read here and averaged into ``FaceConfig.reference_embedding``.
     """
 
-    def in_scan(ref: str) -> bool:
+    root = source.resolve()
+
+    def under_source(ref: str) -> bool:
         return not Path(ref).is_absolute() and (source / ref).is_file()
+
+    def in_scan(ref: str) -> bool:
+        # Only a ref that is a scanned image's rel path as written: one through ".."
+        # or a link matches no rel path, so it is read as a file like any outside one.
+        if not under_source(ref):
+            return False
+        resolved = (source / ref).resolve()
+        return resolved.is_relative_to(root) and resolved.relative_to(root) == Path(ref)
 
     if all(in_scan(ref) for ref in refs):
         return None
-    files = [source / ref if in_scan(ref) else Path(ref) for ref in refs]
+    files = [source / ref if under_source(ref) else Path(ref) for ref in refs]
     for f in files:
         if not f.is_file():
             typer.echo(f"Error: --face-reference {f}: no such file", err=True)
@@ -560,6 +570,12 @@ def scan(
         raise typer.Exit(1)
     if modality not in ("image", "speech"):
         typer.echo("Error: --modality must be image or speech", err=True)
+        raise typer.Exit(2)
+    destinations = [
+        flag for flag, to in (("--copy-to", copy_to), ("--move-to", move_to), ("--symlink-to", symlink_to)) if to
+    ]
+    if len(destinations) > 1:
+        typer.echo(f"Error: {' and '.join(destinations)}: give one export destination", err=True)
         raise typer.Exit(2)
     speech_export_flags = {
         "--speaker-id": speaker_ids,
@@ -1524,10 +1540,26 @@ def _scan_speech(
     return summary
 
 
+def _is_loopback(host: str) -> bool:
+    """Whether binding *host* keeps the server on this machine."""
+    import ipaddress
+
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
 @app.command()
 def serve(
     port: int = Option(8101, "--port", "-p", help="Port to listen on"),
-    host: str = Option("0.0.0.0", "--host", help="Host to bind to"),
+    host: str = Option(
+        "127.0.0.1",
+        "--host",
+        help="Host to bind to (loopback by default; 0.0.0.0 exposes the write endpoints to the network)",
+    ),
     cors: bool = Option(False, "--cors", help="Enable CORS for the localhost dev frontend (:3000)"),
     cors_origin: list[str] = Option(
         [], "--cors-origin", help="Allowed CORS origin (repeatable; implies CORS; or CURATOR_CORS_ORIGINS)"
@@ -1569,6 +1601,14 @@ def serve(
         raise typer.Exit(1) from _exc
 
     _apply_minor_exposed(minor_exposed)
+    if not _is_loopback(host):
+        # Requests with no Origin (curl, the CLI) pass the write guard: anyone who
+        # reaches this address can scan, export and delete within the roots.
+        typer.echo(
+            f"Warning: binding {host}: the scan, export and delete endpoints are reachable from the network, "
+            "unauthenticated",
+            err=True,
+        )
     from argus_curator.server import create_app
 
     application = create_app(
@@ -1844,21 +1884,14 @@ def schema(
     Run without flags to (re)write the committed schema; run with --check in CI
     to fail if the models have drifted from the committed artifact.
     """
+    from argus_cortex.wire import sync_schema
+
     from argus_curator.models import render_wire_schema
 
-    rendered = render_wire_schema()
-
-    if check:
-        existing = output.read_text(encoding="utf-8") if output.exists() else ""
-        if existing != rendered:
-            typer.echo(f"{output} is stale — run `argus-curator schema` and commit the result.", err=True)
-            raise typer.Exit(1)
-        typer.echo(f"{output} is up to date.")
-        return
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(rendered, encoding="utf-8")
-    typer.echo(f"Wrote wire schema -> {output}")
+    result = sync_schema(render_wire_schema(), output, check=check, command="argus-curator schema")
+    typer.echo(result.message, err=not result.ok)
+    if not result.ok:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

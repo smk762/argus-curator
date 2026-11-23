@@ -39,6 +39,10 @@ from typing import Any
 _SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
 
 _IGNORED = frozenset({"title", "description", "default", "examples"})
+# Keywords whose value is a list of subschemas, or one subschema: walked, so a
+# `$ref` inside them is resolved rather than compared as a string.
+_SCHEMA_LISTS = frozenset({"anyOf", "oneOf", "allOf", "prefixItems"})
+_SCHEMA_VALUES = frozenset({"items", "additionalProperties", "not", "if", "then", "else", "contains"})
 
 
 @dataclass(frozen=True)
@@ -89,11 +93,24 @@ def breaking_changes(old: dict[str, Any], new: dict[str, Any], row: str = "Manif
     seen: set[tuple[str, str]] = set()
 
     def resolve(node: Any, defs: dict[str, Any]) -> tuple[Any, str | None]:
-        ref = node.get("$ref") if isinstance(node, dict) else None
-        if ref is None:
-            return node, None
-        name = ref.rsplit("/", 1)[-1]
-        return defs.get(name, {}), name
+        """*node* with every `$ref` followed, its sibling keywords kept, and a key naming the chain.
+
+        A def may itself be a `$ref` (an alias), and a referencing node may carry
+        constraints beside its `$ref` (a `const`, an `enum`, a `maxLength`): both
+        are compared. The key holds the siblings, so one def used with different
+        constraints is still walked at each use.
+        """
+        names: list[str] = []
+        chain: list[str] = []
+        while isinstance(node, dict) and "$ref" in node:
+            name = node["$ref"].rsplit("/", 1)[-1]
+            if name in names:
+                break  # a cycle of aliases names no schema
+            siblings = {k: v for k, v in node.items() if k != "$ref"}
+            names.append(name)
+            chain.append(json.dumps([name, siblings], sort_keys=True))
+            node = {**defs.get(name, {}), **siblings}
+        return node, "/".join(chain) if chain else None
 
     def walk(o: Any, n: Any, path: str) -> None:
         o, o_ref = resolve(o, old_defs)
@@ -134,10 +151,15 @@ def breaking_changes(old: dict[str, Any], new: dict[str, Any], row: str = "Manif
                 for value in n["enum"]:
                     if value not in o["enum"]:
                         problems.append(f"{here}: gained {value!r}")
-            elif key == "anyOf" and len(o[key]) == len(n[key]):
+            elif key in _SCHEMA_LISTS and isinstance(o[key], list) and isinstance(n[key], list):
+                if len(o[key]) != len(n[key]):
+                    problems.append(f"{here}: changed from {len(o[key])} to {len(n[key])} subschemas")
+                    continue
+                # Walked, not compared raw: an arm is often just a `$ref`, whose
+                # string stays the same while the def it names changes.
                 for i, (a, b) in enumerate(zip(o[key], n[key], strict=True)):
                     walk(a, b, f"{here}[{i}]")
-            elif key in ("items", "additionalProperties") and isinstance(o[key], dict):
+            elif key in _SCHEMA_VALUES and isinstance(o[key], dict):
                 walk(o[key], n[key], here)
             elif o[key] != n[key]:
                 problems.append(f"{here}: changed from {o[key]!r} to {n[key]!r}")

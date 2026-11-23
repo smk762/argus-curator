@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
 import os
+import secrets
 import shutil
 import unicodedata
 from collections import Counter
@@ -165,9 +167,28 @@ def _plan_dest_paths(selected: list[ImageResult], preserve_structure: bool, by_s
     return dests
 
 
+def _same_entry(a: Path, b: Path) -> bool:
+    """Whether *a* and *b* name one directory entry, a link itself rather than its target."""
+    try:
+        return os.path.samestat(os.lstat(a), os.lstat(b))
+    except OSError:
+        return False
+
+
 def _transfer_one(src: Path, dst: Path, mode: ExportMode) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
+    # A source that is itself a link may be dst (dest == source folder, or a parent
+    # symlink): unlinking dst would delete it. Left alone, copy2 refuses it as the
+    # same file and move renames it onto itself.
+    if mode != "symlink" and dst.is_symlink() and _same_entry(src, dst):
+        if mode == "copy":
+            raise shutil.SameFileError(f"{dst} is the source file")
+        return
     if mode == "move":
+        if dst.is_symlink():
+            # A link left by an earlier symlink export: across filesystems shutil.move
+            # falls back to copy2, which would write through it onto the link's target.
+            dst.unlink()
         shutil.move(str(src), str(dst))
     elif mode == "symlink":
         target = src.resolve()
@@ -185,6 +206,26 @@ def _transfer_one(src: Path, dst: Path, mode: ExportMode) -> None:
             # A link left by an earlier symlink export: copying through it would overwrite its target.
             dst.unlink()
         shutil.copy2(src, dst)
+
+
+def _write_text_atomically(path: Path, text: str, *, newline: str | None = None) -> None:
+    """Write *text* to *path* through a fresh temp file and a rename; a failure leaves *path* as it was.
+
+    The temp file gets a random name opened ``O_EXCL | O_NOFOLLOW``, so a link
+    planted at it is never written through, and ``os.replace`` swaps a link at
+    *path* for the file rather than following it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666)
+    try:
+        # newline="" keeps a CSV's \r\n from being translated again on Windows.
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _sidecar_users(results: list[ImageResult]) -> Counter[Path]:
@@ -220,16 +261,11 @@ def _write_pseudonymised_sidecar(side: Path, target: Path, provenance: Provenanc
         if provenance is None:
             raise ValueError("its sidecar names a provenance the consent hold does not cover")
         data["provenance"] = provenance.model_dump(mode="json")
-    target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and not target.is_symlink() and os.path.samefile(target, side):
         raise shutil.SameFileError(f"{target} is the source sidecar")
-    tmp = target.with_name(f".{target.name}.tmp")
-    try:
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        # os.replace swaps a link left at *target* for the file, never writing through it.
-        os.replace(tmp, target)
-    finally:
-        tmp.unlink(missing_ok=True)
+    # A predictable temp name is a link someone can plant; the atomic writer
+    # refuses to follow one, and replaces a link at *target* rather than writing through it.
+    _write_text_atomically(target, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 def _carry_sidecars(
@@ -322,31 +358,33 @@ def write_manifest(
     """
     abs_paths = exported_abs_paths or {}
     parts = split or {}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        for r in exported:
-            exported_abs = abs_paths.get(r.rel_path) or str(path.parent / exported_paths[r.rel_path])
-            row = ManifestRow(
-                rel_path=r.rel_path,
-                abs_path=exported_abs if mode == "move" else r.abs_path,
-                exported_path=exported_paths[r.rel_path],
-                exported_abs_path=exported_abs,
-                target_profile=summary.target_profile,
-                primary_face_cluster=r.primary_face_cluster,
-                primary_face_pose=r.primary_face_pose,
-                score=round(r.score, 4),
-                similar_group=r.similar_group,
-                crop=r.crop,
-                primary_face=_manifest_face(r, landmarks),
-                set_age=summary.set_age,
-                split=parts.get(r.rel_path),
-                consent_release_sha256=consent.release_sha256 if consent else None,
-                consent_record_sha256=consent.record_sha256 if consent else None,
-                provenance=consent.provenance[r.rel_path] if consent else None,
-                pose_labels=r.pose_labels,
-                pose_cluster=r.pose_cluster,
-            )
-            f.write(row.model_dump_json() + "\n")
+    # Every row is built before the file is touched: a row that raises must not
+    # leave the captioner a truncated work list where the last manifest was.
+    lines: list[str] = []
+    for r in exported:
+        exported_abs = abs_paths.get(r.rel_path) or str(path.parent / exported_paths[r.rel_path])
+        row = ManifestRow(
+            rel_path=r.rel_path,
+            abs_path=exported_abs if mode == "move" else r.abs_path,
+            exported_path=exported_paths[r.rel_path],
+            exported_abs_path=exported_abs,
+            target_profile=summary.target_profile,
+            primary_face_cluster=r.primary_face_cluster,
+            primary_face_pose=r.primary_face_pose,
+            score=round(r.score, 4),
+            similar_group=r.similar_group,
+            crop=r.crop,
+            primary_face=_manifest_face(r, landmarks),
+            set_age=summary.set_age,
+            split=parts.get(r.rel_path),
+            consent_release_sha256=consent.release_sha256 if consent else None,
+            consent_record_sha256=consent.record_sha256 if consent else None,
+            provenance=consent.provenance[r.rel_path] if consent else None,
+            pose_labels=r.pose_labels,
+            pose_cluster=r.pose_cluster,
+        )
+        lines.append(row.model_dump_json() + "\n")
+    _write_text_atomically(path, "".join(lines))
 
 
 def _manifest_face(r: ImageResult, landmarks: bool) -> ManifestFace | None:
@@ -370,6 +408,22 @@ def _manifest_face(r: ImageResult, landmarks: bool) -> ManifestFace | None:
 
 def _blank(value: object) -> object:
     return "" if value is None else value
+
+
+# A spreadsheet reads a cell starting with one of these as a formula (or DDE).
+_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _text_cell(value: str) -> str:
+    """*value* (a path or label from outside) made safe to open in a spreadsheet.
+
+    A formula lead (``= + - @``, tab, CR) gets a quote, including one that sits
+    behind whitespace a spreadsheet strips before it decides the cell is a formula.
+    """
+    lead = value.lstrip(" \t\r\n")
+    if value[:1] in _FORMULA_LEADS or lead[:1] in _FORMULA_LEADS:
+        return f"'{value}"
+    return value
 
 
 def _face_columns(face: FaceDetection | None) -> dict[str, object]:
@@ -485,25 +539,28 @@ def write_report(
         "age_body",
     )
     ordered = sorted(results, key=lambda r: (r.similar_group, -r.score))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
+    # Built in memory, then replaced: open("w") would follow a symlink at *path*
+    # and truncate whatever it points at, and a row that raises would leave a
+    # half-written report where the last one was.
+    buf = io.StringIO(newline="")
+    with buf:
+        w = csv.DictWriter(buf, fieldnames=fieldnames)
         w.writeheader()
         for r in ordered:
             w.writerow(
                 {
-                    "rel_path": r.rel_path,
+                    "rel_path": _text_cell(r.rel_path),
                     "score": round(r.score, 4),
                     "keep": r.rel_path in selected_rel,
                     "keep_reason": keep_reason.get(r.rel_path, ""),
-                    "exported_path": exported_paths.get(r.rel_path, ""),
+                    "exported_path": _text_cell(exported_paths.get(r.rel_path, "")),
                     "similar_group": r.similar_group,
                     "group_size": r.group_size,
                     "is_representative": r.is_representative,
                     "passed": r.passed,
                     "reject_reason": r.reject_reason or "",
                     "is_duplicate": r.is_duplicate,
-                    "duplicate_of": r.duplicate_of or "",
+                    "duplicate_of": _text_cell(r.duplicate_of or ""),
                     "duplicate_kind": r.duplicate_kind or "",
                     "profile_fit": ""
                     if r.zero_shot is None or r.zero_shot.profile_fit is None
@@ -550,9 +607,11 @@ def write_report(
                     ),
                     "width": r.width,
                     "height": r.height,
-                    "abs_path": r.abs_path,
+                    "abs_path": _text_cell(r.abs_path),
                 }
             )
+        text = buf.getvalue()
+    _write_text_atomically(path, text, newline="")
 
 
 def _region(face: FaceDetection, width: int, height: int, names: dict[str, str]) -> XmpRegion:
@@ -619,9 +678,9 @@ def _write_export_sidecar(src: Path, dst: Path, data: XmpData, carried: bool = F
     # Whatever is at *target* after a failed merge and was not there before is ours
     # to remove, whether the seed put it there or write_xmp started it from nothing.
     created = not target.exists()
-    if seed is not None and created:
-        shutil.copyfile(seed, target)
     try:
+        if seed is not None and created:
+            shutil.copyfile(seed, target)
         write_xmp(dst, data)
     except Exception:
         if created:
@@ -778,10 +837,18 @@ def export_selection(
 
     if req.selection is not None:
         wanted = set(req.selection)
+        fs = req.face_source
+        if fs is not None and fs.consent:
+            # ExportRequest refuses this pairing; one built without validation must not skip the consent gate.
+            raise ConsentRefused("a consented face set is chosen by face_source, not by a named selection")
+        # argus-quarry's likeness_consent: false, read from disk now, holds over a named list too.
+        gate = face_source_gate(req, summary)
+        refused = gate.excluded if gate is not None else {}
 
         # A named list overrides neither the under-18 exposed rejection nor any reject.
         keep_reason = {
-            r.rel_path: hard_exclusion(r) or ("" if r.rel_path in wanted else "not-selected") for r in results
+            r.rel_path: hard_exclusion(r) or refused.get(r.rel_path) or ("" if r.rel_path in wanted else "not-selected")
+            for r in results
         }
         selected = [r for r in results if keep_reason[r.rel_path] == ""]
     else:
@@ -905,8 +972,7 @@ def export_selection(
     if req.run_stats is not None and (transferred or req.write_manifest):
         target = dest_root / RUN_STATS_NAME
         try:
-            dest_root.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(req.run_stats, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            _write_text_atomically(target, json.dumps(req.run_stats, indent=2, ensure_ascii=False) + "\n")
             run_stats_path = target
         except OSError as exc:
             logger.warning("run_stats_write_failed", path=str(target), error=str(exc))

@@ -127,8 +127,8 @@ def singguard(monkeypatch: pytest.MonkeyPatch) -> Iterator[type[_SingGuard]]:
 
 def test_endpoint_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert guard.endpoint() is None and not guard.configured()
-    monkeypatch.setenv(guard.URL_ENV, "http://192.168.1.198:9150/")
-    assert guard.endpoint() == "http://192.168.1.198:9150/api/guard/check"
+    monkeypatch.setenv(guard.URL_ENV, "http://192.0.2.198:9150/")
+    assert guard.endpoint() == "http://192.0.2.198:9150/api/guard/check"
     monkeypatch.setenv(guard.URL_ENV, "gopher://guard")
     assert guard.configured()
     with pytest.raises(ModelUnavailable, match="http"):
@@ -892,3 +892,22 @@ def test_a_scan_cached_below_the_floor_still_loads(tmp_path: Path) -> None:
     store.save(loaded)
     assert store.load("s").legacy_min_short_side == 256
     assert summary.legacy_min_short_side is None
+
+
+def test_a_policy_cortex_gives_no_text_is_refused_by_name_not_at_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+
+    import argus_cortex.moderation.policies as cortex_policies
+
+    real = cortex_policies.policy_text
+    monkeypatch.setattr(cortex_policies, "policy_text", lambda name: None if name == "adult" else real(name))
+    spec = importlib.util.spec_from_file_location("_guard_skewed", guard.__file__)
+    skewed = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(skewed)  # a fresh copy: the imported guard module stays as it is
+
+    assert skewed.ADULT_POLICY is None
+    with pytest.raises(ModelUnavailable, match="'adult' has no text in the installed argus-cortex"):
+        skewed.policy("adult")
+    assert skewed.policy("adult-granular") == ("adult-granular", guard.ADULT_GRANULAR_POLICY)
+    adult = next(p for p in skewed.describe_policies() if p["name"] == "adult")
+    assert adult["source"] == "builtin" and adult["text"] is None and "argus-cortex" in adult["error"]

@@ -4281,6 +4281,8 @@
         },
         "diversity_weight": {
           "default": 0.4,
+          "maximum": 1.0,
+          "minimum": 0.0,
           "title": "Diversity Weight",
           "type": "number"
         },
@@ -4310,6 +4312,8 @@
         },
         "max_workers": {
           "default": 4,
+          "maximum": 64,
+          "minimum": 1,
           "title": "Max Workers",
           "type": "integer"
         },
@@ -4357,21 +4361,25 @@
         },
         "weight_artifact": {
           "default": 0.15,
+          "minimum": 0.0,
           "title": "Weight Artifact",
           "type": "number"
         },
         "weight_resolution": {
           "default": 0.3,
+          "minimum": 0.0,
           "title": "Weight Resolution",
           "type": "number"
         },
         "weight_sharpness": {
           "default": 0.35,
+          "minimum": 0.0,
           "title": "Weight Sharpness",
           "type": "number"
         },
         "weight_subject": {
           "default": 0.2,
+          "minimum": 0.0,
           "title": "Weight Subject",
           "type": "number"
         }
@@ -5711,6 +5719,7 @@
         },
         "max_workers": {
           "default": 4,
+          "maximum": 64,
           "minimum": 1,
           "title": "Max Workers",
           "type": "integer"

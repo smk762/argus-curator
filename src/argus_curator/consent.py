@@ -26,7 +26,6 @@ embedding are held in memory only.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -34,6 +33,7 @@ from pathlib import Path
 
 import structlog
 from argus_cortex.consent import ConsentRecord, consent_matches, consent_valid, subject_ref
+from argus_cortex.hashing import sha256_hex
 from argus_cortex.provenance import Provenance, pseudonymise
 from pydantic import ValidationError
 
@@ -58,10 +58,6 @@ FACE_SET_USE = "avatar"
 
 class ConsentRefused(ValueError):
     """A consented face set cannot be selected or exported; the message says why."""
-
-
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def _now(at: datetime | None) -> datetime:
@@ -97,7 +93,7 @@ def read_record(path: Path) -> _Read:
         return _Read(None, None, "missing", "there is no consent record at the scan's consent.record")
     except OSError as exc:
         return _Read(None, None, "missing", f"the consent record cannot be read ({type(exc).__name__})")
-    digest = _sha256(data)
+    digest = sha256_hex(data)
     try:
         record = ConsentRecord.model_validate_json(data)
     except ValidationError as exc:
@@ -175,7 +171,7 @@ def prepare(
     wanted = set(record.reference_images)
     found: dict[str, tuple[str, bytes]] = {}
     for rel, _abs, data in items:
-        digest = _sha256(data)
+        digest = sha256_hex(data)
         if digest in wanted and digest not in found:
             found[digest] = (rel, data)
     missing = len(wanted) - len(found)

@@ -416,7 +416,7 @@ least `min_score` and isn't a near-duplicate (unless `keep_similar`). Then:
 | `exclude_language_mismatch` | drop clips whose corpus language label the language-ID model disputes (needs `language_id` on the scan) | `language-mismatch` |
 | `min_hours_per_speaker` | drop a speaker with fewer hours | `speaker-under-min-hours` |
 | `max_hours_per_speaker` | cap each speaker, best clips first | `speaker-cap` |
-| `max_hours_per_accent`, `balance_accents` | cap each accent (at the smallest accent's hours with `balance_accents`), taking clips from its speakers in turn | `accent-cap` |
+| `max_hours_per_accent`, `balance_accents` | cap each accent (at the smallest labelled accent's hours with `balance_accents`: clips with no accent label are capped too but never set it), taking clips from its speakers in turn | `accent-cap` |
 
 `max_keep` then takes speakers in turn, each giving its best remaining clip
 (`max-keep`), so a cap doesn't hand the set to a few voices. A clip whose
@@ -466,7 +466,9 @@ source), before the clip, and removed if the clip's transfer fails. Then
 `speech_manifest.jsonl` (one `SpeechManifestRow` per exported clip, below),
 `curation_report.csv` (every clip and its keep reason) and `run_stats.json`
 when asked. A move takes the moved clips out of the cached scan. Under
-`move` a source sidecar transcript stays in the source folder.
+`move` a source sidecar transcript stays in the source folder. Consumers open
+clips by the relative export paths, and treat the `.txt` as authoritative if
+it later diverges from the row — [for consumers](#for-consumers).
 
 ## Consented voice binding
 
@@ -660,6 +662,44 @@ key is always present; a field with no value is `null`.
 | `provenance` | object | argus-cortex's `Provenance` (`stock` for a corpus, `consented` under a record, whose `subject` is the subject ref `consent:<release_sha256>`, never a name) |
 | `consent_release_sha256`, `consent_record_sha256` | string or null | a consented voice only |
 
-argus-forge reading this file is
-[argus-forge#58](https://github.com/smk762/argus-forge/issues/58) (for its
-XTTS-v2 emitter, [argus-forge#56](https://github.com/smk762/argus-forge/issues/56)).
+## For consumers
+
+argus-forge reads this file
+([argus-forge#58](https://github.com/smk762/argus-forge/issues/58), for its
+XTTS-v2 emitter [argus-forge#56](https://github.com/smk762/argus-forge/issues/56)).
+Anyone else opening a speech export should follow the same rules.
+
+### Paths
+
+Open each clip and its transcript by joining `exported_path` /
+`transcript_path` onto **your** view of the export folder. Never re-derive
+locations from `rel_path`: a flattened export de-collides duplicate basenames
+with a short hash suffix (`stem-<hash>.ext`), so two clips that shared a name
+in the scan land under different files and `rel_path` cannot say which is
+which.
+
+`exported_abs_path` and `transcript_abs_path` are absolute paths in
+**curator's** filesystem. They are only useful to a consumer that shares that
+filesystem (the same host, or a bind-mount of the same tree). Behind a
+container mount, or when the export has been copied elsewhere, those paths
+name curator, not you: ignore them and join the relative fields. A consumer
+that can see both may check they are the same file (`os.path.samefile`); if
+they are not, the manifest does not belong to that folder.
+
+### Which transcript wins
+
+Each exported clip has a `<stem>.txt` beside it, written fresh at export (never
+a link to the source sidecar), holding the same text as the row's
+`transcript`. A trainer reads the file. If someone edits the `.txt` after
+export, **the file wins**: that is the text the trainer will see. The row's
+`transcript` is the value as exported, kept so a consumer can detect an edit
+or work without opening the sidecar. Curator never rewrites either after the
+export finishes.
+
+### Sample export
+
+[`samples/speech-export/`](../samples/speech-export/) is a checked-in export
+consumers can test against: empty WAV headers (no real voices), matching
+`.txt` files, and a `speech_manifest.jsonl` for a small train set plus a
+speaker-disjoint held-out folder. The absolute paths in those rows are
+placeholders. See its README for the layout.

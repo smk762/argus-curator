@@ -112,6 +112,16 @@ def test_every_failed_check_is_listed_in_order(tmp_path: Path) -> None:
     assert row.reject_reason == "sample_rate" and "8000 Hz" in row.reject_detail
 
 
+def test_min_snr_db_on_a_clip_with_no_speech_frames_names_that_not_a_none_snr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _with_line(clip(tmp_path / "a.wav"))
+    monkeypatch.setattr(speech, "speech_mask", lambda mono, rate, db, *a: (np.zeros(len(db), bool),) * 2)
+    (row,) = scan_speech_folder(tmp_path, cfg=SpeechConfig(min_snr_db=10.0)).clips
+    assert row.snr_db is None and row.reject_reason == "snr"
+    assert "None" not in str(row.reject_detail) and "no speech" in str(row.reject_detail)
+
+
 def test_a_long_file_is_never_read_past_its_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A file bigger than max_duration_s could hold is a duration reject, and open_audio never sees it."""
     clip(tmp_path / "x.wav", 2.0)
@@ -398,6 +408,19 @@ def test_a_transcriber_gives_cer_and_max_cer_rejects(tmp_path: Path) -> None:
     assert sorted(r.reject_reason or "" for r in rows) == ["", "cer"]
 
 
+def test_a_transcriber_without_a_gpu_slot_fails_the_scan_not_the_clips(tmp_path: Path) -> None:
+    from argus_cortex.gpu import GpuLeaseTimeout
+
+    _with_line(clip(tmp_path / "a.wav"))
+
+    class _NoSlot:
+        def transcribe(self, samples: np.ndarray, sample_rate: int, language: str | None = None) -> str:
+            raise GpuLeaseTimeout("busy")
+
+    with pytest.raises(GpuLeaseTimeout):
+        scan_speech_folder(tmp_path, cfg=SpeechConfig(max_cer=0.2), transcriber=_NoSlot())
+
+
 def test_max_cer_without_an_stt_engine_is_refused(tmp_path: Path) -> None:
     clip(tmp_path / "a.wav")
     with pytest.raises(ModelUnavailable, match="argus-echo#4"):
@@ -506,17 +529,35 @@ def test_cli_speech_scan_saves_the_scan_and_exports_nothing(tmp_path: Path, monk
 
 
 @pytest.mark.parametrize(
-    "extra", [["--copy-to", "out"], ["--faces"], ["--target-category", "identity"], ["--modality", "video"]]
+    ("extra", "error"),
+    [
+        # OUT is tmp_path/out: a relative path would land under pytest's working directory.
+        (["--copy-to", "OUT"], "a speech export names where its clips came from"),
+        (["--faces"], "a speech scan runs no image checks or image filters; drop --faces"),
+        (["--target-category", "identity"], "target_category: Input should be 'voice'"),
+    ],
+    ids=["copy-to", "faces", "target-category"],
 )
-def test_cli_speech_scan_refuses_image_options(tmp_path: Path, extra: list[str]) -> None:
+def test_cli_speech_scan_refuses_image_options(tmp_path: Path, extra: list[str], error: str) -> None:
     from typer.testing import CliRunner
 
     from argus_curator.cli import app
 
     clip(tmp_path / "a.wav")
+    extra = [str(tmp_path / "out") if arg == "OUT" else arg for arg in extra]
     result = CliRunner().invoke(app, ["scan", str(tmp_path), "--modality", "speech", *extra])
-    assert result.exit_code == 2, result.output
+    assert result.exit_code == 2 and error in result.output, result.output
     assert not (tmp_path / "out").exists()
+
+
+def test_cli_refuses_a_modality_it_does_not_scan(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from argus_curator.cli import app
+
+    clip(tmp_path / "a.wav")
+    result = CliRunner().invoke(app, ["scan", str(tmp_path), "--modality", "video"])
+    assert result.exit_code == 2 and "--modality must be image or speech" in result.output, result.output
 
 
 def test_cli_speech_options_need_the_speech_modality(tmp_path: Path) -> None:
