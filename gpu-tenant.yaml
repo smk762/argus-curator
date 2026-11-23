@@ -1,8 +1,8 @@
 # argus-curator's GPU use, for the argus-iris broker (argus_cortex.gpu_wire.TenantManifest,
 # validated against cortex's gpu-tenant-schema.json by tests/test_gpu_tenant.py).
 #
-# Read when ARGUS_GPU_COORDINATOR=broker and ARGUS_GPU_TENANT_MANIFEST names this file
-# (/app/gpu-tenant.yaml in the image). Each kind is a model curator runs in its own
+# Registered with the broker at startup when ARGUS_GPU_BROKER_URL is set; argus-cortex finds
+# it in the working directory or at /app/gpu-tenant.yaml, where the image has it. Each kind is a model curator runs in its own
 # process (runtime.gpu_lease passes the model as the kind). vram_mb is the load ask
 # plus one image's (or one speech window's) run ask from runtime.VRAM_MB, and model_mb the load ask: the
 # weights that stay loaded between leases.
