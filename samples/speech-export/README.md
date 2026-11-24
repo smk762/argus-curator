@@ -38,7 +38,7 @@ the relative paths as above. See [Speech scans](../../docs/speech.md#for-consume
 ## Contract
 
 - File: `speech_manifest.jsonl` (never `manifest.jsonl`).
-- Row shape: `SpeechManifestRow`, `speech_manifest_version` **1.0**.
+- Row shape: `SpeechManifestRow`, `speech_manifest_version` **1.1**.
 - Schema: `schema/speech-manifest-row.snapshot.json` and the live model in
   `argus_curator.models`.
 - The `<stem>.txt` beside each clip is what a trainer reads; if someone edits

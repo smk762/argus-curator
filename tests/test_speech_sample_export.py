@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from argus_curator.models import SpeechManifestRow
+from argus_curator.models import SPEECH_MANIFEST_VERSION, SpeechManifestRow
 
 _SAMPLE = Path(__file__).resolve().parent.parent / "samples" / "speech-export"
 _TRAIN = _SAMPLE / "train"
@@ -54,3 +54,11 @@ def test_the_sample_train_and_held_out_are_speaker_disjoint() -> None:
     assert ids(train) & ids(held) == set()
     # The train set includes a de-collided basename so consumers can't rebuild paths from rel_path.
     assert any(r.exported_path != Path(r.rel_path).name for r in train)
+
+
+def test_the_sample_is_stamped_with_the_current_version_and_shape() -> None:
+    for folder in (_TRAIN, _HELD):
+        for line in (folder / "speech_manifest.jsonl").read_text(encoding="utf-8").splitlines():
+            raw = json.loads(line)
+            assert raw["speech_manifest_version"] == SPEECH_MANIFEST_VERSION
+            assert raw == json.loads(SpeechManifestRow.model_validate(raw).model_dump_json())
