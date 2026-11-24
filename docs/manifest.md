@@ -200,7 +200,7 @@ The export response carries the same mappings as `exported_paths` and
 | 2.5 | 0.19.0 | Adds `target_profile.modality`, always `image` (argus-cortex 0.12). |
 | 2.6 | 0.19.0 | Adds `consent_release_sha256`, `consent_record_sha256` and `provenance` (consented face sets, #133); `provenance.subject` is the subject ref `consent:<release_sha256>`, never a name. |
 | 2.7 | 0.20.0 | Adds `pose_labels` and `pose_cluster` (argus-puppet's body pose). |
-| 2.8 | Unreleased | `provenance` is argus-cortex 0.16's `Provenance`: it gains the optional `lookalike` (`who`, `at`, `how`, `found`) and the derived `demo_ready`. No field of curator's own changed. A reader that validates `provenance` with cortex's model needs argus-cortex 0.16 or later, since earlier releases refuse the unknown `demo_ready`. |
+| 2.8 | 0.24.0 | `provenance` is argus-cortex 0.16's `Provenance`: it gains the optional `lookalike` (`who`, `at`, `how`, `found`) and the derived `demo_ready`. No field of curator's own changed. A reader that validates `provenance` with cortex's model needs argus-cortex 0.16 or later, since earlier releases refuse the unknown `demo_ready`. |
 
 2.0 is a new major because a 1.x consumer that derives destinations from
 `rel_path`, or trusts every row to name a file on disk, misreads a 2.x manifest.

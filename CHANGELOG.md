@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-24
+
 **For operators.** One dependency bump. Existing configuration keeps working:
 every variable curator read before still wins.
 
@@ -67,6 +69,8 @@ every variable curator read before still wins.
   default). It still sets `ARGUS_GPU_COORDINATOR=lease`, the host lock for a
   host with no broker: comment that line out to use argus-iris, since an
   explicit coordinator wins over a broker URL, the suite file's included.
+- The sample speech export ([`samples/speech-export/`](samples/speech-export/)) is
+  re-stamped as 1.1, and a test keeps it on the current version.
 - `docker-compose.yaml` documents the suite-file mount as a commented-out line:
   compose has no optional bind mount, and the container runs as root, so the
   file must be root-owned to be read.
@@ -1748,7 +1752,8 @@ Initial release — the curation stage of the Argus suite
   pagination and export-by-id.
 - Docker image (GHCR) and `docker compose` deployment.
 
-[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/smk762/argus-curator/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/smk762/argus-curator/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/smk762/argus-curator/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/smk762/argus-curator/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/smk762/argus-curator/compare/v0.20.0...v0.21.0
