@@ -10,7 +10,6 @@ import csv
 import io
 import json
 import threading
-import time
 from collections.abc import Iterator
 from email.parser import BytesParser
 from email.policy import HTTP
@@ -217,17 +216,25 @@ def test_unreachable_server_is_given_up_on(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv(nsfw.URL_ENV, "http://n")
     monkeypatch.setenv(nsfw.WORKERS_ENV, "1")
     calls = []
+    given_up = threading.Event()  # set once the last failure the check allows has been handled
 
     def down(*_args):
         calls.append(1)
-        time.sleep(0.02)  # a real outage waits out a timeout; give the loop time to react
+        if len(calls) > remote.MAX_FAILURES_WITHOUT_SUCCESS:
+            assert given_up.wait(10)
         raise nsfw.NsfwCheckFailed("NudeNet request failed: timed out")
 
     monkeypatch.setattr(nsfw.NudeNetClient, "check", down)
     results = [ImageResult(rel_path=f"{i}.png", abs_path=f"/d/{i}", passed=True) for i in range(50)]
     items = [(r.rel_path, r.abs_path, b"x") for r in results]
-    assert nsfw.check_images(results, items, NsfwConfig()) is True
-    assert len(calls) <= remote.MAX_FAILURES_WITHOUT_SUCCESS + 2
+
+    def on_done(_result: ImageResult, done: int, _total: int) -> None:
+        if done == remote.MAX_FAILURES_WITHOUT_SUCCESS:
+            given_up.set()
+
+    assert nsfw.check_images(results, items, NsfwConfig(), on_done=on_done) is True
+    # The one worker may already hold the next image when the queue is cancelled.
+    assert len(calls) <= remote.MAX_FAILURES_WITHOUT_SUCCESS + 1
     assert all(r.nsfw is None for r in results)
 
 
