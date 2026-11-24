@@ -316,7 +316,7 @@ def test_a_consented_export_keeps_the_bound_images_and_records_consent_on_each_r
     rows = _rows(dest)
     assert {row["rel_path"] for row in rows} == SUBJECT_IMAGES
     for row in rows:
-        assert row["manifest_version"] == MANIFEST_VERSION == "2.7"
+        assert row["manifest_version"] == MANIFEST_VERSION == "2.8"
         assert row["consent_release_sha256"] == "a" * 64
         assert row["consent_record_sha256"] == record_sha
         prov = row["provenance"]

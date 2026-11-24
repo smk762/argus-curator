@@ -84,7 +84,7 @@ set, curator asks iris for each lease instead of taking the host lock
 | Variable | Value |
 |---|---|
 | `ARGUS_GPU_BROKER_URL` | `http://<GPU_HOST>:8120` |
-| `ARGUS_GPU_BROKER_TOKEN` | the suite's shared caller token. Put it in the host's `.env`, never in a repo. |
+| `ARGUS_GPU_BROKER_TOKEN` | the suite's shared caller token. Put it in the suite file (`~/.config/argus/suite.env`, mode 600) or the host's `.env`, never in a repo. |
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none` |
 
 The URL and the token are all it takes. Leave `ARGUS_GPU_COORDINATOR` unset

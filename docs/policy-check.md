@@ -40,7 +40,8 @@ your own shell and ignores the limit. `GET /detectors` lists the modes on offer
 value silently, so a client checks this flag before offering the choice.
 ## Configuration
 
-Configure it like [NudeNet](nudity.md), in the environment. `<AGENT_HOST>` is a placeholder for the host that runs the server:
+Configure it like [NudeNet](nudity.md), in the environment (the suite-wide `ARGUS_SINGGUARD_URL` is read when
+curator's own variable is unset: [one name for the whole suite](nudity.md#one-name-for-the-whole-suite)). `<AGENT_HOST>` is a placeholder for the host that runs the server:
 
 ```bash
 ARGUS_CURATOR_SINGGUARD_URL=http://<AGENT_HOST>:9150   # its origin; /api/guard/check is appended

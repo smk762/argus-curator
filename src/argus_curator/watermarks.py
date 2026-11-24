@@ -115,7 +115,8 @@ class WatermarkClient:
             return f"is not answering: {getattr(exc, 'reason', exc)}"
 
 
-SERVICE = RemoteService(URL_ENV, TIMEOUT_ENV, WORKERS_ENV, WatermarkClient, DEFAULT_TIMEOUT, DEFAULT_WORKERS)
+PEER = "watermark"
+SERVICE = RemoteService(PEER, URL_ENV, TIMEOUT_ENV, WORKERS_ENV, WatermarkClient, DEFAULT_TIMEOUT, DEFAULT_WORKERS)
 
 
 def client() -> WatermarkClient | None:

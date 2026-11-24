@@ -42,8 +42,8 @@ def test_an_unbumped_speech_row_change_is_refused() -> None:
 
 
 def test_the_image_row_and_version_are_unchanged_by_speech() -> None:
-    """Speech has its own row: ManifestRow and MANIFEST_VERSION stay as recorded (2.7)."""
-    assert live_snapshot()["manifest_version"] == _snapshot()["manifest_version"] == "2.7"
+    """Speech has its own row: ManifestRow and MANIFEST_VERSION stay as recorded (2.8)."""
+    assert live_snapshot()["manifest_version"] == _snapshot()["manifest_version"] == "2.8"
     assert "speaker_id" not in live_snapshot()["schema"]["properties"]
 
 

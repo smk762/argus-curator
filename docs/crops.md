@@ -59,6 +59,9 @@ ARGUS_CURATOR_WATERMARK_TIMEOUT=60                     # seconds per image (defa
 ARGUS_CURATOR_WATERMARK_WORKERS=2                      # concurrent requests (default 2)
 ```
 
+With curator's own variable unset, the suite-wide `ARGUS_WATERMARK_URL` is read
+([one name for the whole suite](nudity.md#one-name-for-the-whole-suite)).
+
 Each hit of at least `min_conf` (0.4) is cut away along one of the four
 edges, plus `margin` pixels (4). Every way of assigning the hits to edges is
 tried, and the one that keeps the most of the frame wins, provided no edge

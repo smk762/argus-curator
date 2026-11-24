@@ -7,10 +7,10 @@ of the suite reads: argus-lens batch-captions it (an upload to its
 builds training sets from it. Curator and lens share one `TargetProfile`, so a
 manifest written here is captioned downstream with no remapping.
 
-This page describes manifest **2.7**, the version current releases write, and
+This page describes manifest **2.8**, the version current releases write, and
 what changed in each earlier version. A speech export writes no `manifest.jsonl`:
 its clips go in `speech_manifest.jsonl`, a row shape of its own
-(`SpeechManifestRow`) with its own version (`SPEECH_MANIFEST_VERSION`, 1.0),
+(`SpeechManifestRow`) with its own version (`SPEECH_MANIFEST_VERSION`, 1.1),
 described in [Speech scans](speech.md#the-speech-manifest).
 
 ## Where it is written
@@ -39,7 +39,7 @@ Pretty-printed here; in the file each row is one line.
 
 ```json
 {
-  "manifest_version": "2.7",
+  "manifest_version": "2.8",
   "rel_path": "shoots/2026-07/IMG_0412.jpg",
   "abs_path": "/data/images/shoots/2026-07/IMG_0412.jpg",
   "exported_path": "shoots/2026-07/IMG_0412.jpg",
@@ -79,9 +79,9 @@ Pretty-printed here; in the file each row is one line.
 }
 ```
 
-## Row fields (2.7)
+## Row fields (2.8)
 
-Every key is always present in a 2.7 row; a field with no value is written as
+Every key is always present in a 2.8 row; a field with no value is written as
 `null`, not left out.
 
 | Field | Type | Since | Meaning |
@@ -102,7 +102,7 @@ Every key is always present in a 2.7 row; a field with no value is written as
 | `split` | string or null | 2.4 | `train` or `held_out` when the export asked for a train/held-out split (`split`, exporting `split_part`), else null. See the [HTTP API](http-api.md#ranking-max_keep-and-splits). |
 | `consent_release_sha256` | string or null | 2.6 | A consented face set only (`face_source.consent`): the consent record's key, the sha256 of the signed release. Null otherwise. See [Consented face sets](face-sources.md#consented-face-sets-of-a-real-person). |
 | `consent_record_sha256` | string or null | 2.6 | A consented face set only: the sha256 of the consent record file as read at export. Null otherwise. |
-| `provenance` | object or null | 2.6 | A consented face set only: where the image came from, as argus-cortex's `Provenance` (`kind`, `source`, `license`, `subject`, `release_sha256`, `cleared`…). It is the `provenance` in the image's `<stem>.json` sidecar when there is one, else `kind: "consented"` under the record's release. Either way `subject` is cortex's subject ref `consent:<release_sha256>`, never the person's name (cortex's `consent_matches` accepts it). Null otherwise. |
+| `provenance` | object or null | 2.6 | A consented face set only: where the image came from, as argus-cortex's `Provenance` (`kind`, `source`, `license`, `subject`, `release_sha256`, `cleared`…; since 2.8 also the optional `lookalike` and the derived `demo_ready` of argus-cortex 0.16). It is the `provenance` in the image's `<stem>.json` sidecar when there is one, else `kind: "consented"` under the record's release. Either way `subject` is cortex's subject ref `consent:<release_sha256>`, never the person's name (cortex's `consent_matches` accepts it). Null otherwise. |
 | `pose_labels` | object or null | 2.7 | The primary person's body-pose labels from argus-puppet: `stance` (`standing`, `jumping`, `crouching`, `seated`, `lying`, `unknown`), `arms` (`up`, `out`, `down`, `mixed`, `unknown`) and `facing` (`front`, `back`, `left`, `right`, `unknown`; the subject's, as the camera sees it). `unknown` is puppet's own reading (the joints its rule needs were not confident). Null when the pose stage did not run, found nobody, or failed. See [Body pose](body-pose.md). |
 | `pose_cluster` | integer or null | 2.7 | The image's scan-level body-pose cluster, 0 for the largest. Clusters are formed over the **whole scan**, not the export. Null when the pose stage did not run, found nobody, failed, the pose was unusable, or the scan was not clustered. See [Body pose](body-pose.md). |
 
@@ -200,6 +200,7 @@ The export response carries the same mappings as `exported_paths` and
 | 2.5 | 0.19.0 | Adds `target_profile.modality`, always `image` (argus-cortex 0.12). |
 | 2.6 | 0.19.0 | Adds `consent_release_sha256`, `consent_record_sha256` and `provenance` (consented face sets, #133); `provenance.subject` is the subject ref `consent:<release_sha256>`, never a name. |
 | 2.7 | 0.20.0 | Adds `pose_labels` and `pose_cluster` (argus-puppet's body pose). |
+| 2.8 | 0.24.0 | `provenance` is argus-cortex 0.16's `Provenance`: it gains the optional `lookalike` (`who`, `at`, `how`, `found`) and the derived `demo_ready`. No field of curator's own changed. A reader that validates `provenance` with cortex's model needs argus-cortex 0.16 or later, since earlier releases refuse the unknown `demo_ready`. |
 
 2.0 is a new major because a 1.x consumer that derives destinations from
 `rel_path`, or trusts every row to name a file on disk, misreads a 2.x manifest.

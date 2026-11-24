@@ -405,7 +405,7 @@ def test_export_writes_each_clip_its_transcript_and_a_speech_manifest_row(tmp_pa
     rows = _rows(Path(result.manifest_path))
     assert len(rows) == result.copied
     row = next(r for r in rows if r.rel_path == "clips/s3_0.wav")
-    assert row.speech_manifest_version == "1.0" and row.modality == "speech"
+    assert row.speech_manifest_version == "1.1" and row.modality == "speech"
     assert row.exported_path == "s3_0.wav" and Path(row.exported_abs_path).is_file()
     assert row.transcript_path == "s3_0.txt"
     assert Path(row.transcript_abs_path).read_text(encoding="utf-8") == LINE + "\n"
@@ -1125,10 +1125,10 @@ def test_export_route_exports_a_speech_scan(served: tuple[TestClient, str, Path]
     resp = client.post("/export", json={"scan_id": scan_id, "dest": "set", "speech": CORPUS})
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["modality"] == "speech" and body["speech_manifest_version"] == "1.0"
+    assert body["modality"] == "speech" and body["speech_manifest_version"] == "1.1"
     assert (exports / "set" / SPEECH_MANIFEST_NAME).is_file()
     health = client.get("/health").json()
-    assert health["speech_export"] is True and health["speech_manifest_version"] == "1.0"
+    assert health["speech_export"] is True and health["speech_manifest_version"] == "1.1"
 
 
 def test_speech_export_paths_are_contained(served: tuple[TestClient, str, Path], tmp_path: Path) -> None:

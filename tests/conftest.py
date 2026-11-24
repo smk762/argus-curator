@@ -57,6 +57,16 @@ _CONFIG_ENV = (
     "ARGUS_GPU_BROKER_TOKEN",
     "ARGUS_GPU_TENANT",
     "ARGUS_GPU_TENANT_MANIFEST",
+    # The suite-wide peer URLs (argus_cortex.peers): each is the fallback for curator's own variable above, so
+    # one in the shell would configure that server for every scan under test.
+    "ARGUS_NUDENET_URL",
+    "ARGUS_ERAX_URL",
+    "ARGUS_WATERMARK_URL",
+    "ARGUS_SINGGUARD_URL",
+    "ARGUS_PUPPET_URL",
+    # What a container is told about itself; /health reports them.
+    "ARGUS_BUILD",
+    "ARGUS_PEER",
 )
 
 
@@ -69,6 +79,8 @@ def hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempP
     """
     for name in _CONFIG_ENV:
         monkeypatch.delenv(name, raising=False)
+    # A developer's suite file (~/.config/argus/suite.env) is never read: it holds real URLs and tokens.
+    monkeypatch.setenv("ARGUS_ENV_FILE", "off")
     # The CLI saves each scan to the default store. Unset, that is
     # ~/.cache/argus_curator/scans, which a running curator serves from, so its
     # scan list filled with pytest folders.

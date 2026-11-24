@@ -36,7 +36,6 @@ from typing import Any, get_args
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import structlog
-from argus_cortex.moderation import ModerationConfigError
 from argus_cortex.moderation._http import CheckFailed, _request_json, is_number, service_url, sibling_url
 from argus_cortex.wire import check_version
 from PIL import Image
@@ -52,7 +51,7 @@ from argus_curator.models import (
     PoseSummary,
     ScanSummary,
 )
-from argus_curator.remote import RemoteService, check_all, env_value, float_env
+from argus_curator.remote import RemoteService, check_all
 from argus_curator.runtime import ModelUnavailable
 from argus_curator.selection import primary_face
 
@@ -264,21 +263,17 @@ def _make_client(base: str, timeout: float) -> PuppetClient:
     return PuppetClient(base, timeout)
 
 
-SERVICE = RemoteService(URL_ENV, TIMEOUT_ENV, WORKERS_ENV, _make_client, DEFAULT_TIMEOUT, DEFAULT_WORKERS)
+PEER = "puppet"
+SERVICE = RemoteService(PEER, URL_ENV, TIMEOUT_ENV, WORKERS_ENV, _make_client, DEFAULT_TIMEOUT, DEFAULT_WORKERS)
 
 
 def client() -> PuppetClient | None:
-    """A client for the configured server, or ``None`` when ``ARGUS_CURATOR_PUPPET_URL`` is unset.
+    """A client for the configured server, or ``None`` when neither ``ARGUS_CURATOR_PUPPET_URL`` nor the
+    suite-wide ``ARGUS_PUPPET_URL`` is set.
 
     A malformed URL raises :class:`ModelUnavailable` naming the variable, never its value (it can hold a credential).
     """
-    base = env_value(URL_ENV)
-    if base is None:
-        return None
-    try:
-        return _make_client(base, float_env(TIMEOUT_ENV, DEFAULT_TIMEOUT))
-    except ModerationConfigError:
-        raise ModelUnavailable(f"{URL_ENV} must be an http(s) URL") from None
+    return SERVICE.client()
 
 
 def configured() -> bool:

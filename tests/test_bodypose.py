@@ -467,7 +467,7 @@ def test_the_manifest_row_and_report_carry_labels_and_cluster(puppet: FakePuppet
     manifest = tmp_path / "manifest.jsonl"
     write_manifest(summary.results, summary, manifest, {r.rel_path: r.rel_path for r in summary.results})
     rows = [ManifestRow.model_validate_json(line) for line in manifest.read_text().splitlines()]
-    assert rows[0].manifest_version == "2.7"
+    assert rows[0].manifest_version == "2.8"
     assert all(r.pose_labels == BodyPoseLabels(**STANDING) and r.pose_cluster == 0 for r in rows)
 
     report = tmp_path / "report.csv"

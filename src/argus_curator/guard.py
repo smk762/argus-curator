@@ -50,10 +50,11 @@ from argus_cortex.moderation.policies import policy_text as cortex_policy_text
 from argus_curator.guard_context import image_context, parse_kinds
 from argus_curator.models import GuardConfig, GuardPolicy, GuardResult, ImageResult
 from argus_curator.nsfw import is_exposed
-from argus_curator.remote import check_all, env_set, env_value, float_env
+from argus_curator.remote import check_all, env_value, float_env, peer_base, peer_set, url_env_in_use
 from argus_curator.runtime import ModelUnavailable
 
 URL_ENV = "ARGUS_CURATOR_SINGGUARD_URL"
+PEER = "singguard"  # then the suite-wide ARGUS_SINGGUARD_URL (argus_cortex.peers)
 TIMEOUT_ENV = "ARGUS_CURATOR_SINGGUARD_TIMEOUT"
 WORKERS_ENV = "ARGUS_CURATOR_SINGGUARD_WORKERS"
 THINKING_ENV = "ARGUS_CURATOR_SINGGUARD_THINKING"
@@ -81,17 +82,23 @@ def endpoint() -> str | None:
 
     Checks the URL only; :func:`thinking` and :func:`policy` check the rest.
     """
-    base = env_value(URL_ENV)
+    base = peer_base(PEER, URL_ENV)
     if base is None:
         return None
     try:
         return SingGuardClient(base).url
-    except ModerationConfigError as exc:
-        raise ModelUnavailable(f"{URL_ENV} must be an http(s) URL, got {base!r}") from exc
+    except ModerationConfigError:
+        raise ModelUnavailable(f"{env_in_use()} must be an http(s) URL") from None
 
 
 def configured() -> bool:
-    return env_set(URL_ENV)
+    """A SingGuard URL is set (a malformed one still counts, so it fails loudly)."""
+    return peer_set(PEER, URL_ENV)
+
+
+def env_in_use() -> str:
+    """The variable the URL is read from: curator's own, or the suite-wide one when only that is set."""
+    return url_env_in_use(PEER, URL_ENV)
 
 
 def resolve_enabled(cfg: GuardConfig) -> bool:
