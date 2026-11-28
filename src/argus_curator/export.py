@@ -213,7 +213,9 @@ def _write_text_atomically(path: Path, text: str, *, newline: str | None = None)
 
     The temp file gets a random name opened ``O_EXCL | O_NOFOLLOW``, so a link
     planted at it is never written through, and ``os.replace`` swaps a link at
-    *path* for the file rather than following it.
+    *path* for the file rather than following it. The data is fsynced before
+    the rename and the directory after it, so a crash leaves the old file or
+    the new one, never an empty or partial *path*.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
@@ -222,10 +224,24 @@ def _write_text_atomically(path: Path, text: str, *, newline: str | None = None)
         # newline="" keeps a CSV's \r\n from being translated again on Windows.
         with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as fh:
             fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    # The rename is a directory entry: sync the directory too. Best effort, since
+    # Windows cannot open one and some filesystems refuse; the data is already down.
+    try:
+        dir_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
 
 
 def _sidecar_users(results: list[ImageResult]) -> Counter[Path]:
