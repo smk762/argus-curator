@@ -400,7 +400,7 @@ def test_a_pseudonymised_sidecar_never_writes_through_a_planted_temp_link(
     target.parent.mkdir()
     # The old temp name was predictable; a link there must not receive the sidecar.
     (target.parent / f".{target.name}.tmp").symlink_to(victim)
-    monkeypatch.setattr("argus_curator.export.secrets.token_hex", lambda _n: "ab" * 8)
+    monkeypatch.setattr("argus_curator.export_io.secrets.token_hex", lambda _n: "ab" * 8)
     planted = target.parent / f".{target.name}.{'ab' * 8}.tmp"
     planted.symlink_to(victim)
 
