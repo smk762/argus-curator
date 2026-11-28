@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 from argus_curator import scan_folder
-from argus_curator.export import _plan_dest_paths, _transfer_one, _write_text_atomically, export_selection
+from argus_curator.export import export_selection
+from argus_curator.export_io import plan_dest_paths, transfer_one, write_text_atomically
 from argus_curator.models import MANIFEST_VERSION, ExportRequest, ImageResult
 from argus_curator.selection import decide_selection
 
@@ -139,7 +140,7 @@ def test_flattened_export_unique_basename_keeps_plain_name(dataset: Path, tmp_pa
 
 def test_plan_decollides_case_insensitive_basenames() -> None:
     """Case-variant basenames are one directory entry on APFS/NTFS/exFAT dests."""
-    dests = _plan_dest_paths([_res("a/IMG.png"), _res("b/img.png")], preserve_structure=False)
+    dests = plan_dest_paths([_res("a/IMG.png"), _res("b/img.png")], preserve_structure=False)
     assert len({d.casefold() for d in dests.values()}) == 2
     # Both members of the case-folded collision group get suffixed.
     assert all(d not in {"IMG.png", "img.png"} for d in dests.values())
@@ -149,7 +150,7 @@ def test_plan_extends_digest_when_suffixed_name_is_taken() -> None:
     """A selected file already named like a generated suffix must not be clobbered."""
     taken = f"img-{hashlib.sha1(b'a/img.png').hexdigest()[:8]}.png"
     sel = [_res("a/img.png"), _res("b/img.png"), _res(f"old/{taken}")]
-    dests = _plan_dest_paths(sel, preserve_structure=False)
+    dests = plan_dest_paths(sel, preserve_structure=False)
     assert len(set(dests.values())) == 3
     assert dests[f"old/{taken}"] == taken  # unique basename keeps its plain name
 
@@ -210,9 +211,9 @@ def test_a_linked_source_transferred_onto_itself_is_never_deleted(tmp_path: Path
     (tmp_path / "dest").symlink_to(src_dir)
     if mode == "copy":
         with pytest.raises(shutil.SameFileError):
-            _transfer_one(link, tmp_path / "dest" / "link.png", mode)
+            transfer_one(link, tmp_path / "dest" / "link.png", mode)
     else:
-        _transfer_one(link, tmp_path / "dest" / "link.png", mode)
+        transfer_one(link, tmp_path / "dest" / "link.png", mode)
     assert link.is_symlink() and link.read_bytes() == b"png"
 
 
@@ -405,6 +406,6 @@ def test_an_atomic_write_syncs_the_data_before_the_rename_and_the_directory_afte
 
     monkeypatch.setattr(os, "fsync", fsync)
     monkeypatch.setattr(os, "replace", replace)
-    _write_text_atomically(target, "new")
+    write_text_atomically(target, "new")
     assert events == ["file", "rename", "dir"]
     assert target.read_text(encoding="utf-8") == "new"

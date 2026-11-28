@@ -2,7 +2,7 @@
 
 The counterpart of :func:`argus_curator.export.export_selection` for a speech
 scan, and reached through it. Clips move by the same rules as images (copy,
-symlink or move; ``export._transfer_one``, which never deletes the source a
+symlink or move; ``export_io.transfer_one``, which never deletes the source a
 symlink is to point at) and are named by the same de-collision plan, by stem,
 so ``a/x.wav`` and ``a/x.flac`` cannot write one ``a/x.txt``. Each exported
 clip gets ``<stem>.txt`` holding its transcript, which is how argus-forge pairs
@@ -42,14 +42,14 @@ from argus_cortex.provenance import Provenance
 
 from argus_curator import speakers
 from argus_curator.consent import ConsentRefused, read_record
-from argus_curator.export import (
+from argus_curator.export_io import (
     REPORT_NAME,
     RUN_STATS_NAME,
     ProgressFn,
-    _plan_dest_paths,
-    _text_cell,
-    _transfer_one,
-    _write_text_atomically,
+    plan_dest_paths,
+    text_cell,
+    transfer_one,
+    write_text_atomically,
 )
 from argus_curator.models import (
     ClipResult,
@@ -244,7 +244,7 @@ def _is_source(dst: Path, src: Path) -> bool:
 
 def _write_transcript(path: Path, text: str) -> None:
     """Write *text* to *path* so a link at *path*, or at the temp file, is replaced, never followed."""
-    _write_text_atomically(path, text + "\n")
+    write_text_atomically(path, text + "\n")
 
 
 def write_manifest(rows: list[SpeechManifestRow], path: Path) -> None:
@@ -253,7 +253,7 @@ def write_manifest(rows: list[SpeechManifestRow], path: Path) -> None:
     Every row is rendered before the file is touched, and the write replaces a
     symlink at *path* instead of following it.
     """
-    _write_text_atomically(path, "".join(row.model_dump_json() + "\n" for row in rows))
+    write_text_atomically(path, "".join(row.model_dump_json() + "\n" for row in rows))
 
 
 def write_report(
@@ -305,33 +305,33 @@ def write_report(
         for c in sorted(clips, key=lambda c: (speaker_id(c) or "", -c.score, c.rel_path)):
             w.writerow(
                 {
-                    "rel_path": _text_cell(c.rel_path),
+                    "rel_path": text_cell(c.rel_path),
                     "score": round(c.score, 4),
                     "keep": keep_reason.get(c.rel_path, "") == "" and c.rel_path in exported,
-                    "keep_reason": _text_cell(keep_reason.get(c.rel_path, "")),
-                    "exported_path": _text_cell(exported.get(c.rel_path, "")),
+                    "keep_reason": text_cell(keep_reason.get(c.rel_path, "")),
+                    "exported_path": text_cell(exported.get(c.rel_path, "")),
                     "split": split.get(c.rel_path, ""),
-                    "speaker_id": _text_cell(speaker_id(c) or ""),
+                    "speaker_id": text_cell(speaker_id(c) or ""),
                     "speaker_cluster": c.speaker_cluster or "",
                     "speaker_mismatch": c.speaker_mismatch,
                     "consent_distance": consent_distance.get(c.rel_path, ""),
                     "second_voice_distance": second_voice_distance.get(c.rel_path, ""),
-                    "accent": _text_cell(c.accent or ""),
-                    "language": _text_cell(c.language or ""),
-                    "language_predicted": _text_cell(c.language_predicted or ""),
+                    "accent": text_cell(c.accent or ""),
+                    "language": text_cell(c.language or ""),
+                    "language_predicted": text_cell(c.language_predicted or ""),
                     "language_confidence": "" if c.language_confidence is None else c.language_confidence,
                     "language_mismatch": c.language_mismatch,
-                    "gender": _text_cell(c.gender or ""),
-                    "age": _text_cell(c.age or ""),
+                    "gender": text_cell(c.gender or ""),
+                    "age": text_cell(c.age or ""),
                     "duration_s": "" if c.duration_s is None else round(c.duration_s, 3),
                     "passed": c.passed,
-                    "reject_reason": _text_cell(c.reject_reason or ""),
+                    "reject_reason": text_cell(c.reject_reason or ""),
                     "is_duplicate": c.is_duplicate,
-                    "duplicate_of": _text_cell(c.duplicate_of or ""),
+                    "duplicate_of": text_cell(c.duplicate_of or ""),
                 }
             )
         text = buf.getvalue()
-    _write_text_atomically(path, text, newline="")
+    write_text_atomically(path, text, newline="")
 
 
 def export_speech(
@@ -385,7 +385,7 @@ def export_speech(
     licence = speech.license or (hold.provenance.license if hold is not None else "")
     provenance = hold.provenance if hold is not None else Provenance(kind="stock", source=corpus, license=licence)
     dest_root = Path(req.dest)
-    dest_paths = _plan_dest_paths(selected, req.preserve_structure, by_stem=True)  # type: ignore[arg-type]
+    dest_paths = plan_dest_paths(selected, req.preserve_structure, by_stem=True)  # type: ignore[arg-type]
     total = len(selected)
     if progress is not None:
         progress({"phase": "transferring", "done": 0, "total": total})
@@ -416,7 +416,7 @@ def export_speech(
                 # The transcript first: a clip never lands (or leaves its source) without one.
                 _write_transcript(txt, c.transcript or "")
                 wrote_txt = True
-                _transfer_one(src, dst, req.mode)
+                transfer_one(src, dst, req.mode)
                 if kept_txt is not None:
                     kept_txt.unlink(missing_ok=True)
                 copied += 1
@@ -493,7 +493,7 @@ def export_speech(
     if req.run_stats is not None and (transferred or req.write_manifest):
         target = dest_root / RUN_STATS_NAME
         try:
-            _write_text_atomically(target, json.dumps(req.run_stats, indent=2, ensure_ascii=False) + "\n")
+            write_text_atomically(target, json.dumps(req.run_stats, indent=2, ensure_ascii=False) + "\n")
             run_stats_path = target
         except OSError as exc:
             logger.warning("run_stats_write_failed", path=str(target), error=str(exc))

@@ -10,8 +10,9 @@ from argus_cortex.xmp import XmpData, read_xmp, sidecar_path, write_xmp
 from pydantic import ValidationError
 
 from argus_curator import export as export_mod
-from argus_curator import scan_folder
-from argus_curator.export import MANIFEST_NAME, RUN_STATS_NAME, _plan_dest_paths, export_selection
+from argus_curator import export_io, scan_folder
+from argus_curator.export import MANIFEST_NAME, RUN_STATS_NAME, export_selection
+from argus_curator.export_io import plan_dest_paths
 from argus_curator.models import (
     RUN_STATS_MAX_BYTES,
     ExportRequest,
@@ -279,8 +280,8 @@ def test_run_stats_size_is_capped() -> None:
 def test_flattened_carry_decollides_on_stem(tmp_path: Path) -> None:
     """a/IMG.jpg and b/IMG.png flatten to distinct basenames but would share IMG.txt."""
     sel = [ImageResult(rel_path=p, abs_path=str(tmp_path / p)) for p in ("a/IMG.jpg", "b/IMG.png")]
-    assert _plan_dest_paths(sel, preserve_structure=False) == {"a/IMG.jpg": "IMG.jpg", "b/IMG.png": "IMG.png"}
-    dests = _plan_dest_paths(sel, preserve_structure=False, by_stem=True)
+    assert plan_dest_paths(sel, preserve_structure=False) == {"a/IMG.jpg": "IMG.jpg", "b/IMG.png": "IMG.png"}
+    dests = plan_dest_paths(sel, preserve_structure=False, by_stem=True)
     stems = {Path(d).stem.casefold() for d in dests.values()}
     assert len(stems) == 2
 
@@ -289,7 +290,7 @@ def test_structured_carry_decollides_on_stem_within_a_folder(tmp_path: Path) -> 
     """a/IMG.jpg and a/IMG.png keep their folder but would share a/IMG.txt."""
     rels = ("a/IMG.jpg", "a/IMG.png", "b/IMG.jpg", "IMG.jpg", "img.png")
     sel = [ImageResult(rel_path=p, abs_path=str(tmp_path / p)) for p in rels]
-    dests = _plan_dest_paths(sel, preserve_structure=True, by_stem=True)
+    dests = plan_dest_paths(sel, preserve_structure=True, by_stem=True)
     # A folder's lone name keeps its rel_path; colliding ones stay in their folder.
     assert dests["b/IMG.jpg"] == "b/IMG.jpg"
     assert all(str(Path(dests[rel]).parent) == str(Path(rel).parent) for rel in rels)
@@ -352,14 +353,14 @@ def test_move_counts_down_a_sidecar_three_images_share(tmp_path: Path) -> None:
 
 def test_move_leaves_a_shared_sidecar_for_an_image_that_stayed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     first, second, side = _shared_pair(tmp_path)
-    real = export_mod._transfer_one
+    real = export_io.transfer_one
 
     def stuck(src: Path, dst: Path, mode: str) -> None:
         if src.name == "photo.jpg":
             raise OSError("stuck")
         real(src, dst, mode)
 
-    monkeypatch.setattr(export_mod, "_transfer_one", stuck)
+    monkeypatch.setattr(export_mod, "transfer_one", stuck)
     dest = tmp_path / "out"
 
     result = _move(tmp_path, [first, second], dest)
@@ -372,7 +373,7 @@ def test_move_leaves_a_shared_sidecar_for_an_image_that_stayed(tmp_path: Path, m
 def test_move_keeps_a_shared_sidecar_that_failed_to_reach_an_image(tmp_path: Path) -> None:
     first, second, side = _shared_pair(tmp_path)
     dest = tmp_path / "out"
-    names = _plan_dest_paths([first, second], preserve_structure=False, by_stem=True)
+    names = plan_dest_paths([first, second], preserve_structure=False, by_stem=True)
     (dest / names["photo.jpg"]).with_suffix(".txt").mkdir(parents=True)
 
     result = _move(tmp_path, [first, second], dest)
@@ -423,15 +424,15 @@ def test_run_stats_does_not_overwrite_a_carried_sidecar(tmp_path: Path, preserve
 @pytest.mark.parametrize("name", ["run_stats.png", "RUN_STATS.png", "manifest.png", "curation_report.png"])
 def test_reserved_stems_are_suffixed_only_when_sidecars_are_carried(tmp_path: Path, name: str) -> None:
     sel = [ImageResult(rel_path=name, abs_path=str(tmp_path / name))]
-    assert _plan_dest_paths(sel, preserve_structure=False) == {name: name}
-    assert _plan_dest_paths(sel, preserve_structure=True) == {name: name}
-    assert _plan_dest_paths(sel, preserve_structure=False, by_stem=True)[name] != name
-    assert _plan_dest_paths(sel, preserve_structure=True, by_stem=True)[name] != name
+    assert plan_dest_paths(sel, preserve_structure=False) == {name: name}
+    assert plan_dest_paths(sel, preserve_structure=True) == {name: name}
+    assert plan_dest_paths(sel, preserve_structure=False, by_stem=True)[name] != name
+    assert plan_dest_paths(sel, preserve_structure=True, by_stem=True)[name] != name
 
 
 def test_a_reserved_stem_in_a_subfolder_keeps_its_path(tmp_path: Path) -> None:
     sel = [ImageResult(rel_path="sub/run_stats.png", abs_path=str(tmp_path / "x"))]
-    assert _plan_dest_paths(sel, preserve_structure=True, by_stem=True) == {"sub/run_stats.png": "sub/run_stats.png"}
+    assert plan_dest_paths(sel, preserve_structure=True, by_stem=True) == {"sub/run_stats.png": "sub/run_stats.png"}
 
 
 def test_moved_names_what_left_even_when_the_export_then_raises(
@@ -519,7 +520,7 @@ def test_a_move_across_filesystems_never_writes_through_a_stale_link(
         raise OSError(errno.EXDEV, "Invalid cross-device link")
 
     monkeypatch.setattr(os, "rename", cross_device)
-    export_mod._transfer_one(src, dst, "move")
+    export_io.transfer_one(src, dst, "move")
     assert other.read_bytes() == b"another original"
     assert not dst.is_symlink() and dst.read_bytes() == b"the moved image"
     assert not src.exists()

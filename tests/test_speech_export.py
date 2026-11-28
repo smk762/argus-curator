@@ -519,14 +519,14 @@ def test_a_failed_transfer_has_no_row_and_leaves_no_transcript(tmp_path: Path, m
     from argus_curator import speech_export
 
     summary = _scan(_corpus(tmp_path / "src", SPEAKERS[:1]))
-    real = speech_export._transfer_one
+    real = speech_export.transfer_one
 
     def flaky(src: Path, dst: Path, mode: str) -> None:
         if src.name == "s1_1.wav":
             raise OSError("disk full")
         real(src, dst, mode)
 
-    monkeypatch.setattr(speech_export, "_transfer_one", flaky)
+    monkeypatch.setattr(speech_export, "transfer_one", flaky)
     result = _export(summary, tmp_path / "out")
     rows = _rows(Path(result.manifest_path))
     assert result.skipped == 1 and {r.rel_path for r in rows} == {"clips/s1_0.wav", "clips/s1_2.wav"}
@@ -543,14 +543,14 @@ def test_a_failed_transfer_keeps_the_transcript_an_earlier_export_left(
     assert _export(summary, out).copied == CLIPS_PER_SPEAKER
     txt = out / "clips" / "s1_1.txt"
     txt.write_text("edited after the first export\n", encoding="utf-8")
-    real = speech_export._transfer_one
+    real = speech_export.transfer_one
 
     def flaky(src: Path, dst: Path, mode: str) -> None:
         if src.name == "s1_1.wav":
             raise OSError("disk full")
         real(src, dst, mode)
 
-    monkeypatch.setattr(speech_export, "_transfer_one", flaky)
+    monkeypatch.setattr(speech_export, "transfer_one", flaky)
     assert _export(summary, out).skipped == 1
     assert txt.read_text(encoding="utf-8") == "edited after the first export\n"
     assert (out / "clips" / "s1_1.wav").is_file()  # the earlier clip still has its transcript
