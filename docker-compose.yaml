@@ -126,4 +126,14 @@ services:
   # "loading"); the image's HEALTHCHECK waits for it.
   nudenet:
     image: ghcr.io/smk762/argus-retina-nudenet:0.1.0@sha256:cbdc2d47171bf08f521981e0a962532ee2a25c4773f423e7eab2d36838f1adef
+    # argus-retina's discovery labels, as its own compose file sets them. With no
+    # published port, the suite directory lists it but builds no URL for it.
+    labels:
+      argus.peer: nudenet
+      argus.service: argus-retina
+      argus.health: /health
+      argus.port: "8080"
+    environment:
+      # The peer label again: a process cannot read its own labels.
+      - ARGUS_PEER=nudenet
     restart: unless-stopped
