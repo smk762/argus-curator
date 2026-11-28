@@ -36,6 +36,7 @@ from argus_curator.models import (
     SetAge,
 )
 from argus_curator.runtime import gpu_lease, providers, session_providers
+from argus_curator.sharpness import sharpness
 
 logger = structlog.get_logger()
 
@@ -188,15 +189,13 @@ def eye_mouth_openness(landmarks_68: object) -> tuple[float | None, float | None
 
 
 def face_sharpness(image: object, bbox_xywh: list[float]) -> float | None:
-    """Laplacian variance (``scanner._sharpness``) over the face box alone."""
-    from argus_curator.scanner import _sharpness
-
+    """Laplacian variance (:func:`~argus_curator.sharpness.sharpness`) over the face box alone."""
     x, y, w, h = bbox_xywh
     iw, ih = image.size  # type: ignore[attr-defined]
     box = (max(0, int(x)), max(0, int(y)), min(iw, int(x + w)), min(ih, int(y + h)))
     if box[2] - box[0] < 2 or box[3] - box[1] < 2:
         return None
-    return round(_sharpness(image.crop(box)), 2)  # type: ignore[attr-defined]
+    return round(sharpness(image.crop(box)), 2)  # type: ignore[attr-defined]
 
 
 def _points(arr: object, dims: int) -> list[list[float]] | None:
