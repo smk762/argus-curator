@@ -533,6 +533,30 @@ def test_a_failed_transfer_has_no_row_and_leaves_no_transcript(tmp_path: Path, m
     assert not (tmp_path / "out" / "clips" / "s1_1.txt").exists()
 
 
+def test_a_failed_transfer_keeps_the_transcript_an_earlier_export_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_curator import speech_export
+
+    summary = _scan(_corpus(tmp_path / "src", SPEAKERS[:1]))
+    out = tmp_path / "out"
+    assert _export(summary, out).copied == CLIPS_PER_SPEAKER
+    txt = out / "clips" / "s1_1.txt"
+    txt.write_text("edited after the first export\n", encoding="utf-8")
+    real = speech_export._transfer_one
+
+    def flaky(src: Path, dst: Path, mode: str) -> None:
+        if src.name == "s1_1.wav":
+            raise OSError("disk full")
+        real(src, dst, mode)
+
+    monkeypatch.setattr(speech_export, "_transfer_one", flaky)
+    assert _export(summary, out).skipped == 1
+    assert txt.read_text(encoding="utf-8") == "edited after the first export\n"
+    assert (out / "clips" / "s1_1.wav").is_file()  # the earlier clip still has its transcript
+    assert sorted(p.name for p in (out / "clips").iterdir() if p.name.startswith(".")) == []
+
+
 # ---------------------------------------------------------------------------
 # Consent: a real person's voice outside a licensed corpus
 # ---------------------------------------------------------------------------

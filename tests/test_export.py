@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
 
 from argus_curator import scan_folder
-from argus_curator.export import _plan_dest_paths, _transfer_one, export_selection
+from argus_curator.export import _plan_dest_paths, _transfer_one, _write_text_atomically, export_selection
 from argus_curator.models import MANIFEST_VERSION, ExportRequest, ImageResult
 from argus_curator.selection import decide_selection
 
@@ -383,3 +385,26 @@ def test_unhashed_candidates_do_not_win_the_diversity_term() -> None:
     ]
     picked = [r.rel_path for r in select_diverse(candidates, 2, 0.5)]
     assert picked == ["a.jpg", "d.jpg"]
+
+
+def test_an_atomic_write_syncs_the_data_before_the_rename_and_the_directory_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "manifest.jsonl"
+    target.write_text("old", encoding="utf-8")
+    events: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd: int) -> None:
+        events.append("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+        real_fsync(fd)
+
+    def replace(src: object, dst: object) -> None:
+        events.append("rename")
+        real_replace(src, dst)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    _write_text_atomically(target, "new")
+    assert events == ["file", "rename", "dir"]
+    assert target.read_text(encoding="utf-8") == "new"

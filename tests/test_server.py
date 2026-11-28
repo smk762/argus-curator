@@ -705,7 +705,10 @@ def test_image_block_retries_a_scan_file_it_could_not_read(tmp_path: Path, monke
     client = TestClient(create_app(cache_dir=str(cache), source_root=str(root)))
     assert client.get("/image", params={"path": "adult.png"}).status_code == 200
 
-    os.utime(scan_file, None)  # a new version, so the next request has to read it
+    # A new version, so the next request has to read it. An explicit later mtime:
+    # utime(None) stamps the coarse clock, which can repeat the time the file already has.
+    st = scan_file.stat()
+    os.utime(scan_file, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
     real_read_text = Path.read_text
 
     def unreadable(self: Path, *args: object, **kwargs: object) -> str:

@@ -29,6 +29,7 @@ import hashlib
 import io
 import json
 import os
+import secrets
 import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -400,22 +401,36 @@ def export_speech(
             skipped += 1
         else:
             wrote_txt = False
+            # A transcript already at the destination (an earlier export) is set aside,
+            # so a transfer that fails puts it back instead of deleting it.
+            kept_txt: Path | None = None
             try:
                 # Exporting onto the source (dest is the scanned folder, or links into it)
                 # would overwrite, then remove, the source's own transcript sidecar.
                 if _is_source(dst, src) or _is_source(txt, src.with_suffix(".txt")):
                     raise shutil.SameFileError(f"{dst} is the source file")
+                if os.path.lexists(txt):
+                    aside = txt.with_name(f".{txt.name}.{secrets.token_hex(8)}.bak")
+                    os.replace(txt, aside)
+                    kept_txt = aside
                 # The transcript first: a clip never lands (or leaves its source) without one.
                 _write_transcript(txt, c.transcript or "")
                 wrote_txt = True
                 _transfer_one(src, dst, req.mode)
+                if kept_txt is not None:
+                    kept_txt.unlink(missing_ok=True)
                 copied += 1
                 transferred.append(c)
                 if req.mode == "move" and moved is not None:
                     moved.append(c.rel_path)
             except Exception as exc:
                 logger.warning("export_transfer_failed", rel_path=c.rel_path, error=str(exc))
-                if wrote_txt:
+                if kept_txt is not None:
+                    try:
+                        os.replace(kept_txt, txt)
+                    except OSError as restore_exc:
+                        logger.warning("export_transcript_restore_failed", rel_path=c.rel_path, error=str(restore_exc))
+                elif wrote_txt:
                     txt.unlink(missing_ok=True)
                 skipped += 1
         if progress is not None:
