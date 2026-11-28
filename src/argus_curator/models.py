@@ -17,10 +17,13 @@ from typing import Annotated, Any, Literal
 from argus_cortex.consent import ConsentRefusal
 from argus_cortex.moderation import (  # re-exported: part of curator's wire contract
     DEFAULT_EXPOSED_LABELS,
+    SUGGESTIVE_LABELS,  # noqa: F401
+    ContentRating,
     GuardResult,
     NsfwResult,
     NudeNetLabel,
-    exposed_score,
+    exposed_score,  # noqa: F401
+    rate_content,
 )
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 from argus_cortex.moderation.policies import PolicyName
@@ -967,29 +970,9 @@ class GarmentDetection(BaseModel):
     color: str
 
 
-# A content rating read off NudeNet's detections, for a facet in a UI and for
-# argus:ContentRating in an XMP sidecar. "explicit": an exposed class was
-# reported (the five DEFAULT_EXPOSED_LABELS, from NudeNet's 0.2 floor, the
-# suite's one definition of nudity). "suggestive": otherwise, a covered intimate
-# class was (lingerie, swimwear). "safe": neither. Unchecked images have none.
-ContentRating = Literal["safe", "suggestive", "explicit"]
-SUGGESTIVE_LABELS: tuple[NudeNetLabel, ...] = (
-    "FEMALE_BREAST_COVERED",
-    "FEMALE_GENITALIA_COVERED",
-    "BUTTOCKS_COVERED",
-    "ANUS_COVERED",
-)
-
-
-def rate_content(nsfw: NsfwResult | None) -> ContentRating | None:
-    """*nsfw*'s :data:`ContentRating`, or ``None`` when NudeNet did not check the image."""
-    if nsfw is None:
-        return None
-    if exposed_score(nsfw.labels) >= MIN_REPORTED_SCORE:
-        return "explicit"
-    if any(nsfw.labels.get(label, 0.0) >= MIN_REPORTED_SCORE for label in SUGGESTIVE_LABELS):
-        return "suggestive"
-    return "safe"
+# The content rating ("safe", "suggestive", "explicit") read off NudeNet's detections, for a facet in a UI and for
+# argus:ContentRating in an XMP sidecar. ContentRating, SUGGESTIVE_LABELS and rate_content are argus-cortex's
+# (argus_cortex.moderation), the suite's one rubric; they were written here and still import from this module.
 
 
 # Which near-duplicate test linked an image to its group's representative (#196).

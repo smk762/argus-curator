@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The content rating is argus-cortex's.** `rate_content`, `ContentRating` and `SUGGESTIVE_LABELS` moved to
+  `argus_cortex.moderation` unchanged, so other stages rate an image by the same rubric. They still import from
+  `argus_curator.models`, and no rating, filter or `argus:ContentRating` value changes. Needs argus-cortex 0.16.2.
 - `docker-compose.yaml` labels the `nudenet` container for the suite directory (`argus.peer: nudenet`,
   `argus.service: argus-retina`, `argus.health: /health`, `argus.port: "8080"`, and `ARGUS_PEER=nudenet`), the
   names argus-retina's own compose file uses, for argus-ci's `service-peer-label` rule.
