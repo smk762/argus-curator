@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `docker-compose.yaml` labels the `nudenet` container for the suite directory (`argus.peer: nudenet`,
+  `argus.service: argus-retina`, `argus.health: /health`, `argus.port: "8080"`, and `ARGUS_PEER=nudenet`), the
+  names argus-retina's own compose file uses, for argus-ci's `service-peer-label` rule.
+
 ## [0.24.0] - 2026-11-24
 
 **For operators.** One dependency bump. Existing configuration keeps working:
