@@ -10,7 +10,7 @@ model never heard, so a split that only holds out clips measures memorisation.
 Clips are grouped by :func:`speaker_groups`, which joins every clip sharing a
 corpus speaker label *or* a speaker cluster, so neither reading of a speaker
 can straddle the parts even where the two disagree. The groups go to
-:func:`argus_curator.selection.split_held_out` (the one split curator has),
+:func:`argus_curator.splitting.split_held_out` (the one split curator has),
 stratified by each group's accent and sex where the corpus labels them.
 """
 
@@ -28,8 +28,8 @@ from argus_curator.models import (
     SpeechSelectStats,
     SplitPart,
 )
-from argus_curator.selection import SplitError, split_held_out
 from argus_curator.speech_corpus import under_18_label
+from argus_curator.splitting import SplitError, split_held_out
 
 # ExportRequest fields that filter, rank or annotate images. A speech request
 # that sets any of them away from its default is refused rather than ignored.
